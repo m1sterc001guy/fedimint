@@ -5,7 +5,6 @@ use crate::db::{
     ReceivedPartialSignatureKeyOutputPrefix, ReceivedPartialSignaturesKeyPrefix,
 };
 use async_trait::async_trait;
-use fedimint_api::db::batch::{BatchItem, DbBatch};
 use fedimint_api::db::{Database, DatabaseTransaction};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::audit::Audit;
@@ -285,9 +284,8 @@ impl FederationModule for Mint {
         let par_batches = req_psigs
             .into_par_iter()
             .map(|(issuance_id, shares)| {
+                let mut dbtx = self.db.begin_transaction();
                 let mut drop_peers = Vec::<PeerId>::new();
-                let mut batch = DbBatch::new();
-                let mut batch_tx = batch.transaction();
                 let proposal_key = ProposedPartialSignatureKey {
                     request_id: issuance_id,
                 };
@@ -307,15 +305,17 @@ impl FederationModule for Mint {
                             "Successfully combined signature shares",
                         );
 
-                        batch_tx.append_from_iter(shares.into_iter().map(|(peer, _)| {
-                            BatchItem::delete(ReceivedPartialSignatureKey {
+                        shares.into_iter().for_each(|(peer, _)| {
+                            dbtx.remove_entry(&ReceivedPartialSignatureKey {
                                 request_id: issuance_id,
                                 peer_id: peer,
                             })
-                        }));
-                        batch_tx.append_delete(proposal_key);
+                            .expect("DB Error");
+                        });
+                        dbtx.remove_entry(&proposal_key).expect("DB Error");
 
-                        batch_tx.append_insert(OutputOutcomeKey(issuance_id), blind_signature);
+                        dbtx.insert_entry(&OutputOutcomeKey(issuance_id), &blind_signature)
+                            .expect("DB Error");
                     }
                     Err(CombineError::TooFewShares(got, _)) => {
                         for peer in consensus_peers.sub(&HashSet::from_iter(got)) {
@@ -327,14 +327,14 @@ impl FederationModule for Mint {
                         warn!(%error, "Could not combine shares");
                     }
                 }
-                batch_tx.commit();
-                (batch, drop_peers)
+                dbtx.commit_tx().expect("DB Error");
+                drop_peers
             })
             .collect::<Vec<_>>();
 
         let dropped_peers = par_batches
             .iter()
-            .flat_map(|(_, peers)| peers)
+            .flat_map(|peers| peers)
             .copied()
             .collect();
 
@@ -356,8 +356,6 @@ impl FederationModule for Mint {
             .expect("DB Error");
         dbtx.insert_entry(&MintAuditItemKey::RedemptionTotal, &redemptions)
             .expect("DB Error");
-
-        //batch.append_from_accumulators(par_batches.into_iter().map(|(batch, _)| batch));
 
         dropped_peers
     }
