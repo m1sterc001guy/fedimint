@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 
 use crate::config::GenerateConfig;
-use crate::db::batch::DbBatch;
 use crate::db::mem_impl::MemDatabase;
 use crate::db::Database;
 
@@ -137,12 +136,12 @@ where
 
             dbtx.commit_tx().expect("DB Error");
 
-            let mut batch = DbBatch::new();
+            let mut dbtx = database.begin_transaction();
             member
-                .end_consensus_epoch(&peers, batch.transaction(), &mut rng)
+                .end_consensus_epoch(&peers, &mut dbtx, &mut rng)
                 .await;
 
-            database.apply_batch(batch).expect("DB error");
+            dbtx.commit_tx().expect("DB Error");
         }
     }
 

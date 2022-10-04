@@ -15,7 +15,6 @@ use crate::outcome::OutputOutcome;
 use crate::rng::RngGenerator;
 use crate::transaction::{Input, Output, Transaction, TransactionError};
 use crate::OsRngGen;
-use fedimint_api::db::batch::{AccumulatorTx, BatchItem, DbBatch};
 use fedimint_api::db::{Database, DatabaseTransaction};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::audit::Audit;
@@ -300,37 +299,46 @@ where
 
         // End consensus epoch
         {
-            let mut db_batch = DbBatch::new();
             let mut drop_peers = Vec::<PeerId>::new();
 
-            self.save_epoch_history(outcome, db_batch.transaction(), &mut drop_peers);
+            let mut db_vec = vec![
+                self.db.begin_transaction(),
+                self.db.begin_transaction(),
+                self.db.begin_transaction(),
+                self.db.begin_transaction(),
+                self.db.begin_transaction(),
+            ];
+
+            self.save_epoch_history(outcome, &mut db_vec[0], &mut drop_peers);
 
             let mut drop_wallet = self
                 .wallet
-                .end_consensus_epoch(&epoch_peers, db_batch.transaction(), self.rng_gen.get_rng())
+                .end_consensus_epoch(&epoch_peers, &mut db_vec[1], self.rng_gen.get_rng())
                 .await;
 
             let mut drop_mint = self
                 .mint
-                .end_consensus_epoch(&epoch_peers, db_batch.transaction(), self.rng_gen.get_rng())
+                .end_consensus_epoch(&epoch_peers, &mut db_vec[2], self.rng_gen.get_rng())
                 .await;
 
             let mut drop_ln = self
                 .ln
-                .end_consensus_epoch(&epoch_peers, db_batch.transaction(), self.rng_gen.get_rng())
+                .end_consensus_epoch(&epoch_peers, &mut db_vec[3], self.rng_gen.get_rng())
                 .await;
 
             drop_peers.append(&mut drop_wallet);
             drop_peers.append(&mut drop_mint);
             drop_peers.append(&mut drop_ln);
 
-            let mut batch_tx = db_batch.transaction();
             for peer in drop_peers {
-                batch_tx.append_insert(DropPeerKey(peer), ());
+                db_vec[4]
+                    .insert_entry(&DropPeerKey(peer), &())
+                    .expect("DB Error");
             }
-            batch_tx.commit();
 
-            self.db.apply_batch(db_batch).expect("DB error");
+            db_vec
+                .into_iter()
+                .for_each(|tx| tx.commit_tx().expect("DB Error"));
         }
 
         let audit = self.audit();
@@ -346,10 +354,10 @@ where
         self.db.get_value(&EpochHistoryKey(epoch)).unwrap()
     }
 
-    fn save_epoch_history(
+    fn save_epoch_history<'a>(
         &self,
         outcome: ConsensusOutcome,
-        mut transaction: AccumulatorTx<BatchItem>,
+        dbtx: &mut DatabaseTransaction<'a>,
         drop_peers: &mut Vec<PeerId>,
     ) {
         let prev_epoch_key = EpochHistoryKey(outcome.epoch.saturating_sub(1));
@@ -363,7 +371,10 @@ where
             let pks = &self.cfg.epoch_pk_set;
 
             match current.add_sig_to_prev(pks, prev_epoch) {
-                Ok(prev_epoch) => transaction.append_insert(prev_epoch_key, prev_epoch),
+                Ok(prev_epoch) => {
+                    dbtx.insert_entry(&prev_epoch_key, &prev_epoch)
+                        .expect("DB Error");
+                }
                 Err(EpochVerifyError::NotEnoughValidSigShares(contributing_peers)) => {
                     warn!("Unable to sign epoch {}", prev_epoch_key.0);
                     for peer in peers {
@@ -377,9 +388,10 @@ where
             }
         }
 
-        transaction.append_insert(LastEpochKey, EpochHistoryKey(current.outcome.epoch));
-        transaction.append_insert(EpochHistoryKey(current.outcome.epoch), current);
-        transaction.commit();
+        dbtx.insert_entry(&LastEpochKey, &EpochHistoryKey(current.outcome.epoch))
+            .expect("DB Error");
+        dbtx.insert_entry(&EpochHistoryKey(current.outcome.epoch), &current)
+            .expect("DB Error");
     }
 
     pub async fn await_consensus_proposal(&self) {

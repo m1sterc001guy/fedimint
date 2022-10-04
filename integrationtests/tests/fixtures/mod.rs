@@ -559,7 +559,7 @@ impl FederationTest {
         user.client
             .receive_coins(amount, OsRng::new().unwrap(), |tokens| {
                 for server in &self.servers {
-                    let mut svr = server.borrow_mut();
+                    let svr = server.borrow_mut();
                     let mut dbtx = svr.database.begin_transaction();
                     let transaction = fedimint_server::transaction::Transaction {
                         inputs: vec![],

@@ -2,7 +2,6 @@ pub mod audit;
 pub mod interconnect;
 pub mod testing;
 
-use crate::db::batch::BatchTx;
 use crate::db::DatabaseTransaction;
 use crate::{Amount, PeerId};
 use async_trait::async_trait;
@@ -221,7 +220,7 @@ pub trait FederationModule: Sized {
     async fn end_consensus_epoch<'a>(
         &'a self,
         consensus_peers: &HashSet<PeerId>,
-        batch: BatchTx<'a>,
+        dbtx: &mut DatabaseTransaction<'a>,
         rng: impl RngCore + CryptoRng + 'a,
     ) -> Vec<PeerId>;
 

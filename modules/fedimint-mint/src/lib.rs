@@ -5,7 +5,7 @@ use crate::db::{
     ReceivedPartialSignatureKeyOutputPrefix, ReceivedPartialSignaturesKeyPrefix,
 };
 use async_trait::async_trait;
-use fedimint_api::db::batch::{BatchItem, BatchTx, DbBatch};
+use fedimint_api::db::batch::{BatchItem, DbBatch};
 use fedimint_api::db::{Database, DatabaseTransaction};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::audit::Audit;
@@ -268,7 +268,7 @@ impl FederationModule for Mint {
     async fn end_consensus_epoch<'a>(
         &'a self,
         consensus_peers: &HashSet<PeerId>,
-        mut batch: BatchTx<'a>,
+        dbtx: &mut DatabaseTransaction<'a>,
         _rng: impl RngCore + CryptoRng + 'a,
     ) -> Vec<PeerId> {
         // Finalize partial signatures for which we now have enough shares
@@ -350,13 +350,14 @@ impl FederationModule for Mint {
                     MintAuditItemKey::Redemption(_) => redemptions += amount,
                     MintAuditItemKey::RedemptionTotal => redemptions += amount,
                 }
-                batch.append_delete(key);
+                dbtx.remove_entry(&key).expect("DB Error");
             });
-        batch.append_insert(MintAuditItemKey::IssuanceTotal, issuances);
-        batch.append_insert(MintAuditItemKey::RedemptionTotal, redemptions);
+        dbtx.insert_entry(&MintAuditItemKey::IssuanceTotal, &issuances)
+            .expect("DB Error");
+        dbtx.insert_entry(&MintAuditItemKey::RedemptionTotal, &redemptions)
+            .expect("DB Error");
 
-        batch.append_from_accumulators(par_batches.into_iter().map(|(batch, _)| batch));
-        batch.commit();
+        //batch.append_from_accumulators(par_batches.into_iter().map(|(batch, _)| batch));
 
         dropped_peers
     }

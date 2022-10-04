@@ -23,7 +23,6 @@ use bitcoin::{
     Address, AddressType, Amount, BlockHash, EcdsaSig, EcdsaSighashType, Network, Script,
     Transaction, TxIn, TxOut, Txid,
 };
-use fedimint_api::db::batch::BatchTx;
 use fedimint_api::db::{Database, DatabaseTransaction};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::api_endpoint;
@@ -432,7 +431,7 @@ impl FederationModule for Wallet {
     async fn end_consensus_epoch<'a>(
         &'a self,
         consensus_peers: &HashSet<PeerId>,
-        mut batch: BatchTx<'a>,
+        dbtx: &mut DatabaseTransaction<'a>,
         _rng: impl RngCore + CryptoRng + 'a,
     ) -> Vec<PeerId> {
         // Sign and finalize any unsigned transactions that have signatures
@@ -475,16 +474,17 @@ impl FederationModule for Wallet {
                     // We were able to finalize the transaction, so we will delete the PSBT and instead keep the
                     // extracted tx for periodic transmission and to accept the change into our wallet
                     // eventually once it confirms.
-                    batch.append_insert_new(PendingTransactionKey(key.0), pending_tx);
-                    batch.append_delete(PegOutTxSignatureCI(key.0));
-                    batch.append_delete(key);
+                    dbtx.insert_new_entry(&PendingTransactionKey(key.0), &pending_tx)
+                        .expect("DB Error");
+                    dbtx.remove_entry(&PegOutTxSignatureCI(key.0))
+                        .expect("DB Error");
+                    dbtx.remove_entry(&key).expect("DB Error");
                 }
                 Err(e) => {
                     warn!("Unable to finalize PSBT due to {:?}", e)
                 }
             }
         }
-        batch.commit();
         drop_peers
     }
 
