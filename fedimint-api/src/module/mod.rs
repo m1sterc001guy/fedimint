@@ -182,10 +182,10 @@ pub trait FederationModule: Sized {
     /// This function may only be called after `begin_consensus_epoch` and before
     /// `end_consensus_epoch`. Data is only written to the database once all transaction have been
     /// processed.
-    fn apply_input<'a, 'b>(
+    fn apply_input<'a, 'b, 'c>(
         &'a self,
         interconnect: &'a dyn ModuleInterconect,
-        batch: BatchTx<'a>,
+        dbtx: &mut DatabaseTransaction<'c>,
         input: &'b Self::TxInput,
         verification_cache: &Self::VerificationCache,
     ) -> Result<InputMeta<'b>, Self::Error>;
@@ -206,9 +206,9 @@ pub trait FederationModule: Sized {
     /// This function may only be called after `begin_consensus_epoch` and before
     /// `end_consensus_epoch`. Data is only written to the database once all transactions have been
     /// processed.
-    fn apply_output<'a>(
+    fn apply_output<'a, 'b>(
         &'a self,
-        batch: BatchTx<'a>,
+        dbtx: &mut DatabaseTransaction<'b>,
         output: &'a Self::TxOutput,
         out_point: crate::OutPoint,
     ) -> Result<Amount, Self::Error>;

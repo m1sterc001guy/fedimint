@@ -15,8 +15,8 @@ use crate::outcome::OutputOutcome;
 use crate::rng::RngGenerator;
 use crate::transaction::{Input, Output, Transaction, TransactionError};
 use crate::OsRngGen;
-use fedimint_api::db::batch::{AccumulatorTx, BatchItem, BatchTx, DbBatch};
-use fedimint_api::db::Database;
+use fedimint_api::db::batch::{AccumulatorTx, BatchItem, DbBatch};
+use fedimint_api::db::{Database, DatabaseTransaction};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::audit::Audit;
 use fedimint_api::{FederationModule, OutPoint, PeerId, TransactionId};
@@ -256,14 +256,14 @@ where
                 .filter_conflicts(|(_, tx)| tx)
                 .partitioned();
 
-            let mut db_batch = DbBatch::new();
-            let mut batch_tx = db_batch.transaction();
+            let mut dbtx = self.db.begin_transaction();
 
             for transaction in err_tx {
-                batch_tx.append_insert(
-                    RejectedTransactionKey(transaction.tx_hash()),
-                    format!("{:?}", TransactionSubmissionError::TransactionConflictError),
-                );
+                dbtx.insert_entry(
+                    &RejectedTransactionKey(transaction.tx_hash()),
+                    &format!("{:?}", TransactionSubmissionError::TransactionConflictError),
+                )
+                .expect("DB Error");
             }
 
             let caches = self.build_verification_caches(ok_tx.iter());
@@ -272,32 +272,30 @@ where
                 // in_scope to make sure that no await is in the middle of the span
                 let _enter = span.in_scope(|| {
                     trace!(?transaction);
-                    batch_tx.append_maybe_delete(ProposedTransactionKey(transaction.tx_hash()));
+                    dbtx.maybe_remove_entry(&ProposedTransactionKey(transaction.tx_hash()))
+                        .expect("DB Error");
 
                     // TODO: use borrowed transaction
-                    match self.process_transaction(
-                        batch_tx.subtransaction(),
-                        transaction.clone(),
-                        &caches,
-                    ) {
+                    match self.process_transaction(&mut dbtx, transaction.clone(), &caches) {
                         Ok(()) => {
-                            batch_tx.append_insert(
-                                AcceptedTransactionKey(transaction.tx_hash()),
-                                AcceptedTransaction { epoch, transaction },
-                            );
+                            dbtx.insert_entry(
+                                &AcceptedTransactionKey(transaction.tx_hash()),
+                                &AcceptedTransaction { epoch, transaction },
+                            )
+                            .expect("DB Error");
                         }
                         Err(error) => {
                             warn!(%error, "Transaction failed");
-                            batch_tx.append_insert(
-                                RejectedTransactionKey(transaction.tx_hash()),
-                                format!("{:?}", error),
-                            );
+                            dbtx.insert_entry(
+                                &RejectedTransactionKey(transaction.tx_hash()),
+                                &format!("{:?}", error),
+                            )
+                            .expect("DB Error");
                         }
                     }
                 });
             }
-            batch_tx.commit();
-            self.db.apply_batch(db_batch).expect("DB error");
+            dbtx.commit_tx().expect("DB Error");
         }
 
         // End consensus epoch
@@ -443,9 +441,9 @@ where
         ConsensusProposal { items, drop_peers }
     }
 
-    fn process_transaction(
+    fn process_transaction<'a>(
         &self,
-        mut batch: BatchTx,
+        dbtx: &mut DatabaseTransaction<'a>,
         transaction: Transaction,
         caches: &VerificationCaches,
     ) -> Result<(), TransactionSubmissionError> {
@@ -458,30 +456,15 @@ where
             let meta = match input {
                 Input::Mint(coins) => self
                     .mint
-                    .apply_input(
-                        &self.build_interconnect(),
-                        batch.subtransaction(),
-                        coins,
-                        &caches.mint,
-                    )
+                    .apply_input(&self.build_interconnect(), dbtx, coins, &caches.mint)
                     .map_err(TransactionSubmissionError::InputCoinError)?,
                 Input::Wallet(peg_in) => self
                     .wallet
-                    .apply_input(
-                        &self.build_interconnect(),
-                        batch.subtransaction(),
-                        peg_in,
-                        &caches.wallet,
-                    )
+                    .apply_input(&self.build_interconnect(), dbtx, peg_in, &caches.wallet)
                     .map_err(TransactionSubmissionError::InputPegIn)?,
                 Input::LN(input) => self
                     .ln
-                    .apply_input(
-                        &self.build_interconnect(),
-                        batch.subtransaction(),
-                        input,
-                        &caches.ln,
-                    )
+                    .apply_input(&self.build_interconnect(), dbtx, input, &caches.ln)
                     .map_err(TransactionSubmissionError::ContractInputError)?,
             };
             pub_keys.push(meta.puk_keys);
@@ -496,23 +479,22 @@ where
             match output {
                 Output::Mint(new_tokens) => {
                     self.mint
-                        .apply_output(batch.subtransaction(), &new_tokens, out_point)
+                        .apply_output(dbtx, &new_tokens, out_point)
                         .map_err(TransactionSubmissionError::OutputCoinError)?;
                 }
                 Output::Wallet(peg_out) => {
                     self.wallet
-                        .apply_output(batch.subtransaction(), &peg_out, out_point)
+                        .apply_output(dbtx, &peg_out, out_point)
                         .map_err(TransactionSubmissionError::OutputPegOut)?;
                 }
                 Output::LN(output) => {
                     self.ln
-                        .apply_output(batch.subtransaction(), &output, out_point)
+                        .apply_output(dbtx, &output, out_point)
                         .map_err(TransactionSubmissionError::ContractOutputError)?;
                 }
             }
         }
 
-        batch.commit();
         Ok(())
     }
 

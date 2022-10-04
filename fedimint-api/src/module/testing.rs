@@ -115,7 +115,6 @@ where
 
         let peers: HashSet<PeerId> = self.members.iter().map(|p| p.0).collect();
         for (_peer, member, db) in &mut self.members {
-            let mut batch = DbBatch::new();
             let database = db as &mut Database;
             let mut dbtx = database.begin_transaction();
 
@@ -126,18 +125,17 @@ where
             let cache = member.build_verification_cache(inputs.iter());
             for input in inputs {
                 member
-                    .apply_input(&fake_ic, batch.transaction(), input, &cache)
+                    .apply_input(&fake_ic, &mut dbtx, input, &cache)
                     .expect("Faulty input");
             }
 
             for (out_point, output) in outputs {
                 member
-                    .apply_output(batch.transaction(), output, *out_point)
+                    .apply_output(&mut dbtx, output, *out_point)
                     .expect("Faulty output");
             }
 
             dbtx.commit_tx().expect("DB Error");
-            database.apply_batch(batch).expect("DB error");
 
             let mut batch = DbBatch::new();
             member

@@ -207,23 +207,21 @@ impl FederationModule for Mint {
         })
     }
 
-    fn apply_input<'a, 'b>(
+    fn apply_input<'a, 'b, 'c>(
         &'a self,
         interconnect: &'a dyn ModuleInterconect,
-        mut batch: BatchTx<'a>,
+        dbtx: &mut DatabaseTransaction<'c>,
         input: &'b Self::TxInput,
         cache: &Self::VerificationCache,
     ) -> Result<InputMeta<'b>, Self::Error> {
         let meta = self.validate_input(interconnect, cache, input)?;
 
-        batch.append_from_iter(input.iter_items().flat_map(|(amount, coin)| {
+        input.iter_items().for_each(|(amount, coin)| {
             let key = NonceKey(coin.0.clone());
-            vec![
-                BatchItem::insert_new(key.clone(), ()),
-                BatchItem::insert_new(MintAuditItemKey::Redemption(key), amount),
-            ]
-        }));
-        batch.commit();
+            dbtx.insert_new_entry(&key.clone(), &()).expect("DB Error");
+            dbtx.insert_new_entry(&MintAuditItemKey::Redemption(key), &amount)
+                .expect("DB Error");
+        });
 
         Ok(meta)
     }
@@ -242,9 +240,9 @@ impl FederationModule for Mint {
         }
     }
 
-    fn apply_output<'a>(
+    fn apply_output<'a, 'b>(
         &'a self,
-        mut batch: BatchTx<'a>,
+        dbtx: &mut DatabaseTransaction<'b>,
         output: &'a Self::TxOutput,
         out_point: OutPoint,
     ) -> Result<Amount, Self::Error> {
@@ -252,14 +250,18 @@ impl FederationModule for Mint {
         // TODO: get rid of clone
         let partial_sig = self.blind_sign(output.clone())?;
 
-        batch.append_insert_new(
-            ProposedPartialSignatureKey {
+        dbtx.insert_new_entry(
+            &ProposedPartialSignatureKey {
                 request_id: out_point,
             },
-            partial_sig,
-        );
-        batch.append_insert_new(MintAuditItemKey::Issuance(out_point), output.total_amount());
-        batch.commit();
+            &partial_sig,
+        )
+        .expect("DB Error");
+        dbtx.insert_new_entry(
+            &MintAuditItemKey::Issuance(out_point),
+            &output.total_amount(),
+        )
+        .expect("DB Error");
         Ok(output.total_amount())
     }
 

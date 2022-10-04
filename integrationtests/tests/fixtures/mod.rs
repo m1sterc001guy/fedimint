@@ -559,31 +559,29 @@ impl FederationTest {
         user.client
             .receive_coins(amount, OsRng::new().unwrap(), |tokens| {
                 for server in &self.servers {
-                    let mut batch = DbBatch::new();
-                    let mut batch_tx = batch.transaction();
+                    let mut svr = server.borrow_mut();
+                    let mut dbtx = svr.database.begin_transaction();
                     let transaction = fedimint_server::transaction::Transaction {
                         inputs: vec![],
                         outputs: vec![Output::Mint(tokens.clone())],
                         signature: None,
                     };
 
-                    batch_tx.append_insert(
-                        fedimint_server::db::AcceptedTransactionKey(out_point.txid),
-                        fedimint_server::consensus::AcceptedTransaction {
+                    dbtx.insert_entry(
+                        &fedimint_server::db::AcceptedTransactionKey(out_point.txid),
+                        &fedimint_server::consensus::AcceptedTransaction {
                             epoch: 0,
                             transaction,
                         },
-                    );
+                    )
+                    .expect("DB Error");
 
-                    batch_tx.commit();
-                    server
-                        .borrow_mut()
-                        .fedimint
+                    svr.fedimint
                         .consensus
                         .mint
-                        .apply_output(batch.transaction(), &tokens, out_point)
+                        .apply_output(&mut dbtx, &tokens, out_point)
                         .unwrap();
-                    server.borrow_mut().database.apply_batch(batch).unwrap();
+                    dbtx.commit_tx().expect("DB Error");
                 }
                 out_point
             });
