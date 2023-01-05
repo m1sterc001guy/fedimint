@@ -11,7 +11,7 @@ name = "fedimint_dummy"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = "1.0.66"
+anyhow = "1.0.68"
 async-trait = "0.1"
 futures = "0.3"
 fedimint-api = { path = "../../fedimint-api" }

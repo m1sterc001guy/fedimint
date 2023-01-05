@@ -11,6 +11,6 @@ name = "aead"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = "1.0.65"
+anyhow = "1.0.68"
 ring = "0.16.20"
 rand = "0.8"
