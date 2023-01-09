@@ -6,24 +6,48 @@ use fedimint_api::db::{DatabaseTransaction, PrefixIter};
 use fedimint_api::db::{IDatabase, IDatabaseTransaction};
 use fedimint_api::module::registry::ModuleDecoderRegistry;
 pub use rocksdb;
-use rocksdb::{OptimisticTransactionDB, OptimisticTransactionOptions, WriteOptions};
+use rocksdb::{OptimisticTransactionDB, OptimisticTransactionOptions, Options, WriteOptions};
 use tracing::warn;
 
 #[derive(Debug)]
-pub struct RocksDb(rocksdb::OptimisticTransactionDB);
+pub struct RocksDb(rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded>);
 
 pub struct RocksDbReadOnly(rocksdb::DB);
 
-pub struct RocksDbTransaction<'a>(rocksdb::Transaction<'a, rocksdb::OptimisticTransactionDB>);
+pub struct RocksDbTransaction<'a>(
+    rocksdb::Transaction<'a, rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded>>,
+    &'a RocksDb,
+);
 
 impl RocksDb {
     pub fn open(db_path: impl AsRef<Path>) -> Result<RocksDb, rocksdb::Error> {
-        let db: rocksdb::OptimisticTransactionDB =
-            rocksdb::OptimisticTransactionDB::<rocksdb::SingleThreaded>::open_default(&db_path)?;
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded> =
+            rocksdb::OptimisticTransactionDB::<rocksdb::MultiThreaded>::open_default(&db_path)?;
         Ok(RocksDb(db))
     }
 
-    pub fn inner(&self) -> &rocksdb::OptimisticTransactionDB {
+    pub fn open_cf(db_path: impl AsRef<Path>) -> Result<RocksDb, rocksdb::Error> {
+        //let mut opts = Options::default();
+        //opts.create_if_missing(true);
+        //let cfs = vec![ColumnFamilyDescriptor::new("Test", opts)];
+
+        //let default_db: rocksdb::OptimisticTransactionDB::<rocksdb::MultiThreaded> =
+        //    rocksdb::OptimisticTransactionDB::<rocksdb::MultiThreaded>::open_default(&db_path)?;
+        //default_db.create_cf("Test", &Options::default())?;
+
+        let mut opts_db = Options::default();
+        opts_db.create_if_missing(true);
+        opts_db.create_missing_column_families(true);
+        let db: rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded> =
+            rocksdb::OptimisticTransactionDB::<rocksdb::MultiThreaded>::open_cf(
+                &opts_db,
+                &db_path,
+                vec!["Test"],
+            )?;
+        Ok(RocksDb(db))
+    }
+
+    pub fn inner(&self) -> &rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded> {
         &self.0
     }
 }
@@ -36,13 +60,13 @@ impl RocksDbReadOnly {
     }
 }
 
-impl From<rocksdb::OptimisticTransactionDB> for RocksDb {
-    fn from(db: OptimisticTransactionDB) -> Self {
+impl From<rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded>> for RocksDb {
+    fn from(db: OptimisticTransactionDB<rocksdb::MultiThreaded>) -> Self {
         RocksDb(db)
     }
 }
 
-impl From<RocksDb> for rocksdb::OptimisticTransactionDB {
+impl From<RocksDb> for rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded> {
     fn from(db: RocksDb) -> Self {
         db.0
     }
@@ -56,6 +80,7 @@ impl IDatabase for RocksDb {
         let rocksdb_tx = RocksDbTransaction(
             self.0
                 .transaction_opt(&WriteOptions::default(), &optimistic_options),
+            self,
         );
         let mut tx = DatabaseTransaction::new(rocksdb_tx, decoders);
         tx.set_tx_savepoint().await;
@@ -66,8 +91,10 @@ impl IDatabase for RocksDb {
 #[async_trait]
 impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
     async fn raw_insert_bytes(&mut self, key: &[u8], value: Vec<u8>) -> Result<Option<Vec<u8>>> {
+        let cf = self.1 .0.cf_handle("Test").unwrap();
         let val = self.0.get(key).unwrap();
-        self.0.put(key, value)?;
+        //self.0.put(key, value)?;
+        self.0.put_cf(&cf, key, value)?;
         Ok(val)
     }
 
@@ -176,6 +203,15 @@ mod fedimint_rocksdb_tests {
         RocksDb::open(path).unwrap()
     }
 
+    fn open_temp_db_cf(temp_path: &str) -> RocksDb {
+        let path = tempfile::Builder::new()
+            .prefix(temp_path)
+            .tempdir()
+            .unwrap();
+
+        RocksDb::open_cf(path).unwrap()
+    }
+
     #[test_log::test(tokio::test)]
     async fn test_dbtx_insert_elements() {
         fedimint_api::db::verify_insert_elements(
@@ -265,6 +301,14 @@ mod fedimint_rocksdb_tests {
     async fn test_dbtx_remove_by_prefix() {
         fedimint_api::db::verify_remove_by_prefix(
             open_temp_db("fcb-rocksdb-test-remove-by-prefix").into(),
+        )
+        .await;
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn test_dbtx_partitioned() {
+        fedimint_api::db::verify_database_partition(
+            open_temp_db_cf("fcb-rocksdb-test-verify-partition").into(),
         )
         .await;
     }

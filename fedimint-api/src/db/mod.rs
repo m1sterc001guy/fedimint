@@ -58,7 +58,7 @@ pub trait DatabaseValue: Sized + SerializableDatabaseValue {
 pub type PrefixIter<'a> = Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>)>> + Send + 'a>;
 
 #[async_trait]
-pub trait IDatabase: Debug + Send + Sync {
+pub trait IDatabase: Debug + Send {
     async fn begin_transaction(&self, decoders: ModuleDecoderRegistry) -> DatabaseTransaction;
 }
 
@@ -878,5 +878,27 @@ mod tests {
         }
 
         assert_eq!(returned_keys, expected_keys);
+    }
+
+    pub async fn verify_database_partition(db_partitioned: Database) {
+        let mut dbtx = db_partitioned
+            .begin_transaction(ModuleDecoderRegistry::default())
+            .await;
+
+        assert!(dbtx
+            .insert_entry(&TestKey(1), &TestVal(2))
+            .await
+            .unwrap()
+            .is_none());
+        dbtx.commit_tx().await.expect("DB Error");
+
+        // Verify dbtx2 can see committed transactions
+        let mut dbtx2 = db_partitioned
+            .begin_transaction(ModuleDecoderRegistry::default())
+            .await;
+        assert_eq!(
+            dbtx2.get_value(&TestKey(1)).await.unwrap(),
+            Some(TestVal(2))
+        );
     }
 }
