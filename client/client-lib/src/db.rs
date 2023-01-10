@@ -5,6 +5,8 @@ use strum_macros::EnumIter;
 
 use crate::ClientSecret;
 
+pub const CLIENT_PARTITION: &str = "Client";
+
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]
 pub enum DbKeyPrefix {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use fedimint_api::config::{ClientModuleConfig, ConfigGenParams, ServerModuleConfig};
 use fedimint_api::db::mem_impl::MemDatabase;
-use fedimint_api::db::{Database, DatabaseTransaction};
+use fedimint_api::db::{Database, DatabaseTransaction, DEFAULT_PARTITION};
 use fedimint_api::module::interconnect::ModuleInterconect;
 use fedimint_api::module::registry::ModuleDecoderRegistry;
 use fedimint_api::module::{ApiError, InputMeta, ModuleError, ModuleInit, TransactionItemAmount};
@@ -94,7 +94,9 @@ where
 
         let mut results = vec![];
         for (_, member, db) in &self.members {
-            let mut dbtx = db.begin_transaction(self.decoders()).await;
+            let mut dbtx = db
+                .begin_transaction(self.decoders(), member.module_name())
+                .await;
             results.push(member_validate(member, &mut dbtx, &fake_ic, input).await);
             dbtx.commit_tx().await.expect("DB tx failed");
         }
@@ -107,7 +109,12 @@ where
         for (_, member, db) in self.members.iter() {
             results.push(
                 member
-                    .validate_output(&mut db.begin_transaction(self.decoders()).await, output)
+                    .validate_output(
+                        &mut db
+                            .begin_transaction(self.decoders(), member.module_name())
+                            .await,
+                        output,
+                    )
                     .await
                     .is_err(),
             );
@@ -139,7 +146,11 @@ where
         for (id, member, db) in &mut self.members {
             consensus.extend(
                 member
-                    .consensus_proposal(&mut db.begin_transaction(decoders.clone()).await)
+                    .consensus_proposal(
+                        &mut db
+                            .begin_transaction(decoders.clone(), member.module_name())
+                            .await,
+                    )
                     .await
                     .into_iter()
                     .map(|ci| (*id, ci)),
@@ -150,7 +161,9 @@ where
         let decoders = self.decoders();
         for (_peer, member, db) in &mut self.members {
             let database = db as &mut Database;
-            let mut dbtx = database.begin_transaction(decoders.clone()).await;
+            let mut dbtx = database
+                .begin_transaction(decoders.clone(), member.module_name())
+                .await;
 
             member
                 .begin_consensus_epoch(&mut dbtx, consensus.clone())
@@ -173,7 +186,9 @@ where
 
             dbtx.commit_tx().await.expect("DB Error");
 
-            let mut dbtx = database.begin_transaction(decoders.clone()).await;
+            let mut dbtx = database
+                .begin_transaction(decoders.clone(), DEFAULT_PARTITION)
+                .await;
             member.end_consensus_epoch(&peers, &mut dbtx).await;
 
             dbtx.commit_tx().await.expect("DB Error");
@@ -189,29 +204,22 @@ where
         for (_, member, db) in self.members.iter() {
             results.push(
                 member
-                    .output_status(&mut db.begin_transaction(self.decoders()).await, out_point)
+                    .output_status(
+                        &mut db
+                            .begin_transaction(self.decoders(), member.module_name())
+                            .await,
+                        out_point,
+                    )
                     .await,
             );
         }
         assert_all_equal(results.into_iter())
     }
 
-    pub async fn patch_dbs<U>(&mut self, update: U)
-    where
-        U: Fn(&mut DatabaseTransaction),
-    {
-        let decoders = self.decoders();
-        for (_, _, db) in &mut self.members {
-            let mut dbtx = db.begin_transaction(decoders.clone()).await;
-            update(&mut dbtx);
-            dbtx.commit_tx().await.expect("DB Error");
-        }
-    }
-
     pub async fn generate_fake_utxo(&mut self) {
         let decoders = self.decoders();
         for (_, _, db) in &mut self.members {
-            let mut dbtx = db.begin_transaction(decoders.clone()).await;
+            let mut dbtx = db.begin_transaction(decoders.clone(), "Wallet").await;
             let out_point = bitcoin::OutPoint::default();
             let tweak = [42; 32];
             let utxo = fedimint_wallet::SpendableUTXO {

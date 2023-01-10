@@ -34,6 +34,7 @@ use thiserror::Error;
 use self::db::ConfirmedInvoiceKey;
 use self::incoming::ConfirmedInvoice;
 use crate::api::ApiError;
+use crate::db::CLIENT_PARTITION;
 use crate::ln::db::{OutgoingPaymentKey, OutgoingPaymentKeyPrefix};
 use crate::ln::incoming::IncomingContractAccount;
 use crate::ln::outgoing::{OutgoingContractAccount, OutgoingContractData};
@@ -203,7 +204,7 @@ impl LnClient {
         // TODO: unify block height type
         self.context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await
             .find_by_prefix(&OutgoingPaymentKeyPrefix)
             .await
@@ -271,7 +272,7 @@ impl LnClient {
         let mut dbtx = self
             .context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await;
         dbtx.insert_entry(&ConfirmedInvoiceKey(invoice.contract_id()), invoice)
             .await
@@ -283,7 +284,7 @@ impl LnClient {
         let confirmed_invoice = self
             .context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await
             .get_value(&ConfirmedInvoiceKey(contract_id))
             .await
@@ -361,6 +362,7 @@ mod tests {
     use url::Url;
 
     use crate::api::IFederationApi;
+    use crate::db::CLIENT_PARTITION;
     use crate::ln::LnClient;
     use crate::{ClientContext, LegacyTransaction};
 
@@ -408,7 +410,9 @@ mod tests {
                 .await
                 .fetch_from_all(|m, db| async {
                     m.get_contract_account(
-                        &mut db.begin_transaction(ModuleDecoderRegistry::default()).await,
+                        &mut db
+                            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
+                            .await,
                         contract,
                     )
                     .await
@@ -546,7 +550,7 @@ mod tests {
         let mut dbtx = client
             .context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await;
         let output = client
             .create_outgoing_output(&mut dbtx, invoice.clone(), &gateway, timelock, &mut rng)

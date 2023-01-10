@@ -56,6 +56,8 @@ where
 pub trait IServerModule: Debug {
     fn module_key(&self) -> ModuleKey;
 
+    fn module_name(&self) -> &str;
+
     /// Returns the decoder belonging to the server module
     fn decoder(&self) -> Decoder;
 
@@ -187,6 +189,10 @@ where
 {
     fn module_key(&self) -> ModuleKey {
         <Self as ServerModulePlugin>::module_key(self)
+    }
+
+    fn module_name(&self) -> &str {
+        <Self as ServerModulePlugin>::module_name(self)
     }
 
     fn decoder(&self) -> Decoder {

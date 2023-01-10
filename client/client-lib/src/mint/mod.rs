@@ -27,6 +27,7 @@ use thiserror::Error;
 use tracing::{debug, trace, warn};
 
 use crate::api::ApiError;
+use crate::db::CLIENT_PARTITION;
 use crate::mint::db::{NextECashNoteIndexKey, NotesPerDenominationKey, PendingCoinsKey};
 use crate::utils::ClientContext;
 use crate::{ChildId, DerivableSecret, MintModuleDecoder};
@@ -183,7 +184,7 @@ impl MintClient {
     pub async fn start_dbtx(&self) -> DatabaseTransaction<'_> {
         self.context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await
     }
 
@@ -434,7 +435,7 @@ impl MintClient {
         let issuance = self
             .context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await
             .get_value(&OutputFinalizationKey(outpoint))
             .await
@@ -472,7 +473,7 @@ impl MintClient {
     pub async fn list_active_issuances(&self) -> Vec<(OutPoint, NoteIssuanceRequests)> {
         self.context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await
             .find_by_prefix(&OutputFinalizationKeyPrefix)
             .await
@@ -495,7 +496,7 @@ impl MintClient {
                 let mut dbtx = self
                     .context
                     .db
-                    .begin_transaction(ModuleDecoderRegistry::default())
+                    .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
                     .await;
                 match self.fetch_coins(&mut dbtx, out_point).await {
                     Ok(_) => {
@@ -691,6 +692,7 @@ mod tests {
     use threshold_crypto::PublicKey;
 
     use crate::api::{IFederationApi, WsFederationApi};
+    use crate::db::CLIENT_PARTITION;
     use crate::mint::db::NextECashNoteIndexKey;
     use crate::mint::MintClient;
     use crate::{
@@ -847,7 +849,7 @@ mod tests {
         let out_point = OutPoint { txid, out_idx: 0 };
 
         let mut dbtx = client_db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await;
         client
             .receive_coins(amt, &mut dbtx, |output| async {
@@ -903,7 +905,7 @@ mod tests {
         let dbtx = client
             .context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await;
         let mut builder = TransactionBuilder::default();
         let secp = &client.context.secp;
@@ -946,7 +948,7 @@ mod tests {
         let dbtx = client
             .context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await;
         let mut builder = TransactionBuilder::default();
         let coins = client.select_coins(SPEND_AMOUNT).await.unwrap();
@@ -1009,7 +1011,10 @@ mod tests {
                             let mut dbtx = client
                                 .context
                                 .db
-                                .begin_transaction(ModuleDecoderRegistry::default())
+                                .begin_transaction(
+                                    ModuleDecoderRegistry::default(),
+                                    CLIENT_PARTITION,
+                                )
                                 .await;
                             let (_, nonce) = client
                                 .new_ecash_note(secp256k1_zkp::SECP256K1, amount, &mut dbtx)
@@ -1044,7 +1049,7 @@ mod tests {
         let last_idx = client
             .context
             .db
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
             .await
             .get_value(&NextECashNoteIndexKey(amount))
             .await

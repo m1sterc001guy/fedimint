@@ -27,14 +27,6 @@ impl RocksDb {
     }
 
     pub fn open_cf(db_path: impl AsRef<Path>) -> Result<RocksDb, rocksdb::Error> {
-        //let mut opts = Options::default();
-        //opts.create_if_missing(true);
-        //let cfs = vec![ColumnFamilyDescriptor::new("Test", opts)];
-
-        //let default_db: rocksdb::OptimisticTransactionDB::<rocksdb::MultiThreaded> =
-        //    rocksdb::OptimisticTransactionDB::<rocksdb::MultiThreaded>::open_default(&db_path)?;
-        //default_db.create_cf("Test", &Options::default())?;
-
         let mut opts_db = Options::default();
         opts_db.create_if_missing(true);
         opts_db.create_missing_column_families(true);
@@ -42,7 +34,7 @@ impl RocksDb {
             rocksdb::OptimisticTransactionDB::<rocksdb::MultiThreaded>::open_cf(
                 &opts_db,
                 &db_path,
-                vec!["Test"],
+                vec!["test"],
             )?;
         Ok(RocksDb(db))
     }
@@ -74,7 +66,11 @@ impl From<RocksDb> for rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded> 
 
 #[async_trait]
 impl IDatabase for RocksDb {
-    async fn begin_transaction(&self, decoders: ModuleDecoderRegistry) -> DatabaseTransaction {
+    async fn begin_transaction(
+        &self,
+        decoders: ModuleDecoderRegistry,
+        partition: &str,
+    ) -> DatabaseTransaction {
         let mut optimistic_options = OptimisticTransactionOptions::default();
         optimistic_options.set_snapshot(true);
         let rocksdb_tx = RocksDbTransaction(
@@ -82,7 +78,7 @@ impl IDatabase for RocksDb {
                 .transaction_opt(&WriteOptions::default(), &optimistic_options),
             self,
         );
-        let mut tx = DatabaseTransaction::new(rocksdb_tx, decoders);
+        let mut tx = DatabaseTransaction::new(rocksdb_tx, decoders, partition.to_string());
         tx.set_tx_savepoint().await;
         tx
     }
@@ -90,16 +86,29 @@ impl IDatabase for RocksDb {
 
 #[async_trait]
 impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
-    async fn raw_insert_bytes(&mut self, key: &[u8], value: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let cf = self.1 .0.cf_handle("Test").unwrap();
-        let val = self.0.get(key).unwrap();
-        //self.0.put(key, value)?;
-        self.0.put_cf(&cf, key, value)?;
-        Ok(val)
+    async fn raw_insert_bytes(
+        &mut self,
+        key: &[u8],
+        value: Vec<u8>,
+        partition: &String,
+    ) -> Result<Option<Vec<u8>>> {
+        let cf = self.1 .0.cf_handle(partition.as_str());
+        match cf {
+            Some(cf) => {
+                let val = self.0.get(key).unwrap();
+                self.0.put_cf(&cf, key, value)?;
+                Ok(val)
+            }
+            None => Ok(None),
+        }
     }
 
-    async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.snapshot().get(key)?)
+    async fn raw_get_bytes(&mut self, key: &[u8], partition: &String) -> Result<Option<Vec<u8>>> {
+        let cf = self.1 .0.cf_handle(partition.as_str());
+        match cf {
+            Some(cf) => Ok(self.0.snapshot().get_cf(&cf, key)?),
+            None => Ok(None),
+        }
     }
 
     async fn raw_remove_entry(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -149,11 +158,16 @@ impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
 
 #[async_trait]
 impl IDatabaseTransaction<'_> for RocksDbReadOnly {
-    async fn raw_insert_bytes(&mut self, _key: &[u8], _value: Vec<u8>) -> Result<Option<Vec<u8>>> {
+    async fn raw_insert_bytes(
+        &mut self,
+        _key: &[u8],
+        _value: Vec<u8>,
+        _partition: &String,
+    ) -> Result<Option<Vec<u8>>> {
         panic!("Cannot insert into a read only transaction");
     }
 
-    async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn raw_get_bytes(&mut self, key: &[u8], _partition: &String) -> Result<Option<Vec<u8>>> {
         Ok(self.0.get(key)?)
     }
 

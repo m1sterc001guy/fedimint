@@ -10,6 +10,8 @@ use strum_macros::EnumIter;
 use crate::consensus::AcceptedTransaction;
 use crate::transaction::Transaction;
 
+pub const DEFAULT_PARTITION: &str = "fedimint";
+
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]
 pub enum DbKeyPrefix {

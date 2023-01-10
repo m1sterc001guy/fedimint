@@ -53,9 +53,17 @@ impl SqliteDb {
 
 #[async_trait]
 impl IDatabase for SqliteDb {
-    async fn begin_transaction(&self, decoders: ModuleDecoderRegistry) -> DatabaseTransaction {
+    async fn begin_transaction(
+        &self,
+        decoders: ModuleDecoderRegistry,
+        partition: &str,
+    ) -> DatabaseTransaction {
         let sqlite_dbtx = self.0.begin().await.unwrap();
-        let mut tx = DatabaseTransaction::new(SqliteDbTransaction(sqlite_dbtx), decoders);
+        let mut tx = DatabaseTransaction::new(
+            SqliteDbTransaction(sqlite_dbtx),
+            decoders,
+            partition.to_string(),
+        );
         tx.set_tx_savepoint().await;
         tx
     }
@@ -63,8 +71,13 @@ impl IDatabase for SqliteDb {
 
 #[async_trait]
 impl<'a> IDatabaseTransaction<'a> for SqliteDbTransaction<'a> {
-    async fn raw_insert_bytes(&mut self, key: &[u8], value: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let val = self.raw_get_bytes(key).await.unwrap();
+    async fn raw_insert_bytes(
+        &mut self,
+        key: &[u8],
+        value: Vec<u8>,
+        partition: &String,
+    ) -> Result<Option<Vec<u8>>> {
+        let val = self.raw_get_bytes(key, partition).await.unwrap();
         let query_prepared = sqlx::query("INSERT INTO kv (key, value) VALUES (?, ?)")
             .bind(key)
             .bind(value);
@@ -72,7 +85,7 @@ impl<'a> IDatabaseTransaction<'a> for SqliteDbTransaction<'a> {
         Ok(val)
     }
 
-    async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn raw_get_bytes(&mut self, key: &[u8], partition: &String) -> Result<Option<Vec<u8>>> {
         let query_prepared =
             sqlx::query("SELECT value FROM kv WHERE key = ? ORDER BY value DESC LIMIT 1").bind(key);
         self.0

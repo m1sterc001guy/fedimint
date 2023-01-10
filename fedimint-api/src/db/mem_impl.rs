@@ -46,7 +46,11 @@ impl MemDatabase {
 
 #[async_trait]
 impl IDatabase for MemDatabase {
-    async fn begin_transaction(&self, decoders: ModuleDecoderRegistry) -> DatabaseTransaction {
+    async fn begin_transaction(
+        &self,
+        decoders: ModuleDecoderRegistry,
+        partition: &str,
+    ) -> DatabaseTransaction {
         let db_copy = self.data.lock().unwrap().clone();
         let memtx = MemTransaction {
             operations: Vec::new(),
@@ -57,7 +61,7 @@ impl IDatabase for MemDatabase {
             num_savepoint_operations: 0,
         };
 
-        let mut tx = DatabaseTransaction::new(memtx, decoders);
+        let mut tx = DatabaseTransaction::new(memtx, decoders, partition.to_string());
         tx.set_tx_savepoint().await;
         tx
     }
@@ -67,8 +71,13 @@ impl IDatabase for MemDatabase {
 // as it doesn't properly implement MVCC
 #[async_trait]
 impl<'a> IDatabaseTransaction<'a> for MemTransaction<'a> {
-    async fn raw_insert_bytes(&mut self, key: &[u8], value: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let val = self.raw_get_bytes(key).await;
+    async fn raw_insert_bytes(
+        &mut self,
+        key: &[u8],
+        value: Vec<u8>,
+        partition: &String,
+    ) -> Result<Option<Vec<u8>>> {
+        let val = self.raw_get_bytes(key, partition).await;
         // Insert data from copy so we can read our own writes
         self.tx_data.insert(key.to_vec(), value.clone());
         self.operations
@@ -80,7 +89,7 @@ impl<'a> IDatabaseTransaction<'a> for MemTransaction<'a> {
         val
     }
 
-    async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn raw_get_bytes(&mut self, key: &[u8], partition: &String) -> Result<Option<Vec<u8>>> {
         Ok(self.tx_data.get(key).cloned())
     }
 

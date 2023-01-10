@@ -250,6 +250,8 @@ pub trait ServerModulePlugin: Debug + Sized {
 
     fn module_key(&self) -> ModuleKey;
 
+    fn module_name(&self) -> &str;
+
     fn decoder(&self) -> &'static Self::Decoder;
 
     /// Blocks until a new `consensus_proposal` is available.

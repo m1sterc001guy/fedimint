@@ -341,6 +341,10 @@ impl ServerModulePlugin for LightningModule {
         MODULE_KEY_LN
     }
 
+    fn module_name(&self) -> &str {
+        "Lightning"
+    }
+
     fn decoder(&self) -> &'static Self::Decoder {
         &LightningModuleDecoder
     }

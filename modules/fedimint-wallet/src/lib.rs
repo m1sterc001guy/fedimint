@@ -396,6 +396,10 @@ impl ServerModulePlugin for Wallet {
         MODULE_KEY_WALLET
     }
 
+    fn module_name(&self) -> &str {
+        "Wallet"
+    }
+
     fn decoder(&self) -> &'static Self::Decoder {
         &WalletModuleDecoder
     }
@@ -1499,6 +1503,8 @@ pub async fn run_broadcast_pending_tx(db: Database, rpc: BitcoindRpc, tg_handle:
             db.begin_transaction(
                 /* we do not expect any module-specific types here, so no decoders should be OK */
                 Default::default(),
+                // TODO: Get this from module?
+                "wallet",
             )
             .await,
             &rpc,

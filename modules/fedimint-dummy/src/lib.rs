@@ -187,6 +187,10 @@ impl ServerModulePlugin for Dummy {
         MODULE_KEY_DUMMY
     }
 
+    fn module_name(&self) -> &str {
+        "Dummy"
+    }
+
     fn decoder(&self) -> &'static Self::Decoder {
         &DummyModuleDecoder
     }

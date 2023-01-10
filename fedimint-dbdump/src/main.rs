@@ -645,6 +645,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    todo!()
+    /*
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
@@ -694,4 +696,5 @@ async fn main() {
     };
 
     dbdump.dump_database().await;
+    */
 }

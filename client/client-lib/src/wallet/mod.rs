@@ -18,6 +18,7 @@ use rand::{CryptoRng, RngCore};
 use thiserror::Error;
 use tracing::debug;
 
+use crate::db::CLIENT_PARTITION;
 use crate::utils::ClientContext;
 use crate::ApiError;
 
@@ -113,7 +114,7 @@ impl WalletClient {
                 let result = self
                     .context
                     .db
-                    .begin_transaction(ModuleDecoderRegistry::default())
+                    .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
                     .await
                     .get_value(&PegInKey {
                         peg_in_script: out.script_pubkey.clone(),
@@ -219,6 +220,7 @@ mod tests {
     use threshold_crypto::PublicKey;
 
     use crate::api::IFederationApi;
+    use crate::db::CLIENT_PARTITION;
     use crate::wallet::WalletClient;
     use crate::{ClientContext, LegacyTransaction};
 
@@ -441,7 +443,9 @@ mod tests {
             .fetch_from_all(|wallet, db| async {
                 wallet
                     .get_wallet_value(
-                        &mut db.begin_transaction(ModuleDecoderRegistry::default()).await,
+                        &mut db
+                            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
+                            .await,
                     )
                     .await
             })
@@ -459,7 +463,9 @@ mod tests {
             .fetch_from_all(|wallet, db| async {
                 wallet
                     .get_wallet_value(
-                        &mut db.begin_transaction(ModuleDecoderRegistry::default()).await,
+                        &mut db
+                            .begin_transaction(ModuleDecoderRegistry::default(), CLIENT_PARTITION)
+                            .await,
                     )
                     .await
             })

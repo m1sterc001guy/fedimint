@@ -59,7 +59,11 @@ pub type PrefixIter<'a> = Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>)>> + 
 
 #[async_trait]
 pub trait IDatabase: Debug + Send {
-    async fn begin_transaction(&self, decoders: ModuleDecoderRegistry) -> DatabaseTransaction;
+    async fn begin_transaction(
+        &self,
+        decoders: ModuleDecoderRegistry,
+        partition: &str,
+    ) -> DatabaseTransaction;
 }
 
 dyn_newtype_define! {
@@ -67,6 +71,8 @@ dyn_newtype_define! {
     #[derive(Clone)]
     pub Database(Arc<IDatabase>)
 }
+
+pub const DEFAULT_PARTITION: &str = "fedimint";
 
 /// Fedimint requires that the database implementation implement Snapshot Isolation.
 /// Snapshot Isolation is a database isolation level that guarantees consistent reads
@@ -97,9 +103,14 @@ dyn_newtype_define! {
 /// | RocksDB  | Prevented          | Prevented  | Prevented           | Prevented      | Prevented   |
 #[async_trait]
 pub trait IDatabaseTransaction<'a>: 'a + Send {
-    async fn raw_insert_bytes(&mut self, key: &[u8], value: Vec<u8>) -> Result<Option<Vec<u8>>>;
+    async fn raw_insert_bytes(
+        &mut self,
+        key: &[u8],
+        value: Vec<u8>,
+        partition: &String,
+    ) -> Result<Option<Vec<u8>>>;
 
-    async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    async fn raw_get_bytes(&mut self, key: &[u8], partition: &String) -> Result<Option<Vec<u8>>>;
 
     async fn raw_remove_entry(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>;
 
@@ -152,6 +163,7 @@ pub struct DatabaseTransaction<'a> {
     tx: Box<dyn IDatabaseTransaction<'a> + Send + 'a>,
     decoders: ModuleDecoderRegistry,
     commit_tracker: CommitTracker,
+    partition: String,
 }
 
 impl<'a> std::ops::Deref for DatabaseTransaction<'a> {
@@ -172,6 +184,7 @@ impl<'a> DatabaseTransaction<'a> {
     pub fn new<I: IDatabaseTransaction<'a> + Send + 'a>(
         dbtx: I,
         decoders: ModuleDecoderRegistry,
+        partition: String,
     ) -> DatabaseTransaction<'a> {
         DatabaseTransaction {
             tx: Box::new(dbtx),
@@ -180,6 +193,7 @@ impl<'a> DatabaseTransaction<'a> {
                 is_committed: false,
                 has_writes: false,
             },
+            partition: partition,
         }
     }
 
@@ -197,7 +211,7 @@ impl<'a> DatabaseTransaction<'a> {
         K: DatabaseKey + DatabaseKeyPrefixConst,
     {
         let key_bytes = key.to_bytes();
-        let value_bytes = match self.tx.raw_get_bytes(&key_bytes).await? {
+        let value_bytes = match self.tx.raw_get_bytes(&key_bytes, &self.partition).await? {
             Some(value) => value,
             None => return Ok(None),
         };
@@ -240,9 +254,10 @@ impl<'a> DatabaseTransaction<'a> {
     where
         K: DatabaseKey + DatabaseKeyPrefixConst,
     {
+        let partition = self.partition.clone();
         self.commit_tracker.has_writes = true;
         match self
-            .raw_insert_bytes(&key.to_bytes(), value.to_bytes())
+            .raw_insert_bytes(&key.to_bytes(), value.to_bytes(), &partition)
             .await?
         {
             Some(old_val_bytes) => {
@@ -265,9 +280,10 @@ impl<'a> DatabaseTransaction<'a> {
     where
         K: DatabaseKey + DatabaseKeyPrefixConst,
     {
+        let partition = self.partition.clone();
         self.commit_tracker.has_writes = true;
         match self
-            .raw_insert_bytes(&key.to_bytes(), value.to_bytes())
+            .raw_insert_bytes(&key.to_bytes(), value.to_bytes(), &partition)
             .await?
         {
             Some(_) => {
@@ -456,8 +472,12 @@ mod tests {
     #[derive(Debug, Encodable, Decodable, Eq, PartialEq)]
     struct TestVal(u64);
 
+    const TEST_PARTITION: &str = "test";
+
     pub async fn verify_insert_elements(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert!(dbtx
             .insert_entry(&TestKey(1), &TestVal(2))
             .await
@@ -474,7 +494,9 @@ mod tests {
     }
 
     pub async fn verify_remove_nonexisting(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert_eq!(dbtx.get_value(&TestKey(1)).await.unwrap(), None);
         let removed = dbtx.remove_entry(&TestKey(1)).await;
         assert!(removed.is_ok());
@@ -484,7 +506,9 @@ mod tests {
     }
 
     pub async fn verify_remove_existing(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx
             .insert_entry(&TestKey(1), &TestVal(2))
@@ -504,7 +528,9 @@ mod tests {
     }
 
     pub async fn verify_read_own_writes(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx
             .insert_entry(&TestKey(1), &TestVal(2))
@@ -519,7 +545,9 @@ mod tests {
     }
 
     pub async fn verify_prevent_dirty_reads(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx
             .insert_entry(&TestKey(1), &TestVal(2))
@@ -528,7 +556,9 @@ mod tests {
             .is_none());
 
         // dbtx2 should not be able to see uncommitted changes
-        let mut dbtx2 = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx2 = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert_eq!(dbtx2.get_value(&TestKey(1)).await.unwrap(), None);
 
         // Commit to surpress the warning message
@@ -536,7 +566,9 @@ mod tests {
     }
 
     pub async fn verify_find_by_prefix(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert!(dbtx
             .insert_entry(&TestKey(55), &TestVal(9999))
             .await
@@ -557,7 +589,9 @@ mod tests {
         dbtx.commit_tx().await.expect("DB Error");
 
         // Verify finding by prefix returns the correct set of key pairs
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         let mut returned_keys = 0;
         let expected_keys = 2;
         for res in dbtx.find_by_prefix(&DbPrefixTestPrefix).await {
@@ -600,7 +634,9 @@ mod tests {
     }
 
     pub async fn verify_commit(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx
             .insert_entry(&TestKey(1), &TestVal(2))
@@ -610,7 +646,9 @@ mod tests {
         dbtx.commit_tx().await.expect("DB Error");
 
         // Verify dbtx2 can see committed transactions
-        let mut dbtx2 = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx2 = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert_eq!(
             dbtx2.get_value(&TestKey(1)).await.unwrap(),
             Some(TestVal(2))
@@ -618,7 +656,9 @@ mod tests {
     }
 
     pub async fn verify_rollback_to_savepoint(db: Database) {
-        let mut dbtx_rollback = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx_rollback = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx_rollback
             .insert_entry(&TestKey(20), &TestVal(2000))
@@ -655,10 +695,14 @@ mod tests {
     }
 
     pub async fn verify_prevent_nonrepeatable_reads(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert_eq!(dbtx.get_value(&TestKey(100)).await.unwrap(), None);
 
-        let mut dbtx2 = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx2 = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx2
             .insert_entry(&TestKey(100), &TestVal(101))
@@ -691,7 +735,9 @@ mod tests {
     }
 
     pub async fn verify_phantom_entry(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx
             .insert_entry(&TestKey(100), &TestVal(101))
@@ -705,7 +751,9 @@ mod tests {
 
         dbtx.commit_tx().await.expect("DB Error");
 
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         let mut returned_keys = 0;
         let expected_keys = 2;
         for res in dbtx.find_by_prefix(&DbPrefixTestPrefix).await {
@@ -726,7 +774,9 @@ mod tests {
 
         assert_eq!(returned_keys, expected_keys);
 
-        let mut dbtx2 = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx2 = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx2
             .insert_entry(&TestKey(102), &TestVal(103))
@@ -756,15 +806,21 @@ mod tests {
     }
 
     pub async fn expect_write_conflict(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert!(dbtx
             .insert_entry(&TestKey(100), &TestVal(101))
             .await
             .is_ok());
         dbtx.commit_tx().await.expect("DB Error");
 
-        let mut dbtx2 = db.begin_transaction(ModuleDecoderRegistry::default()).await;
-        let mut dbtx3 = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx2 = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
+        let mut dbtx3 = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx2
             .insert_entry(&TestKey(100), &TestVal(102))
@@ -787,7 +843,9 @@ mod tests {
     }
 
     pub async fn verify_string_prefix(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         assert!(dbtx
             .insert_entry(&PercentTestKey(100), &TestVal(101))
             .await
@@ -837,7 +895,9 @@ mod tests {
     }
 
     pub async fn verify_remove_by_prefix(db: Database) {
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
 
         assert!(dbtx
             .insert_entry(&TestKey(100), &TestVal(101))
@@ -851,14 +911,18 @@ mod tests {
 
         dbtx.commit_tx().await.expect("DB Error");
 
-        let mut remove_dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut remove_dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         remove_dbtx
             .remove_by_prefix(&DbPrefixTestPrefix)
             .await
             .expect("DB Error");
         remove_dbtx.commit_tx().await.expect("DB Error");
 
-        let mut dbtx = db.begin_transaction(ModuleDecoderRegistry::default()).await;
+        let mut dbtx = db
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
+            .await;
         let mut returned_keys = 0;
         let expected_keys = 0;
         for res in dbtx.find_by_prefix(&DbPrefixTestPrefix).await {
@@ -882,7 +946,7 @@ mod tests {
 
     pub async fn verify_database_partition(db_partitioned: Database) {
         let mut dbtx = db_partitioned
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
             .await;
 
         assert!(dbtx
@@ -894,7 +958,7 @@ mod tests {
 
         // Verify dbtx2 can see committed transactions
         let mut dbtx2 = db_partitioned
-            .begin_transaction(ModuleDecoderRegistry::default())
+            .begin_transaction(ModuleDecoderRegistry::default(), TEST_PARTITION)
             .await;
         assert_eq!(
             dbtx2.get_value(&TestKey(1)).await.unwrap(),

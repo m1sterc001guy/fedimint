@@ -52,14 +52,18 @@ impl From<SledDb> for sled::Tree {
 // TODO: maybe make the concrete impl its own crate
 #[async_trait]
 impl IDatabase for SledDb {
-    async fn begin_transaction(&self, decoders: ModuleDecoderRegistry) -> DatabaseTransaction {
+    async fn begin_transaction(
+        &self,
+        decoders: ModuleDecoderRegistry,
+        partition: &str,
+    ) -> DatabaseTransaction {
         let sled_tx = SledTransaction {
             operations: Vec::new(),
             db: self,
             num_pending_operations: 0,
             num_savepoint_operations: 0,
         };
-        let mut tx = DatabaseTransaction::new(sled_tx, decoders);
+        let mut tx = DatabaseTransaction::new(sled_tx, decoders, partition.to_string());
         tx.set_tx_savepoint().await;
         tx
     }
@@ -69,8 +73,13 @@ impl IDatabase for SledDb {
 // as it doesn't properly implement MVCC
 #[async_trait]
 impl<'a> IDatabaseTransaction<'a> for SledTransaction<'a> {
-    async fn raw_insert_bytes(&mut self, key: &[u8], value: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let val = self.raw_get_bytes(key).await;
+    async fn raw_insert_bytes(
+        &mut self,
+        key: &[u8],
+        value: Vec<u8>,
+        partition: &String,
+    ) -> Result<Option<Vec<u8>>> {
+        let val = self.raw_get_bytes(key, partition).await;
         self.operations
             .push(DatabaseOperation::Insert(DatabaseInsertOperation {
                 key: key.to_vec(),
@@ -80,7 +89,7 @@ impl<'a> IDatabaseTransaction<'a> for SledTransaction<'a> {
         val
     }
 
-    async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn raw_get_bytes(&mut self, key: &[u8], partition: &String) -> Result<Option<Vec<u8>>> {
         let mut val: Option<Vec<u8>> = None;
         let mut deleted = false;
         // First iterate through pending writes to support "read our own writes"
@@ -114,7 +123,7 @@ impl<'a> IDatabaseTransaction<'a> for SledTransaction<'a> {
     }
 
     async fn raw_remove_entry(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let ret = self.raw_get_bytes(key).await;
+        let ret = self.raw_get_bytes(key, &"test".to_string()).await;
         self.operations
             .push(DatabaseOperation::Delete(DatabaseDeleteOperation {
                 key: key.to_vec(),

@@ -360,6 +360,10 @@ impl ServerModulePlugin for Mint {
         MODULE_KEY_MINT
     }
 
+    fn module_name(&self) -> &str {
+        "Mint"
+    }
+
     fn decoder(&self) -> &'static Self::Decoder {
         &MintModuleDecoder
     }

@@ -25,7 +25,7 @@ use fedimint_api::core::{
     MODULE_KEY_WALLET,
 };
 use fedimint_api::db::mem_impl::MemDatabase;
-use fedimint_api::db::Database;
+use fedimint_api::db::{Database, DEFAULT_PARTITION};
 use fedimint_api::module::registry::{ModuleDecoderRegistry, ModuleRegistry};
 use fedimint_api::module::ModuleInit;
 use fedimint_api::net::peers::IMuxPeerConnections;
@@ -742,7 +742,10 @@ impl FederationTest {
         for server in &self.servers {
             block_on(async {
                 let svr = server.borrow_mut();
-                let mut dbtx = svr.database.begin_transaction(self.decoders.clone()).await;
+                let mut dbtx = svr
+                    .database
+                    .begin_transaction(self.decoders.clone(), "Wallet")
+                    .await;
 
                 dbtx.insert_new_entry(
                     &UTXOKey(input.outpoint()),
@@ -793,7 +796,10 @@ impl FederationTest {
             .receive_coins(amount, |tokens| async move {
                 for server in &self.servers {
                     let svr = server.borrow_mut();
-                    let mut dbtx = svr.database.begin_transaction(self.decoders.clone()).await;
+                    let mut dbtx = svr
+                        .database
+                        .begin_transaction(self.decoders.clone(), DEFAULT_PARTITION)
+                        .await;
                     let transaction = fedimint_server::transaction::Transaction {
                         inputs: vec![],
                         outputs: vec![MintOutput(tokens.clone()).into()],
@@ -830,7 +836,10 @@ impl FederationTest {
     pub async fn broadcast_transactions(&self) {
         for server in &self.servers {
             let svr = server.borrow();
-            let dbtx = block_on(svr.database.begin_transaction(self.decoders.clone()));
+            let dbtx = block_on(
+                svr.database
+                    .begin_transaction(self.decoders.clone(), "Wallet"),
+            );
             block_on(fedimint_wallet::broadcast_pending_tx(
                 dbtx,
                 &svr.bitcoin_rpc,
@@ -886,7 +895,7 @@ impl FederationTest {
             server
                 .consensus
                 .db
-                .begin_transaction(server.decoders.clone()),
+                .begin_transaction(server.decoders.clone(), DEFAULT_PARTITION),
         );
         let height = block_on(wallet.consensus_height(&mut dbtx)).unwrap_or(0);
         let proposal = block_on(server.consensus.get_consensus_proposal());
