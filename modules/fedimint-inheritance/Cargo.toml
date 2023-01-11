@@ -1,0 +1,24 @@
+[package]
+name = "fedimint-inheritance"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "fedimint_inheritance"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.66"
+async-trait = "0.1"
+bitcoin = "0.29.2"
+futures = "0.3"
+fedimint-api = { path = "../../fedimint-api" }
+rand = "0.8"
+rayon = "1.6.1"
+serde = { version = "1.0.149", features = [ "derive" ] }
+strum = "0.24"
+strum_macros = "0.24"
+impl-tools = "0.6.1"
+thiserror = "1.0.37"
