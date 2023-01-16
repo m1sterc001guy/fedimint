@@ -62,14 +62,13 @@ dependencies = [
 
 [[package]]
 name = "askama_axum"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1463e29c311d12424dce7d3ef3d064200c56da064e339c37c40478269eb7ea68"
+checksum = "780920656d4e3c8fc3999c1059cb036416423376b814fe8690dbd8c04308aba1"
 dependencies = [
  "askama",
- "axum-core 0.1.2",
+ "axum-core 0.3.0",
  "http",
- "http-body",
 ]
 
 [[package]]
