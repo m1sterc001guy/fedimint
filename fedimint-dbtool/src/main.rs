@@ -1,9 +1,19 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use bitcoin_hashes::hex::ToHex;
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use fedimint_api::db::Database;
 use fedimint_api::module::registry::ModuleDecoderRegistry;
+
+fn csv_vec_parser(input: &str) -> Result<Vec<String>, String> {
+    let vec = input
+        .split(',')
+        .map(|s| s.to_string().to_lowercase())
+        .collect::<Vec<String>>();
+    Ok(vec)
+}
 
 #[derive(Debug, Clone, Parser)]
 struct Options {
@@ -28,6 +38,13 @@ enum DbCommand {
         #[arg(value_parser = hex_parser)]
         prefix: Bytes,
     },
+    Dump {
+        data_dir: PathBuf,
+        #[arg(value_parser = csv_vec_parser)]
+        modules: Vec<String>,
+        #[arg(value_parser = csv_vec_parser)]
+        prefix: Vec<String>,
+    },
 }
 
 fn hex_parser(hex: &str) -> Result<Bytes> {
@@ -48,11 +65,10 @@ fn print_kv(key: &[u8], value: &[u8]) {
 async fn main() {
     let options: Options = Options::parse();
 
-    let db = open_db(&options.database).await.expect("Failed to open DB");
-    let mut dbtx = db.begin_transaction().await;
-
     match options.command {
         DbCommand::List { prefix } => {
+            let db = open_db(&options.database).await.expect("Failed to open DB");
+            let mut dbtx = db.begin_transaction().await;
             let prefix_iter = dbtx.raw_find_by_prefix(&prefix).await;
             for db_res in prefix_iter {
                 let (key, value) = db_res.expect("DB error");
@@ -60,14 +76,28 @@ async fn main() {
             }
         }
         DbCommand::Write { key, value } => {
+            let db = open_db(&options.database).await.expect("Failed to open DB");
+            let mut dbtx = db.begin_transaction().await;
             dbtx.raw_insert_bytes(&key, value.into())
                 .await
                 .expect("DB error");
+            dbtx.commit_tx().await.expect("DB Error");
         }
         DbCommand::Delete { prefix: key } => {
+            let db = open_db(&options.database).await.expect("Failed to open DB");
+            let mut dbtx = db.begin_transaction().await;
             dbtx.raw_remove_entry(&key).await.expect("DB error");
+            dbtx.commit_tx().await.expect("DB Error");
+        }
+        DbCommand::Dump {
+            data_dir,
+            modules,
+            prefix,
+        } => {
+            println!(
+                "Data dir: {:?} Modules: {:?} Prefix: {:?}",
+                data_dir, modules, prefix
+            );
         }
     }
-
-    dbtx.commit_tx().await.expect("DB error");
 }

@@ -8,6 +8,7 @@ name = "fedimint-dbdump"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4.1.1", features = ["derive", "std", "help", "usage", "error-context", "suggestions", "env"], default-features = false }
 fedimint-api = { path = "../fedimint-api" }
 fedimint-core = { path = "../fedimint-core" }
 fedimint-server = { path = "../fedimint-server" }
@@ -15,6 +16,7 @@ fedimint-rocksdb = { path = "../fedimint-rocksdb" }
 fedimint-mint = { path = "../modules/fedimint-mint" }
 fedimint-ln = { path = "../modules/fedimint-ln" }
 fedimint-wallet = { path = "../modules/fedimint-wallet" }
+fedimintd = { path = "../fedimintd" }
 hex = { version = "0.4.3", features = [ "serde"] }
 mint-client = { path = "../client/client-lib" }
 erased-serde = "0.3"

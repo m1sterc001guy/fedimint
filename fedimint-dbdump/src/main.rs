@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
+use clap::Parser;
 use docopt::Docopt;
 use erased_serde::Serialize;
 use fedimint_api::db::DatabaseTransaction;
 use fedimint_api::encoding::Encodable;
-use fedimint_api::module::registry::ModuleDecoderRegistry;
 use fedimint_api::module::DynModuleGen;
 use fedimint_ln::{db as LightningRange, LightningGen};
 use fedimint_mint::{db as MintRange, MintGen};
@@ -12,6 +13,7 @@ use fedimint_rocksdb::RocksDbReadOnly;
 use fedimint_server::config::ModuleInitRegistry;
 use fedimint_server::db as ConsensusRange;
 use fedimint_wallet::{db as WalletRange, WalletGen};
+use fedimintd::SALT_FILE;
 use mint_client::db as ClientRange;
 use mint_client::ln::db as ClientLightningRange;
 use mint_client::mint::db as ClientMintRange;
@@ -645,6 +647,15 @@ struct Args {
     flag_prefix: String,
 }
 
+#[derive(Parser)]
+pub struct ServerConfig {
+    /// Path to folder containing federation config files
+    pub data_dir: PathBuf,
+    /// Password to encrypt sensitive config files
+    #[arg(env = "FM_PASSWORD")]
+    pub password: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
     let args: Args = Docopt::new(USAGE)
@@ -677,13 +688,18 @@ async fn main() {
         }
     };
 
-    let _module_inits = ModuleInitRegistry::from(vec![
+    let module_inits = ModuleInitRegistry::from(vec![
         DynModuleGen::from(WalletGen),
         DynModuleGen::from(MintGen),
         DynModuleGen::from(LightningGen),
     ]);
 
-    let decoders: ModuleDecoderRegistry = Default::default(); // TODO: read config and use it to create decoders
+    //let decoders: ModuleDecoderRegistry = Default::default(); // TODO: read config and use it to create decoders
+    let opts: ServerConfig = ServerConfig::parse();
+    let salt_path = opts.data_dir.join(SALT_FILE);
+    let key = fedimintd::encrypt::get_key(opts.password, salt_path).unwrap();
+    let cfg = fedimintd::read_server_configs(&key, opts.data_dir.clone()).unwrap();
+    let decoders = module_inits.decoders(cfg.iter_module_instances()).unwrap();
 
     let serialized: BTreeMap<String, Box<dyn Serialize>> = BTreeMap::new();
     let mut dbdump = DatabaseDump {
