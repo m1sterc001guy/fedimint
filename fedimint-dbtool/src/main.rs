@@ -7,6 +7,10 @@ use clap::{Parser, Subcommand};
 use fedimint_api::db::Database;
 use fedimint_api::module::registry::ModuleDecoderRegistry;
 
+use crate::dump::DatabaseDump;
+
+mod dump;
+
 fn csv_vec_parser(input: &str) -> Result<Vec<String>, String> {
     let vec = input
         .split(',')
@@ -39,11 +43,13 @@ enum DbCommand {
         prefix: Bytes,
     },
     Dump {
-        data_dir: PathBuf,
-        #[arg(value_parser = csv_vec_parser)]
-        modules: Vec<String>,
-        #[arg(value_parser = csv_vec_parser)]
-        prefix: Vec<String>,
+        cfg_dir: PathBuf,
+        #[arg(required = false)]
+        modules: String,
+        #[arg(required = false)]
+        prefix: String,
+        #[arg(env = "FM_PASSWORD")]
+        password: Option<String>,
     },
 }
 
@@ -90,14 +96,19 @@ async fn main() {
             dbtx.commit_tx().await.expect("DB Error");
         }
         DbCommand::Dump {
-            data_dir,
+            cfg_dir,
             modules,
             prefix,
+            password,
         } => {
-            println!(
-                "Data dir: {:?} Modules: {:?} Prefix: {:?}",
-                data_dir, modules, prefix
+            let mut dbdump = DatabaseDump::new(
+                cfg_dir,
+                options.database,
+                password,
+                vec!["consensus".to_string()],
+                vec![],
             );
+            dbdump.dump_database().await;
         }
     }
 }
