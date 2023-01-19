@@ -105,7 +105,7 @@ async fn main() {
                 cfg_dir,
                 options.database,
                 password,
-                vec!["consensus".to_string()],
+                vec!["consensus".to_string(), "mint".to_string()],
                 vec![],
             );
             dbdump.dump_database().await;
