@@ -107,6 +107,10 @@ impl<'a> DatabaseDump<'a> {
             .map(|(id, kind)| (kind.clone(), id))
             .collect();
 
+        for (kind, id) in &module_map {
+            println!("Available module kind: {} module id: {}", kind, id);
+        }
+
         DatabaseDump {
             serialized: BTreeMap::new(),
             read_only: dbtx,
