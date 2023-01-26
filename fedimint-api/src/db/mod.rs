@@ -1367,4 +1367,11 @@ mod tests {
 
         test_dbtx.commit_tx().await.expect("DB Error");
     }
+
+    pub async fn test_channel(db: Database) {
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&TestKey(1), &TestVal(1))
+            .await
+            .expect("Error insert value into database");
+    }
 }
