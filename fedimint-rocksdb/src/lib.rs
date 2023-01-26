@@ -1,9 +1,12 @@
 use std::path::Path;
+use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use fedimint_api::db::PrefixIter;
 use fedimint_api::db::{IDatabase, IDatabaseTransaction};
+use fedimint_api::task::TaskGroup;
 pub use rocksdb;
 use rocksdb::{OptimisticTransactionDB, OptimisticTransactionOptions, WriteOptions};
 use tracing::warn;
@@ -13,7 +16,10 @@ pub struct RocksDb(rocksdb::OptimisticTransactionDB);
 
 pub struct RocksDbReadOnly(rocksdb::DB);
 
-pub struct RocksDbTransaction<'a>(rocksdb::Transaction<'a, rocksdb::OptimisticTransactionDB>);
+pub struct RocksDbTransaction<'a> {
+    inner_tx: rocksdb::Transaction<'a, rocksdb::OptimisticTransactionDB>,
+    sender: Sender<DatabaseRequest>,
+}
 
 impl RocksDb {
     pub fn open(db_path: impl AsRef<Path>) -> Result<RocksDb, rocksdb::Error> {
@@ -47,15 +53,48 @@ impl From<RocksDb> for rocksdb::OptimisticTransactionDB {
     }
 }
 
+enum DatabaseRequest {
+    InsertEntry,
+}
+
+//impl<'a> Drop for RocksDbTransaction<'a> {
+//    fn drop(&mut self) {
+//        println!("Transaction has fallen out of scope");
+//    }
+//}
+
 #[async_trait]
 impl IDatabase for RocksDb {
     async fn begin_transaction<'a>(&'a self) -> Box<dyn IDatabaseTransaction<'a> + Send + 'a> {
+        let mut tg = TaskGroup::new();
+        let channel = std::sync::mpsc::channel::<DatabaseRequest>();
+        let sender = channel.0;
+        let receiver = channel.1;
+        tg.spawn("test_tx_thread", move |task_handle| async move {
+            println!("test tx thread");
+            let mut i = 0;
+            while !task_handle.is_shutting_down() || i < 5 {
+                fedimint_api::task::sleep(Duration::from_secs(2)).await;
+                println!("Two seconds");
+                i = i + 1;
+
+                //match receiver.recv().unwrap() {
+                //    DatabaseRequest::InsertEntry => {
+                //        println!("Received DatabaseRequest!");
+                //    }
+                //}
+            }
+        })
+        .await;
+
         let mut optimistic_options = OptimisticTransactionOptions::default();
         optimistic_options.set_snapshot(true);
-        let mut rocksdb_tx = RocksDbTransaction(
-            self.0
+        let mut rocksdb_tx = RocksDbTransaction {
+            inner_tx: self
+                .0
                 .transaction_opt(&WriteOptions::default(), &optimistic_options),
-        );
+            sender,
+        };
         rocksdb_tx.set_tx_savepoint().await;
         Box::new(rocksdb_tx)
     }
@@ -64,18 +103,19 @@ impl IDatabase for RocksDb {
 #[async_trait]
 impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
     async fn raw_insert_bytes(&mut self, key: &[u8], value: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let val = self.0.get(key).unwrap();
-        self.0.put(key, value)?;
+        //self.sender.send(DatabaseRequest::InsertEntry).expect("Error sending DatabaseRequest::InsertRequest");
+        let val = self.inner_tx.get(key).unwrap();
+        self.inner_tx.put(key, value)?;
         Ok(val)
     }
 
     async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.snapshot().get(key)?)
+        Ok(self.inner_tx.snapshot().get(key)?)
     }
 
     async fn raw_remove_entry(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let val = self.0.get(key).unwrap();
-        self.0.delete(key)?;
+        let val = self.inner_tx.get(key).unwrap();
+        self.inner_tx.delete(key)?;
         Ok(val)
     }
 
@@ -83,7 +123,7 @@ impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
         let prefix = key_prefix.to_vec();
         let mut options = rocksdb::ReadOptions::default();
         options.set_iterate_range(rocksdb::PrefixRange(prefix.clone()));
-        let iter = self.0.snapshot().iterator_opt(
+        let iter = self.inner_tx.snapshot().iterator_opt(
             rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
             options,
         );
@@ -100,12 +140,12 @@ impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
     }
 
     async fn commit_tx(self: Box<Self>) -> Result<()> {
-        self.0.commit()?;
+        self.inner_tx.commit()?;
         Ok(())
     }
 
     async fn rollback_tx_to_savepoint(&mut self) {
-        match self.0.rollback_to_savepoint() {
+        match self.inner_tx.rollback_to_savepoint() {
             Ok(()) => {}
             _ => {
                 warn!("Rolling back database transaction without a set savepoint");
@@ -114,7 +154,7 @@ impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
     }
 
     async fn set_tx_savepoint(&mut self) {
-        self.0.set_savepoint();
+        self.inner_tx.set_savepoint();
     }
 }
 
@@ -264,5 +304,11 @@ mod fedimint_rocksdb_tests {
     async fn test_module_dbtx() {
         fedimint_api::db::verify_module_prefix(open_temp_db("fcb-rocksdb-test-module-prefix"))
             .await;
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn test_channel() {
+        let db = open_temp_db("test-rocksdb");
+        fedimint_api::db::test_channel_db(db).await;
     }
 }

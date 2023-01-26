@@ -596,6 +596,8 @@ impl DecodingError {
 }
 
 mod tests {
+    use std::time::Duration;
+
     use super::Database;
     use crate::db::DatabaseKeyPrefixConst;
     use crate::encoding::{Decodable, Encodable};
@@ -1173,5 +1175,16 @@ mod tests {
         assert_eq!(test_dbtx.get_value(&TestKey(101)).await.unwrap(), None);
 
         test_dbtx.commit_tx().await.expect("DB Error");
+    }
+
+    pub async fn test_channel_db(db: Database) {
+        let mut dbtx = db.begin_transaction().await;
+        //dbtx.sender.send(DatabaseRequest::InsertEntry).expect("Error sending DatabaseRequest");
+        dbtx.insert_entry(&TestKey(1), &TestVal(1))
+            .await
+            .expect("Error insert entry into database");
+        println!("Main thread sleeping");
+        fedimint_api::task::sleep(Duration::from_secs(10)).await;
+        println!("Main thread done");
     }
 }
