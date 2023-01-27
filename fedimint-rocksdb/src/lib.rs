@@ -70,7 +70,9 @@ impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
     }
 
     async fn raw_get_bytes(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.snapshot().get(key)?)
+        let mut opts = rocksdb::ReadOptions::default();
+        opts.set_async_io(true);
+        Ok(self.0.snapshot().get_opt(key, opts)?)
     }
 
     async fn raw_remove_entry(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -83,6 +85,7 @@ impl<'a> IDatabaseTransaction<'a> for RocksDbTransaction<'a> {
         let prefix = key_prefix.to_vec();
         let mut options = rocksdb::ReadOptions::default();
         options.set_iterate_range(rocksdb::PrefixRange(prefix.clone()));
+        options.set_async_io(true);
         let iter = self.0.snapshot().iterator_opt(
             rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
             options,

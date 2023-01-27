@@ -16,7 +16,7 @@ path = "src/lib.rs"
 anyhow = "1.0.66"
 async-trait = "0.1"
 fedimint-api = { path = "../fedimint-api" }
-rocksdb = { version = "0.19.0" }
+rocksdb = { git = "https://github.com/m1sterc001guy/rust-rocksdb", branch = "async_io" }
 tracing = "0.1.37"
 
 [dev-dependencies]

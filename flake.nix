@@ -320,7 +320,7 @@
           installCargoArtifactsMode = "use-zstd";
 
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib/";
-          ROCKSDB_LIB_DIR = "${pkgs.rocksdb}/lib/";
+          ROCKSDB_LIB_DIR = "/home/jumoell/rocksdb";
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
           CI = "true";
@@ -889,7 +889,7 @@
               ] ++ cliTestsDeps;
               RUST_SRC_PATH = "${fenixChannel.rust-src}/lib/rustlib/src/rust/library";
               LIBCLANG_PATH = "${pkgs.libclang.lib}/lib/";
-              ROCKSDB_LIB_DIR = "${pkgs.rocksdb}/lib/";
+              ROCKSDB_LIB_DIR = "/home/jumoell/rocksdb";
 
               shellHook = ''
                 # auto-install git hooks
