@@ -11,7 +11,7 @@ use fedimint_api::config::{
 };
 use fedimint_api::config::{ModuleConfigResponse, TypedServerModuleConsensusConfig};
 use fedimint_api::core::{ModuleInstanceId, ModuleKind};
-use fedimint_api::db::{Database, DatabaseTransaction};
+use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersion};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::__reexports::serde_json;
 use fedimint_api::module::audit::Audit;
@@ -202,6 +202,18 @@ impl ServerModule for Dummy {
 
     fn decoder(&self) -> Self::Decoder {
         DummyDecoder
+    }
+
+    fn database_version(&self) -> DatabaseVersion {
+        DatabaseVersion { version: 1 }
+    }
+
+    async fn migrate_database(
+        &self,
+        _db: &Database,
+        _db_version: u64,
+    ) -> Result<(), anyhow::Error> {
+        Ok(())
     }
 
     async fn await_consensus_proposal(&self, _dbtx: &mut DatabaseTransaction<'_>) {

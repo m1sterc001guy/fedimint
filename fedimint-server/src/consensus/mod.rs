@@ -10,7 +10,8 @@ use std::os::unix::prelude::OsStrExt;
 
 use fedimint_api::config::{ConfigResponse, ModuleGenRegistry};
 use fedimint_api::core::ModuleInstanceId;
-use fedimint_api::db::{Database, DatabaseTransaction};
+use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersionKey};
+use fedimint_api::db::{MigratableKeyV1, MigratableValueV1};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::audit::Audit;
 use fedimint_api::module::registry::{ModuleDecoderRegistry, ModuleRegistry, ServerModuleRegistry};
@@ -185,6 +186,56 @@ impl FedimintConsensus {
             },
             tx_receiver,
         )
+    }
+
+    pub async fn migrate_database(&self) -> Result<(), anyhow::Error> {
+        for (module_id, module) in self.modules.iter_modules() {
+            let isolated_db = self.db.new_isolated(module_id);
+            let mut dbtx = isolated_db.begin_transaction().await;
+            if let Some(db_version) = dbtx.get_value(&DatabaseVersionKey).await? {
+                tracing::info!(
+                    "Database Version already persisted for {}: {}",
+                    module_id,
+                    db_version.version
+                );
+
+                if module.database_version().version > db_version.version {
+                    tracing::info!("Migrating database for module {}", module_id);
+                    module
+                        .migrate_database(&isolated_db, db_version.version)
+                        .await?;
+                } else {
+                    tracing::info!("DB Migration not necessary for module {}", module_id);
+                }
+            } else {
+                // Module does not have a database version persisted.
+                let mut db_version = module.database_version();
+
+                // TODO: Remove this, this is a temporary hack to trigger a database migration.
+                if module_id == 0 {
+                    db_version.version = 0;
+
+                    // Write in a garbage database entry an migrate it to the latest value when fedimintd restarts
+                    let migratable_key = MigratableKeyV1 { key_1: 0 };
+                    let migratable_value = MigratableValueV1 { value_1: 0 };
+                    dbtx.insert_new_entry(&migratable_key, &migratable_value)
+                        .await?;
+                }
+
+                tracing::info!(
+                    "Persisting database version {} for module {} version: {}",
+                    db_version,
+                    module_id,
+                    db_version.version,
+                );
+                dbtx.insert_new_entry(&DatabaseVersionKey, &db_version)
+                    .await?;
+
+                dbtx.commit_tx().await?;
+            }
+        }
+
+        Ok(())
     }
 }
 

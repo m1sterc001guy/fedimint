@@ -14,7 +14,10 @@ use fedimint_api::{
 };
 
 use super::*;
-use crate::module::{ApiEndpoint, InputMeta, ModuleError, ServerModule, TransactionItemAmount};
+use crate::{
+    db::{Database, DatabaseVersion},
+    module::{ApiEndpoint, InputMeta, ModuleError, ServerModule, TransactionItemAmount},
+};
 
 pub trait IVerificationCache: Debug {
     fn as_any(&self) -> &(dyn Any + Send + Sync);
@@ -50,6 +53,10 @@ pub trait IServerModule: Debug {
     fn decoder(&self) -> DynDecoder;
 
     fn as_any(&self) -> &dyn Any;
+
+    fn database_version(&self) -> DatabaseVersion;
+
+    async fn migrate_database(&self, db: &Database, db_version: u64) -> Result<(), anyhow::Error>;
 
     /// Blocks until a new `consensus_proposal` is available.
     async fn await_consensus_proposal(&self, dbtx: &mut DatabaseTransaction<'_>);
@@ -180,6 +187,14 @@ where
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn database_version(&self) -> DatabaseVersion {
+        <Self as ServerModule>::database_version(self)
+    }
+
+    async fn migrate_database(&self, db: &Database, db_version: u64) -> Result<(), anyhow::Error> {
+        <Self as ServerModule>::migrate_database(self, db, db_version).await
     }
 
     /// Blocks until a new `consensus_proposal` is available.

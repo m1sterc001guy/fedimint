@@ -20,7 +20,7 @@ use tracing::instrument;
 use crate::cancellable::Cancellable;
 use crate::config::{ConfigGenParams, DkgPeerMsg, ServerModuleConfig};
 use crate::core::{Decoder, DynDecoder, ModuleInstanceId, ModuleKind};
-use crate::db::{Database, DatabaseTransaction};
+use crate::db::{Database, DatabaseTransaction, DatabaseVersion};
 use crate::encoding::{Decodable, DecodeError, Encodable};
 use crate::module::audit::Audit;
 use crate::module::interconnect::ModuleInterconect;
@@ -452,6 +452,10 @@ pub trait ServerModule: Debug + Sized {
     }
 
     fn decoder(&self) -> Self::Decoder;
+
+    fn database_version(&self) -> DatabaseVersion;
+
+    async fn migrate_database(&self, db: &Database, db_version: u64) -> Result<(), anyhow::Error>;
 
     /// Blocks until a new `consensus_proposal` is available.
     async fn await_consensus_proposal<'a>(&'a self, dbtx: &mut DatabaseTransaction<'_>);

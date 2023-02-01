@@ -28,7 +28,10 @@ use fedimint_api::config::{
 };
 use fedimint_api::config::{ModuleConfigResponse, TypedServerModuleConsensusConfig};
 use fedimint_api::core::{ModuleInstanceId, ModuleKind, LEGACY_HARDCODED_INSTANCE_ID_WALLET};
-use fedimint_api::db::{Database, DatabaseTransaction};
+use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersion, DatabaseVersionKey};
+use fedimint_api::db::{MigratableKey, MigratableKeyV3Prefix, MigratableValue};
+use fedimint_api::db::{MigratableKeyV1Prefix, MigratableKeyV2, MigratableValueV2};
+use fedimint_api::db::{MigratableKeyV2Prefix, MigratableKeyV3, MigratableValueV3};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::audit::Audit;
 use fedimint_api::module::interconnect::ModuleInterconect;
@@ -440,6 +443,114 @@ impl ServerModule for Lightning {
 
     fn decoder(&self) -> Self::Decoder {
         LightningDecoder
+    }
+
+    fn database_version(&self) -> DatabaseVersion {
+        DatabaseVersion { version: 3 }
+    }
+
+    async fn migrate_database(&self, db: &Database, db_version: u64) -> Result<(), anyhow::Error> {
+        let mut current_migration_version = db_version;
+        while current_migration_version < self.database_version().version {
+            match current_migration_version {
+                0 => {
+                    let mut read_dbtx = db.begin_transaction().await;
+                    let mut write_dbtx = db.begin_transaction().await;
+
+                    // Upgrade MigratableKeyV1 and MigratableValueV1 to MigratableKeyV2 and MigratableValueV2
+                    let migratable_entries = read_dbtx.find_by_prefix(&MigratableKeyV1Prefix).await;
+                    for migratable in migratable_entries {
+                        let (key, value) = migratable.unwrap();
+                        let key_v2 = MigratableKeyV2 {
+                            key_1: key.key_1,
+                            key_2: 1,
+                        };
+                        let value_v2 = MigratableValueV2 {
+                            value_1: value.value_1,
+                            value_2: 1,
+                        };
+                        write_dbtx.insert_new_entry(&key_v2, &value_v2).await?;
+                    }
+
+                    write_dbtx.remove_by_prefix(&MigratableKeyV1Prefix).await?;
+
+                    let new_version = DatabaseVersion { version: 1 };
+                    write_dbtx
+                        .insert_entry(&DatabaseVersionKey, &new_version)
+                        .await?;
+
+                    write_dbtx.commit_tx().await?;
+                    current_migration_version = 1;
+                }
+                1 => {
+                    let mut read_dbtx = db.begin_transaction().await;
+                    let mut write_dbtx = db.begin_transaction().await;
+
+                    // Upgrade MigratableKeyV2 and MigratableValueV2 to MigratableKeyV3 and MigratableValueV3
+                    let migratable_entries = read_dbtx.find_by_prefix(&MigratableKeyV2Prefix).await;
+                    for migratable in migratable_entries {
+                        let (key, value) = migratable.unwrap();
+                        let key_v3 = MigratableKeyV3 {
+                            key_1: key.key_1,
+                            key_2: key.key_2,
+                        };
+                        let value_v3 = MigratableValueV3 {
+                            value_1: value.value_1,
+                            value_2: value.value_2,
+                            value_3: 2,
+                        };
+                        write_dbtx.insert_new_entry(&key_v3, &value_v3).await?;
+                    }
+
+                    write_dbtx.remove_by_prefix(&MigratableKeyV2Prefix).await?;
+
+                    let new_version = DatabaseVersion { version: 2 };
+                    write_dbtx
+                        .insert_entry(&DatabaseVersionKey, &new_version)
+                        .await?;
+                    write_dbtx.commit_tx().await?;
+                    current_migration_version = 2;
+                }
+                2 => {
+                    let mut read_dbtx = db.begin_transaction().await;
+                    let mut write_dbtx = db.begin_transaction().await;
+
+                    // Upgrade MigratableKeyV3 and MigratableValueV3 to MigratableKey and MigratableValue
+                    let migratable_entries = read_dbtx.find_by_prefix(&MigratableKeyV3Prefix).await;
+                    for migratable in migratable_entries {
+                        let (key, value) = migratable.unwrap();
+                        let key_v4 = MigratableKey {
+                            key_1: key.key_1,
+                            key_2: key.key_2,
+                            key_3: 3,
+                        };
+                        let value_v4 = MigratableValue {
+                            value_1: value.value_1,
+                            value_2: value.value_2,
+                            value_3: value.value_3,
+                            value_4: 4,
+                        };
+                        write_dbtx.insert_new_entry(&key_v4, &value_v4).await?;
+                    }
+
+                    write_dbtx.remove_by_prefix(&MigratableKeyV3Prefix).await?;
+
+                    let new_version = DatabaseVersion { version: 3 };
+                    write_dbtx
+                        .insert_entry(&DatabaseVersionKey, &new_version)
+                        .await?;
+                    write_dbtx.commit_tx().await?;
+                    current_migration_version = 3;
+                }
+                _ => {
+                    panic!("Unsupported migration version");
+                }
+            }
+        }
+
+        tracing::info!("Finished migrating lightning module");
+
+        Ok(())
     }
 
     async fn await_consensus_proposal(&self, dbtx: &mut DatabaseTransaction<'_>) {

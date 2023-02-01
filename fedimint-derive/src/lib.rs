@@ -1,9 +1,10 @@
-#![cfg_attr(feature = "diagnostics", feature(proc_macro_diagnostic))]
-
 use heck::ToSnakeCase;
 use proc_macro::{self, TokenStream};
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DataEnum, DataStruct, DeriveInput, Field, Index};
+use syn::{
+    parse_macro_input, Data, DataEnum, DataStruct, DeriveInput, Field, Index, ItemStruct, Meta,
+    NestedMeta,
+};
 
 #[proc_macro_derive(UnzipConsensus)]
 pub fn derive_unzip_consensus(input: TokenStream) -> TokenStream {
@@ -334,4 +335,92 @@ pub fn derive_decodable(input: TokenStream) -> TokenStream {
     };
 
     output.into()
+}
+
+#[proc_macro_attribute]
+pub fn struct_version(_args: TokenStream, input: TokenStream) -> TokenStream {
+    input
+}
+
+#[proc_macro_derive(DatabaseVersion, attributes(struct_version))]
+pub fn database_version(input: TokenStream) -> TokenStream {
+    let item_struct = parse_macro_input!(input as ItemStruct);
+
+    let meta = item_struct
+        .attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path.is_ident("struct_version") {
+                attr.parse_meta().ok()
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<Meta>>();
+
+    let mut token_stream = TokenStream::new();
+    for m in &meta {
+        token_stream.extend(get_generated_struct(m, &item_struct));
+    }
+    return token_stream;
+}
+
+fn get_generated_struct(meta: &Meta, item_struct: &ItemStruct) -> TokenStream {
+    let mut included_fields = vec![];
+    let mut version = None;
+
+    if let syn::Meta::List(syn::MetaList {
+        path: _,
+        paren_token: _,
+        ref nested,
+    }) = meta
+    {
+        for m in nested.pairs().into_iter() {
+            if let NestedMeta::Lit(int) = m.into_tuple().0 {
+                if let syn::Lit::Int(lit) = int {
+                    version = Some(lit.base10_parse::<u64>().unwrap());
+                } else if let syn::Lit::Str(s) = int {
+                    included_fields.push(s.value());
+                }
+            }
+        }
+    }
+
+    let fields = match &item_struct.fields {
+        syn::Fields::Named(fields) => fields
+            .named
+            .iter()
+            .filter(|f| {
+                let ident = &f.ident.clone().unwrap();
+                if included_fields.contains(&ident.to_string()) {
+                    return true;
+                }
+                return false;
+            })
+            .collect::<Vec<_>>(),
+        _ => {
+            vec![]
+        }
+    };
+
+    let name = syn::Ident::new(
+        format!("{}V{}", &item_struct.ident, version.unwrap()).as_str(),
+        item_struct.ident.span(),
+    );
+
+    let prefix_name = syn::Ident::new(
+        format!("{}V{}Prefix", &item_struct.ident, version.unwrap()).as_str(),
+        item_struct.ident.span(),
+    );
+
+    let expanded = quote! {
+        #[derive(Debug, Encodable, Decodable)]
+        pub struct #name {
+            #(#fields),*
+        }
+
+        #[derive(Debug, Encodable, Decodable)]
+        pub struct #prefix_name;
+    };
+    proc_macro::TokenStream::from(expanded)
 }

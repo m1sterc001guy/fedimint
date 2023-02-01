@@ -205,6 +205,8 @@ async fn run(opts: ServerOpts, mut task_group: TaskGroup) -> anyhow::Result<()> 
     let (consensus, tx_receiver) =
         FedimintConsensus::new(cfg.clone(), db, module_inits, &mut task_group).await?;
 
+    consensus.migrate_database().await?;
+
     FedimintServer::run(cfg, consensus, tx_receiver, decoders, &mut task_group).await?;
 
     Ok(())
