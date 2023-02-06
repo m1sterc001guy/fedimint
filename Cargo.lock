@@ -272,6 +272,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "bdk"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b238a07736baee43ba9663933e44b1c6c27b43ef871b9486e175902335d83880"
+dependencies = [
+ "async-trait",
+ "bdk-macros",
+ "bitcoin",
+ "electrum-client",
+ "getrandom",
+ "js-sys",
+ "log",
+ "miniscript 8.0.0",
+ "rand",
+ "serde",
+ "serde_json",
+ "sled",
+ "tokio",
+]
+
+[[package]]
+name = "bdk-macros"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81c1980e50ae23bb6efa9283ae8679d6ea2c6fa6a99fe62533f65f4a25a1a56c"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.23",
+ "syn 1.0.107",
+]
+
+[[package]]
 name = "bech32"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -320,6 +352,7 @@ version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0694ea59225b0c5f3cb405ff3f670e4828358ed26aec49dc352f730f0cb1a8a3"
 dependencies = [
+ "base64 0.13.1",
  "bech32",
  "bitcoin_hashes",
  "secp256k1",
@@ -877,7 +910,7 @@ dependencies = [
  "hbbft",
  "js-sys",
  "lightning-invoice",
- "miniscript",
+ "miniscript 7.0.0",
  "rand",
  "secp256k1-zkp",
  "serde",
@@ -1243,7 +1276,7 @@ dependencies = [
  "fedimint-api",
  "fedimint-bitcoind",
  "impl-tools",
- "miniscript",
+ "miniscript 7.0.0",
  "rand",
  "secp256k1",
  "serde",
@@ -1366,6 +1399,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9c384f161156f5260c24a097c56119f9be8c798586aecc13afbcbe7b7e26bf8"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -1497,6 +1540,15 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
  "slab",
+]
+
+[[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
 ]
 
 [[package]]
@@ -2391,6 +2443,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "miniscript"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f4975078076f0b7b914a3044ad7432d2a7fcec38edb855afdc672e24ca35b69"
+dependencies = [
+ "bitcoin",
+ "serde",
+]
+
+[[package]]
+name = "miniscript"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "123a10aae81d0712ecc09b780f6f0ae0b0f506a5c4c912974725760d59ba073e"
+dependencies = [
+ "bitcoin",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2424,7 +2495,7 @@ dependencies = [
  "jsonrpsee-ws-client",
  "lightning",
  "lightning-invoice",
- "miniscript",
+ "miniscript 7.0.0",
  "once_cell",
  "rand",
  "reqwest",
@@ -3430,6 +3501,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sled"
+version = "0.34.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f96b4737c2ce5987354855aed3797279def4ebf734436c6aa4552cf8e169935"
+dependencies = [
+ "crc32fast",
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "fs2",
+ "fxhash",
+ "libc",
+ "log",
+ "parking_lot 0.11.2",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3613,6 +3700,16 @@ name = "subtle"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bdef32e8150c2a081110b42772ffe7d7c9032b606bc226c8260fd97e0976601"
+
+[[package]]
+name = "sweep-wallet"
+version = "0.1.0"
+dependencies = [
+ "bdk",
+ "bitcoin",
+ "hex",
+ "miniscript 9.0.0",
+]
 
 [[package]]
 name = "syn"

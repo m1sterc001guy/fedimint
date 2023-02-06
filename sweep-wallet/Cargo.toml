@@ -1,0 +1,12 @@
+[package]
+name = "sweep-wallet"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bdk = "0.26.0"
+bitcoin = "0.29.2"
+hex = "0.4.3"
+miniscript = "9.0.0"
