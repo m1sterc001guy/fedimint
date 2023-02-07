@@ -11,7 +11,7 @@ use fedimint_api::config::{
 };
 use fedimint_api::config::{ModuleConfigResponse, TypedServerModuleConsensusConfig};
 use fedimint_api::core::{ModuleInstanceId, ModuleKind};
-use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersion};
+use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersion, DatabaseVersionKey};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::__reexports::serde_json;
 use fedimint_api::module::audit::Audit;
@@ -204,15 +204,11 @@ impl ServerModule for Dummy {
         DummyDecoder
     }
 
-    fn database_version(&self) -> DatabaseVersion {
-        DatabaseVersion { version: 1 }
-    }
-
-    async fn migrate_database(
-        &self,
-        _db: &Database,
-        _db_version: u64,
-    ) -> Result<(), anyhow::Error> {
+    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error> {
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(&DatabaseVersionKey, &DatabaseVersion::new(1))
+            .await?;
+        dbtx.commit_tx().await?;
         Ok(())
     }
 

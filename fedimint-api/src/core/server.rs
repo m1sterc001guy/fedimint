@@ -15,7 +15,7 @@ use fedimint_api::{
 
 use super::*;
 use crate::{
-    db::{Database, DatabaseVersion},
+    db::Database,
     module::{ApiEndpoint, InputMeta, ModuleError, ServerModule, TransactionItemAmount},
 };
 
@@ -54,9 +54,7 @@ pub trait IServerModule: Debug {
 
     fn as_any(&self) -> &dyn Any;
 
-    fn database_version(&self) -> DatabaseVersion;
-
-    async fn migrate_database(&self, db: &Database, db_version: u64) -> Result<(), anyhow::Error>;
+    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error>;
 
     /// Blocks until a new `consensus_proposal` is available.
     async fn await_consensus_proposal(&self, dbtx: &mut DatabaseTransaction<'_>);
@@ -189,12 +187,8 @@ where
         self
     }
 
-    fn database_version(&self) -> DatabaseVersion {
-        <Self as ServerModule>::database_version(self)
-    }
-
-    async fn migrate_database(&self, db: &Database, db_version: u64) -> Result<(), anyhow::Error> {
-        <Self as ServerModule>::migrate_database(self, db, db_version).await
+    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error> {
+        <Self as ServerModule>::migrate_database(self, db).await
     }
 
     /// Blocks until a new `consensus_proposal` is available.

@@ -7,7 +7,6 @@ use std::{error::Error, marker::PhantomData};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt};
-use fedimint_derive::{struct_version, DatabaseVersion};
 use serde::Serialize;
 use strum_macros::EnumIter;
 use thiserror::Error;
@@ -687,19 +686,17 @@ where
 pub struct DatabaseVersionKey;
 
 #[derive(Debug, Encodable, Decodable, Serialize, Clone)]
-pub struct DatabaseVersion {
-    pub version: u64,
-}
+pub struct DatabaseVersion(u64);
 
 impl DatabaseVersion {
     pub fn new(version: u64) -> DatabaseVersion {
-        DatabaseVersion { version }
+        DatabaseVersion(version)
     }
 }
 
 impl std::fmt::Display for DatabaseVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.version)
+        write!(f, "{}", self.0)
     }
 }
 
@@ -728,78 +725,7 @@ impl DatabaseKeyPrefixConst for DatabaseVersionKeyPrefix {
 #[derive(Clone, EnumIter, Debug)]
 pub enum DbKeyPrefix {
     DatabaseVersion = 0x50,
-    MigratableKeyValue = 0x51,
 }
-
-#[derive(Debug, Encodable, Decodable, DatabaseVersion)]
-#[struct_version(3, "key_1", "key_2")]
-#[struct_version(2, "key_1", "key_2")]
-#[struct_version(1, "key_1")]
-pub struct MigratableKey {
-    pub key_1: u64,
-
-    pub key_2: u64,
-
-    pub key_3: u64,
-}
-
-#[derive(Debug, Encodable, Decodable)]
-struct MigratableKeyPrefix;
-
-#[derive(Debug, Encodable, Decodable, Eq, PartialEq, DatabaseVersion)]
-#[struct_version(3, "value_1", "value_2", "value_3")]
-#[struct_version(2, "value_1", "value_2")]
-#[struct_version(1, "value_1")]
-pub struct MigratableValue {
-    pub value_1: u64,
-
-    pub value_2: u64,
-
-    pub value_3: u64,
-
-    pub value_4: u64,
-}
-
-macro_rules! impl_db_prefix_const {
-    ($key:ty, $key_prefix:ty, $val:ty, $prefix:expr) => {
-        impl DatabaseKeyPrefixConst for $key_prefix {
-            const DB_PREFIX: u8 = $prefix as u8;
-            type Key = $key;
-            type Value = $val;
-        }
-
-        impl DatabaseKeyPrefixConst for $key {
-            const DB_PREFIX: u8 = $prefix as u8;
-            type Key = Self;
-            type Value = $val;
-        }
-    };
-}
-
-impl_db_prefix_const!(
-    MigratableKeyV1,
-    MigratableKeyV1Prefix,
-    MigratableValueV1,
-    DbKeyPrefix::MigratableKeyValue
-);
-impl_db_prefix_const!(
-    MigratableKeyV2,
-    MigratableKeyV2Prefix,
-    MigratableValueV2,
-    DbKeyPrefix::MigratableKeyValue
-);
-impl_db_prefix_const!(
-    MigratableKeyV3,
-    MigratableKeyV3Prefix,
-    MigratableValueV3,
-    DbKeyPrefix::MigratableKeyValue
-);
-impl_db_prefix_const!(
-    MigratableKey,
-    MigratableKeyPrefix,
-    MigratableValue,
-    DbKeyPrefix::MigratableKeyValue
-);
 
 #[derive(Debug, Error)]
 pub enum DecodingError {
@@ -881,7 +807,6 @@ mod tests {
 
     use super::Database;
     use crate::db::DatabaseKeyPrefixConst;
-    use crate::db::{MigratableKeyV1, MigratableKeyV2, MigratableValueV1, MigratableValueV2};
     use crate::encoding::{Decodable, Encodable};
 
     #[repr(u8)]
@@ -1622,23 +1547,5 @@ mod tests {
             }
             AutocommitError::ClosureError { .. } => panic!("Closure did not return error"),
         }
-    }
-
-    pub async fn test_derive(db: Database) {
-        let my_key1 = MigratableKeyV1 { key_1: 1 };
-        let my_val1 = MigratableValueV1 { value_1: 0 };
-
-        let my_key2 = MigratableKeyV2 { key_1: 0, key_2: 0 };
-        let my_val2 = MigratableValueV2 {
-            value_1: 0,
-            value_2: 0,
-        };
-
-        let mut dbtx = db.begin_transaction().await;
-        assert!(dbtx.insert_entry(&my_key1, &my_val1).await.is_ok());
-        dbtx.commit_tx().await.expect("DB Error");
-
-        let mut dbtx = db.begin_transaction().await;
-        assert!(dbtx.insert_entry(&my_key2, &my_val2).await.is_ok());
     }
 }
