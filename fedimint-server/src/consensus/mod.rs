@@ -145,6 +145,8 @@ impl FedimintConsensus {
                     task_group,
                 )
                 .await?;
+            let isolated_db = db.new_isolated(*module_id);
+            module.migrate_database(&isolated_db).await?;
             modules.insert(*module_id, module);
         }
 
@@ -165,7 +167,7 @@ impl FedimintConsensus {
     }
 
     /// Like [`Self::new`], but when you want to initialize modules separately.
-    pub fn new_with_modules(
+    pub async fn new_with_modules(
         cfg: ServerConfig,
         db: Database,
         module_inits: ModuleGenRegistry,
@@ -185,15 +187,6 @@ impl FedimintConsensus {
             },
             tx_receiver,
         )
-    }
-
-    pub async fn migrate_module_databases(&self) -> Result<(), anyhow::Error> {
-        for (module_id, module) in self.modules.iter_modules() {
-            let isolated_db = self.db.new_isolated(module_id);
-            module.migrate_database(&isolated_db).await?;
-        }
-
-        Ok(())
     }
 }
 

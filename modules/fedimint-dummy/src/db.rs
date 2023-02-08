@@ -3,6 +3,8 @@ use fedimint_api::encoding::{Decodable, Encodable};
 use serde::Serialize;
 use strum_macros::EnumIter;
 
+pub const DATABASE_VERSION: &'static u64 = &2;
+
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]
 pub enum DbKeyPrefix {
@@ -17,7 +19,25 @@ impl std::fmt::Display for DbKeyPrefix {
 }
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
-pub struct ExampleKey(pub u64);
+pub struct ExampleKeyV1(pub u64);
+
+impl DatabaseKeyPrefixConst for ExampleKeyV1 {
+    const DB_PREFIX: u8 = DbKeyPrefix::Example as u8;
+    type Key = Self;
+    type Value = ();
+}
+
+#[derive(Debug, Encodable, Decodable)]
+pub struct ExampleKeyPrefixV1;
+
+impl DatabaseKeyPrefixConst for ExampleKeyPrefixV1 {
+    const DB_PREFIX: u8 = DbKeyPrefix::Example as u8;
+    type Key = ExampleKeyV1;
+    type Value = ();
+}
+
+#[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
+pub struct ExampleKey(pub u64, pub String);
 
 impl DatabaseKeyPrefixConst for ExampleKey {
     const DB_PREFIX: u8 = DbKeyPrefix::Example as u8;

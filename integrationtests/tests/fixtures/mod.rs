@@ -37,6 +37,7 @@ use fedimint_api::PeerId;
 use fedimint_api::TieredMulti;
 use fedimint_api::{sats, Amount};
 use fedimint_bitcoind::DynBitcoindRpc;
+use fedimint_dummy::DummyConfigGenerator;
 use fedimint_ln::{LightningGateway, LightningGen};
 use fedimint_mint::{MintGen, MintOutput};
 use fedimint_server::config::ServerConfigParams;
@@ -114,6 +115,40 @@ pub struct Fixtures {
     pub task_group: TaskGroup,
 }
 
+pub async fn dummy_test<B, F, Fut>(
+    num_peers: u16,
+    f: impl FnOnce(
+        FederationTest,
+        UserTest<UserClientConfig>,
+        Box<dyn BitcoinTest>,
+        GatewayTest,
+        Box<dyn LightningTest>,
+    ) -> B,
+    init_db: F,
+) -> anyhow::Result<()>
+where
+    B: Future<Output = ()>,
+    F: Fn(Database, u16) -> Fut,
+    Fut: futures::Future<Output = Result<(), anyhow::Error>>,
+{
+    let module_inits = ModuleGenRegistry::from(vec![
+        DynModuleGen::from(DummyConfigGenerator),
+        DynModuleGen::from(WalletGen),
+        DynModuleGen::from(MintGen),
+        DynModuleGen::from(LightningGen),
+    ]);
+    let fixtures = fixtures(num_peers, module_inits, init_db).await?;
+    f(
+        fixtures.fed,
+        fixtures.user,
+        fixtures.bitcoin,
+        fixtures.gateway,
+        fixtures.lightning,
+    )
+    .await;
+    fixtures.task_group.shutdown_join_all(None).await
+}
+
 /// Helper for generating fixtures, passing them into test code, then shutting down the task thread
 /// when the test is complete.
 pub async fn test<B>(
@@ -129,7 +164,13 @@ pub async fn test<B>(
 where
     B: Future<Output = ()>,
 {
-    let fixtures = fixtures(num_peers).await?;
+    let module_inits = ModuleGenRegistry::from(vec![
+        DynModuleGen::from(WalletGen),
+        DynModuleGen::from(MintGen),
+        DynModuleGen::from(LightningGen),
+    ]);
+    let init_db = |_, _| async { Ok(()) };
+    let fixtures = fixtures(num_peers, module_inits, init_db).await?;
     f(
         fixtures.fed,
         fixtures.user,
@@ -143,7 +184,15 @@ where
 
 /// Generates the fixtures for an integration test and spawns API and HBBFT consensus threads for
 /// federation nodes starting at port DEFAULT_P2P_PORT.
-pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
+pub async fn fixtures<F, Fut>(
+    num_peers: u16,
+    module_inits: ModuleGenRegistry,
+    init_db: F,
+) -> anyhow::Result<Fixtures>
+where
+    F: Fn(Database, u16) -> Fut,
+    Fut: futures::Future<Output = Result<(), anyhow::Error>>,
+{
     let mut task_group = TaskGroup::new();
     let base_port = BASE_PORT.fetch_add(num_peers * 10, Ordering::Relaxed);
 
@@ -171,12 +220,6 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
     let peers = (0..num_peers).map(PeerId::from).collect::<Vec<_>>();
     let params = ServerConfigParams::gen_local(&peers, sats(100000), base_port, "test").unwrap();
     let max_evil = hbbft::util::max_faulty(peers.len());
-
-    let module_inits = ModuleGenRegistry::from(vec![
-        DynModuleGen::from(WalletGen),
-        DynModuleGen::from(MintGen),
-        DynModuleGen::from(LightningGen),
-    ]);
 
     let decoders = module_decode_stubs();
 
@@ -231,6 +274,7 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
                 module_inits.clone(),
                 |_cfg: ServerConfig, _db| Box::pin(async { BTreeMap::default() }),
                 &mut task_group,
+                init_db,
             )
             .await;
 
@@ -325,6 +369,7 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
                     })
                 },
                 &mut task_group.clone(),
+                init_db,
             )
             .await;
 
@@ -1106,7 +1151,7 @@ impl FederationTest {
         }
     }
 
-    async fn new(
+    async fn new<F, Fut>(
         server_config: BTreeMap<PeerId, ServerConfig>,
         database_gen: &impl Fn(ModuleDecoderRegistry) -> Database,
         bitcoin_gen: &impl Fn() -> DynBitcoindRpc,
@@ -1119,7 +1164,12 @@ impl FederationTest {
             Box<dyn Future<Output = BTreeMap<&'static str, DynServerModule>>>,
         >,
         task_group: &mut TaskGroup,
-    ) -> Self {
+        init_db: F,
+    ) -> Self
+    where
+        F: Fn(Database, u16) -> Fut,
+        Fut: futures::Future<Output = Result<(), anyhow::Error>>,
+    {
         let servers = join_all(server_config.values().map(|cfg| async {
             let btc_rpc = bitcoin_gen();
             let decoders = module_inits.decoders(cfg.iter_module_instances()).unwrap();
@@ -1156,7 +1206,8 @@ impl FederationTest {
                 db.clone(),
                 module_inits.clone(),
                 ModuleRegistry::from(modules),
-            );
+            )
+            .await;
             let decoders = consensus.decoders();
 
             let fedimint = FedimintServer::new_with(

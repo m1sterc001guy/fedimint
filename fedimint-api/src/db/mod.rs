@@ -686,7 +686,7 @@ where
 pub struct DatabaseVersionKey;
 
 #[derive(Debug, Encodable, Decodable, Serialize, Clone)]
-pub struct DatabaseVersion(u64);
+pub struct DatabaseVersion(pub u64);
 
 impl DatabaseVersion {
     pub fn new(version: u64) -> DatabaseVersion {

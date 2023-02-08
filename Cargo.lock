@@ -1030,6 +1030,7 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -1197,6 +1198,7 @@ dependencies = [
  "cln-rpc",
  "fedimint-api",
  "fedimint-bitcoind",
+ "fedimint-dummy",
  "fedimint-ln",
  "fedimint-mint",
  "fedimint-rocksdb",
