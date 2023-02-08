@@ -6,8 +6,8 @@ use anyhow::Result;
 use assert_matches::assert_matches;
 use bitcoin::{Amount, KeyPair};
 use fedimint_api::core::{
-    LEGACY_HARDCODED_INSTANCE_ID_LN, LEGACY_HARDCODED_INSTANCE_ID_MINT,
-    LEGACY_HARDCODED_INSTANCE_ID_WALLET,
+    LEGACY_HARDCODED_INSTANCE_ID_DUMMY, LEGACY_HARDCODED_INSTANCE_ID_LN,
+    LEGACY_HARDCODED_INSTANCE_ID_MINT, LEGACY_HARDCODED_INSTANCE_ID_WALLET,
 };
 use fedimint_api::db::mem_impl::MemDatabase;
 use fedimint_api::db::{Database, DatabaseVersion, DatabaseVersionKey};
@@ -1198,7 +1198,7 @@ async fn verify_dummy_migration() -> Result<()> {
         // Insert a bunch of old dummy data that needs to be migrated to a new version
         let db = Database::new(MemDatabase::new(), decoders);
         let dbtx = db.begin_transaction().await;
-        let mut module_dbtx = dbtx.new_module_tx(3);
+        let mut module_dbtx = dbtx.new_module_tx(LEGACY_HARDCODED_INSTANCE_ID_DUMMY);
         for i in 0..10000 {
             module_dbtx
                 .insert_new_entry(&ExampleKeyV1(i), &())
