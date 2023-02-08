@@ -1,6 +1,5 @@
 mod fixtures;
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -14,6 +13,7 @@ use fedimint_api::db::mem_impl::MemDatabase;
 use fedimint_api::db::{Database, DatabaseVersion, DatabaseVersionKey};
 use fedimint_api::task::TaskGroup;
 use fedimint_api::{msats, sats, TieredMulti};
+use fedimint_dummy::db::ExampleKeyV1;
 use fedimint_ln::contracts::{Preimage, PreimageDecryptionShare};
 use fedimint_ln::LightningConsensusItem;
 use fedimint_mint::{MintConsensusItem, MintOutputSignatureShare};
@@ -1194,27 +1194,32 @@ async fn verifies_client_configs() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn verify_dummy_migration() -> Result<()> {
-    /*
-    let fed_db = |decoders, module_instance_id| async {
+    let fed_db = |decoders, _| async {
         // Insert a bunch of old dummy data that needs to be migrated to a new version
         let db = Database::new(MemDatabase::new(), decoders);
-        let mut dbtx = db.begin_transaction().await.with_module_prefix(module_instance_id);
+        let dbtx = db.begin_transaction().await;
+        let mut module_dbtx = dbtx.new_module_tx(3);
         for i in 0..10000 {
-            dbtx.insert_new_entry(&ExampleKeyV1(i), &()).await.expect("DB Error");
+            module_dbtx
+                .insert_new_entry(&ExampleKeyV1(i), &())
+                .await
+                .expect("DB Error");
         }
 
-        dbtx.insert_new_entry(&DatabaseVersionKey, &DatabaseVersion::new(1)).await.expect("DB Error");
-        dbtx.commit_tx().await.expect("DB Error");
+        module_dbtx
+            .insert_new_entry(&DatabaseVersionKey, &DatabaseVersion::new(1))
+            .await
+            .expect("DB Error");
+        module_dbtx.commit_tx().await.expect("DB Error");
         db
     };
-    */
-    let init_db = |db, module_id| async { Ok(()) };
     dummy_test(
         2,
-        |_fed, _user, _bitcoin, _, _| async move {
-            tracing::info!("Running dummy test");
+        |fed, _user, _bitcoin, _, _| async move {
+            tracing::info!("Dummy test migraated all modules");
+            fed.verify_database_migration(10000).await;
         },
-        init_db,
+        fed_db,
     )
     .await
 }

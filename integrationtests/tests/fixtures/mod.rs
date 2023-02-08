@@ -37,6 +37,7 @@ use fedimint_api::PeerId;
 use fedimint_api::TieredMulti;
 use fedimint_api::{sats, Amount};
 use fedimint_bitcoind::DynBitcoindRpc;
+use fedimint_dummy::db::{ExampleKey, ExampleKeyPrefix};
 use fedimint_dummy::DummyConfigGenerator;
 use fedimint_ln::{LightningGateway, LightningGen};
 use fedimint_mint::{MintGen, MintOutput};
@@ -57,6 +58,7 @@ use fedimint_wallet::WalletConsensusItem;
 use fedimint_wallet::{SpendableUTXO, WalletGen};
 use futures::executor::block_on;
 use futures::future::{join_all, select_all};
+use futures::StreamExt;
 use hbbft::honey_badger::Batch;
 use itertools::Itertools;
 use lightning_invoice::Invoice;
@@ -124,12 +126,12 @@ pub async fn dummy_test<B, F, Fut>(
         GatewayTest,
         Box<dyn LightningTest>,
     ) -> B,
-    init_db: F,
+    database: F,
 ) -> anyhow::Result<()>
 where
     B: Future<Output = ()>,
-    F: Fn(Database, u16) -> Fut,
-    Fut: futures::Future<Output = Result<(), anyhow::Error>>,
+    F: Fn(ModuleDecoderRegistry, String) -> Fut,
+    Fut: futures::Future<Output = Database>,
 {
     let module_inits = ModuleGenRegistry::from(vec![
         DynModuleGen::from(DummyConfigGenerator),
@@ -137,7 +139,7 @@ where
         DynModuleGen::from(MintGen),
         DynModuleGen::from(LightningGen),
     ]);
-    let fixtures = fixtures(num_peers, module_inits, init_db).await?;
+    let fixtures = fixtures(num_peers, module_inits, database).await?;
     f(
         fixtures.fed,
         fixtures.user,
@@ -169,8 +171,8 @@ where
         DynModuleGen::from(MintGen),
         DynModuleGen::from(LightningGen),
     ]);
-    let init_db = |_, _| async { Ok(()) };
-    let fixtures = fixtures(num_peers, module_inits, init_db).await?;
+
+    let fixtures = fixtures(num_peers, module_inits, get_fed_db).await?;
     f(
         fixtures.fed,
         fixtures.user,
@@ -187,11 +189,11 @@ where
 pub async fn fixtures<F, Fut>(
     num_peers: u16,
     module_inits: ModuleGenRegistry,
-    init_db: F,
+    database: F,
 ) -> anyhow::Result<Fixtures>
 where
-    F: Fn(Database, u16) -> Fut,
-    Fut: futures::Future<Output = Result<(), anyhow::Error>>,
+    F: Fn(ModuleDecoderRegistry, String) -> Fut,
+    Fut: futures::Future<Output = Database>,
 {
     let mut task_group = TaskGroup::new();
     let base_port = BASE_PORT.fetch_add(num_peers * 10, Ordering::Relaxed);
@@ -265,16 +267,15 @@ where
 
             let connect_gen =
                 |cfg: &ServerConfig| TlsTcpConnector::new(cfg.tls_config()).into_dyn();
-            let fed_db = |decoders| Database::new(rocks(dir.clone()), decoders);
             let fed = FederationTest::new(
                 server_config,
-                &fed_db,
+                &database,
+                dir.clone(),
                 &|| bitcoin_rpc.clone(),
                 &connect_gen,
                 module_inits.clone(),
                 |_cfg: ServerConfig, _db| Box::pin(async { BTreeMap::default() }),
                 &mut task_group,
-                init_db,
             )
             .await;
 
@@ -336,10 +337,10 @@ where
             let connect_gen =
                 move |cfg: &ServerConfig| net_ref.connector(cfg.local.identity).into_dyn();
 
-            let fed_db = |decoders| Database::new(MemDatabase::new(), decoders);
             let fed = FederationTest::new(
                 server_config,
-                &fed_db,
+                &database,
+                format!(""),
                 &bitcoin_rpc,
                 &connect_gen,
                 module_inits.clone(),
@@ -369,7 +370,6 @@ where
                     })
                 },
                 &mut task_group.clone(),
-                init_db,
             )
             .await;
 
@@ -415,6 +415,13 @@ where
     }
 
     Ok(fixtures)
+}
+
+async fn get_fed_db(decoders: ModuleDecoderRegistry, db_dir: String) -> Database {
+    match env::var("FM_TEST_DISABLE_MOCKS") {
+        Ok(s) if s == "1" => Database::new(rocks(db_dir.clone()), decoders),
+        _ => Database::new(MemDatabase::new(), decoders),
+    }
 }
 
 pub fn peers(peers: &[u16]) -> Vec<PeerId> {
@@ -836,6 +843,29 @@ impl FederationTest {
         user.client.fetch_all_notes().await.unwrap();
     }
 
+    /// Verifies that a database migration completed successfully
+    pub async fn verify_database_migration(&self, expected_example_key_size: usize) {
+        for server in &self.servers {
+            let svr = server.borrow_mut();
+            let mut dbtx = svr.database.begin_transaction().await;
+
+            // Verify Dummy module migration
+            let mut module_dbtx = dbtx.with_module_prefix(3);
+            let example_keys_size = module_dbtx
+                .find_by_prefix(&ExampleKeyPrefix)
+                .await
+                .collect::<Vec<_>>()
+                .await
+                .len();
+            assert_eq!(example_keys_size, expected_example_key_size);
+            let migrated_key = module_dbtx
+                .get_value(&ExampleKey(0, format!("Example String")))
+                .await
+                .expect("Did not retrieve correct version of ExampleKey");
+            assert!(!migrated_key.is_none(), "Migrated Key was None");
+        }
+    }
+
     /// Mines a UTXO owned by the federation.
     pub async fn mine_spendable_utxo<C: AsRef<ClientConfig> + Clone>(
         &self,
@@ -1153,7 +1183,8 @@ impl FederationTest {
 
     async fn new<F, Fut>(
         server_config: BTreeMap<PeerId, ServerConfig>,
-        database_gen: &impl Fn(ModuleDecoderRegistry) -> Database,
+        database_gen: &F,
+        database_dir: String,
         bitcoin_gen: &impl Fn() -> DynBitcoindRpc,
         connect_gen: &impl Fn(&ServerConfig) -> PeerConnector<EpochMessage>,
         module_inits: ModuleGenRegistry,
@@ -1164,16 +1195,16 @@ impl FederationTest {
             Box<dyn Future<Output = BTreeMap<&'static str, DynServerModule>>>,
         >,
         task_group: &mut TaskGroup,
-        init_db: F,
     ) -> Self
     where
-        F: Fn(Database, u16) -> Fut,
-        Fut: futures::Future<Output = Result<(), anyhow::Error>>,
+        F: Fn(ModuleDecoderRegistry, String) -> Fut,
+        Fut: futures::Future<Output = Database>,
     {
         let servers = join_all(server_config.values().map(|cfg| async {
             let btc_rpc = bitcoin_gen();
             let decoders = module_inits.decoders(cfg.iter_module_instances()).unwrap();
-            let db = database_gen(decoders.clone());
+            let dir = database_dir.clone();
+            let db = database_gen(decoders.clone(), dir).await;
             let mut task_group = task_group.clone();
 
             let mut override_modules = override_modules(cfg.clone(), db.clone()).await;
@@ -1185,6 +1216,11 @@ impl FederationTest {
                 let id = cfg.get_module_id_by_kind(kind.clone()).unwrap();
                 if let Some(module) = override_modules.remove(kind.as_str()) {
                     info!(module_instance_id = id, kind = %kind, "Use overriden module");
+                    let isolated_db = db.new_isolated(id);
+                    module
+                        .migrate_database(&isolated_db)
+                        .await
+                        .expect("DB Error migrating database");
                     modules.insert(id, module);
                 } else {
                     info!(module_instance_id = id, kind = %kind, "Init module");
@@ -1197,10 +1233,16 @@ impl FederationTest {
                         )
                         .await
                         .unwrap();
+                    let isolated_db = db.new_isolated(id);
+                    module
+                        .migrate_database(&isolated_db)
+                        .await
+                        .expect("DB Error migrating database");
                     modules.insert(id, module);
                 }
             }
 
+            tracing::info!("FedimintConsensus::new_with_modules");
             let (consensus, tx_receiver) = FedimintConsensus::new_with_modules(
                 cfg.clone(),
                 db.clone(),

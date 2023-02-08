@@ -228,6 +228,7 @@ impl ServerModule for Dummy {
                             .map(|res| res.unwrap())
                             .collect::<Vec<_>>()
                             .await;
+                        write_dbtx.remove_by_prefix(&ExampleKeyPrefixV1).await?;
                         for (key, _) in example_keys_v1 {
                             let key_v2 = ExampleKey(key.0, format!("Example String"));
                             write_dbtx.insert_new_entry(&key_v2, &()).await?;
