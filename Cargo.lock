@@ -1024,14 +1024,12 @@ dependencies = [
  "fedimint-api",
  "futures",
  "impl-tools",
- "lazy_static",
  "rand",
  "rayon",
  "serde",
  "strum",
  "strum_macros",
  "thiserror",
- "tokio",
  "tracing",
 ]
 

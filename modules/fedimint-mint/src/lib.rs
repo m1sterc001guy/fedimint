@@ -454,8 +454,6 @@ impl ServerModule for Mint {
                 ));
             }
 
-            // TODO: Add loop here
-
             current_dbversion
         } else {
             tracing::info!("Mint module no database version found.");

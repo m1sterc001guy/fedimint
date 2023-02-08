@@ -454,8 +454,6 @@ impl ServerModule for Lightning {
                 ));
             }
 
-            // TODO: Add loop here
-
             current_dbversion
         } else {
             tracing::info!("LN module no database version found.");

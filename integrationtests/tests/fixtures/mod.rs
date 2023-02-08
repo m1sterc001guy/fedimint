@@ -1216,9 +1216,8 @@ impl FederationTest {
                 let id = cfg.get_module_id_by_kind(kind.clone()).unwrap();
                 if let Some(module) = override_modules.remove(kind.as_str()) {
                     info!(module_instance_id = id, kind = %kind, "Use overriden module");
-                    let isolated_db = db.new_isolated(id);
                     module
-                        .migrate_database(isolated_db)
+                        .migrate_database(db.new_isolated(id))
                         .await
                         .expect("DB Error migrating database");
                     modules.insert(id, module);
@@ -1233,23 +1232,20 @@ impl FederationTest {
                         )
                         .await
                         .unwrap();
-                    let isolated_db = db.new_isolated(id);
                     module
-                        .migrate_database(isolated_db)
+                        .migrate_database(db.new_isolated(id))
                         .await
                         .expect("DB Error migrating database");
                     modules.insert(id, module);
                 }
             }
 
-            tracing::info!("FedimintConsensus::new_with_modules");
             let (consensus, tx_receiver) = FedimintConsensus::new_with_modules(
                 cfg.clone(),
                 db.clone(),
                 module_inits.clone(),
                 ModuleRegistry::from(modules),
-            )
-            .await;
+            );
             let decoders = consensus.decoders();
 
             let fedimint = FedimintServer::new_with(

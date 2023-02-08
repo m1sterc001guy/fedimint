@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 
-use anyhow::anyhow;
 use async_trait::async_trait;
 use bitcoin_hashes::sha256;
 use common::DummyDecoder;
@@ -69,7 +68,6 @@ impl ModuleGen for DummyConfigGenerator {
         _env: &BTreeMap<OsString, OsString>,
         _task_group: &mut TaskGroup,
     ) -> anyhow::Result<DynServerModule> {
-        tracing::info!("Dummy module init called!");
         Ok(Dummy::new(cfg.to_typed()?).into())
     }
 
@@ -211,7 +209,7 @@ impl ServerModule for Dummy {
             let mut current_dbversion = ondisk_version;
 
             if current_dbversion > DATABASE_VERSION {
-                return Err(anyhow!(
+                return Err(anyhow::anyhow!(
                     "On disk database dummy version was higher than the code database version."
                 ));
             }

@@ -503,8 +503,6 @@ impl ServerModule for Wallet {
                 ));
             }
 
-            // TODO: Add loop here
-
             current_dbversion
         } else {
             tracing::info!("Wallet module no database version found.");
