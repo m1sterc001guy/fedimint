@@ -459,10 +459,10 @@ impl ServerModule for Lightning {
             tracing::info!("LN module no database version found.");
             dbtx.insert_entry(&DatabaseVersionKey, &DATABASE_VERSION)
                 .await?;
+            dbtx.commit_tx().await?;
             DATABASE_VERSION
         };
 
-        dbtx.commit_tx().await?;
         tracing::info!("LN module db version: {}", ln_db_version);
         Ok(())
     }

@@ -459,10 +459,10 @@ impl ServerModule for Mint {
             tracing::info!("Mint module no database version found.");
             dbtx.insert_entry(&DatabaseVersionKey, &DATABASE_VERSION)
                 .await?;
+            dbtx.commit_tx().await?;
             DATABASE_VERSION
         };
 
-        dbtx.commit_tx().await?;
         tracing::info!("Mint module db version: {}", mint_db_version);
         Ok(())
     }

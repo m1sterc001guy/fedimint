@@ -508,10 +508,10 @@ impl ServerModule for Wallet {
             tracing::info!("Wallet module no database version found.");
             dbtx.insert_entry(&DatabaseVersionKey, &DATABASE_VERSION)
                 .await?;
+            dbtx.commit_tx().await?;
             DATABASE_VERSION
         };
 
-        dbtx.commit_tx().await?;
         tracing::info!("Wallet module db version: {}", wallet_db_version);
         Ok(())
     }

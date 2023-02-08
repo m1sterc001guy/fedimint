@@ -117,6 +117,10 @@ pub struct Fixtures {
     pub task_group: TaskGroup,
 }
 
+/// Helper for generating fixtures, but with the dummy module instantiated in addition to ln, mint, and wallet.
+/// This function takes a closure that generates a database that allows tests to override the database state
+/// before the module is initialized. The fixtures are then passed to the test code and the task thread is
+/// shut down when it is complete.
 pub async fn dummy_test<B, F, Fut>(
     num_peers: u16,
     f: impl FnOnce(
