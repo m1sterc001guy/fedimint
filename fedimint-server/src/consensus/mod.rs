@@ -146,7 +146,7 @@ impl FedimintConsensus {
                 )
                 .await?;
             let isolated_db = db.new_isolated(*module_id);
-            module.migrate_database(&isolated_db).await?;
+            module.migrate_database(isolated_db).await?;
             modules.insert(*module_id, module);
         }
 

@@ -1207,7 +1207,7 @@ async fn verify_dummy_migration() -> Result<()> {
         }
 
         module_dbtx
-            .insert_new_entry(&DatabaseVersionKey, &DatabaseVersion::new(1))
+            .insert_new_entry(&DatabaseVersionKey, &DatabaseVersion(0))
             .await
             .expect("DB Error");
         module_dbtx.commit_tx().await.expect("DB Error");

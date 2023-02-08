@@ -31,7 +31,7 @@ use fedimint_api::config::{
 };
 use fedimint_api::config::{ModuleConfigResponse, TypedServerModuleConsensusConfig};
 use fedimint_api::core::{ModuleInstanceId, ModuleKind};
-use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersion, DatabaseVersionKey};
+use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersionKey};
 use fedimint_api::encoding::{Decodable, Encodable, UnzipConsensus};
 use fedimint_api::module::__reexports::serde_json;
 use fedimint_api::module::audit::Audit;
@@ -68,7 +68,7 @@ use crate::db::{
     BlockHashKey, BlockHashKeyPrefix, PegOutBitcoinTransaction, PegOutBitcoinTransactionPrefix,
     PegOutTxSignatureCI, PegOutTxSignatureCIPrefix, PendingTransactionKey,
     PendingTransactionPrefixKey, RoundConsensusKey, UTXOKey, UTXOPrefixKey, UnsignedTransactionKey,
-    UnsignedTransactionPrefixKey,
+    UnsignedTransactionPrefixKey, DATABASE_VERSION,
 };
 use crate::keys::CompressedPublicKey;
 use crate::tweakable::Tweakable;
@@ -491,11 +491,30 @@ impl ServerModule for Wallet {
         WalletDecoder
     }
 
-    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error> {
+    async fn migrate_database(&self, db: Database) -> Result<(), anyhow::Error> {
         let mut dbtx = db.begin_transaction().await;
-        dbtx.insert_entry(&DatabaseVersionKey, &DatabaseVersion::new(1))
-            .await?;
+        let ondisk_version = dbtx.get_value(&DatabaseVersionKey).await?;
+        let wallet_db_version = if let Some(ondisk_version) = ondisk_version {
+            let current_dbversion = ondisk_version;
+
+            if current_dbversion > DATABASE_VERSION {
+                return Err(anyhow::anyhow!(
+                    "On disk database wallet version was higher than the code database version."
+                ));
+            }
+
+            // TODO: Add loop here
+
+            current_dbversion
+        } else {
+            tracing::info!("Wallet module no database version found.");
+            dbtx.insert_entry(&DatabaseVersionKey, &DATABASE_VERSION)
+                .await?;
+            DATABASE_VERSION
+        };
+
         dbtx.commit_tx().await?;
+        tracing::info!("Wallet module db version: {}", wallet_db_version);
         Ok(())
     }
 

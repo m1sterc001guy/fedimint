@@ -54,7 +54,7 @@ pub trait IServerModule: Debug {
 
     fn as_any(&self) -> &dyn Any;
 
-    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error>;
+    async fn migrate_database(&self, db: Database) -> Result<(), anyhow::Error>;
 
     /// Blocks until a new `consensus_proposal` is available.
     async fn await_consensus_proposal(&self, dbtx: &mut DatabaseTransaction<'_>);
@@ -187,7 +187,7 @@ where
         self
     }
 
-    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error> {
+    async fn migrate_database(&self, db: Database) -> Result<(), anyhow::Error> {
         <Self as ServerModule>::migrate_database(self, db).await
     }
 

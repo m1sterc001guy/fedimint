@@ -1,4 +1,4 @@
-use fedimint_api::db::DatabaseKeyPrefixConst;
+use fedimint_api::db::{DatabaseKeyPrefixConst, DatabaseVersion};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::{OutPoint, PeerId};
 use secp256k1::PublicKey;
@@ -7,6 +7,8 @@ use strum_macros::EnumIter;
 
 use crate::contracts::{incoming::IncomingContractOffer, ContractId, PreimageDecryptionShare};
 use crate::{ContractAccount, LightningGateway, LightningOutputOutcome};
+
+pub const DATABASE_VERSION: DatabaseVersion = DatabaseVersion(0);
 
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]

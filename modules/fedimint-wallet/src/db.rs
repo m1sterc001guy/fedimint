@@ -1,5 +1,5 @@
 use bitcoin::{BlockHash, Txid};
-use fedimint_api::db::DatabaseKeyPrefixConst;
+use fedimint_api::db::{DatabaseKeyPrefixConst, DatabaseVersion};
 use fedimint_api::encoding::{Decodable, Encodable};
 use secp256k1::ecdsa::Signature;
 use serde::Serialize;
@@ -8,6 +8,8 @@ use strum_macros::EnumIter;
 use crate::{
     PendingTransaction, RoundConsensus, SpendableUTXO, UnsignedTransaction, WalletOutputOutcome,
 };
+
+pub const DATABASE_VERSION: DatabaseVersion = DatabaseVersion(0);
 
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]

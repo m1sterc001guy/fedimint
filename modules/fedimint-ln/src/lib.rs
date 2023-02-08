@@ -28,7 +28,7 @@ use fedimint_api::config::{
 };
 use fedimint_api::config::{ModuleConfigResponse, TypedServerModuleConsensusConfig};
 use fedimint_api::core::{ModuleInstanceId, ModuleKind, LEGACY_HARDCODED_INSTANCE_ID_WALLET};
-use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersion, DatabaseVersionKey};
+use fedimint_api::db::{Database, DatabaseTransaction, DatabaseVersionKey};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::module::audit::Audit;
 use fedimint_api::module::interconnect::ModuleInterconect;
@@ -63,7 +63,7 @@ use crate::contracts::{
 use crate::db::{
     AgreedDecryptionShareKey, AgreedDecryptionShareKeyPrefix, ContractKey, ContractKeyPrefix,
     ContractUpdateKey, ContractUpdateKeyPrefix, OfferKey, OfferKeyPrefix,
-    ProposeDecryptionShareKey, ProposeDecryptionShareKeyPrefix,
+    ProposeDecryptionShareKey, ProposeDecryptionShareKeyPrefix, DATABASE_VERSION,
 };
 
 const KIND: ModuleKind = ModuleKind::from_static_str("ln");
@@ -442,11 +442,30 @@ impl ServerModule for Lightning {
         LightningDecoder
     }
 
-    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error> {
+    async fn migrate_database(&self, db: Database) -> Result<(), anyhow::Error> {
         let mut dbtx = db.begin_transaction().await;
-        dbtx.insert_entry(&DatabaseVersionKey, &DatabaseVersion::new(1))
-            .await?;
+        let ondisk_version = dbtx.get_value(&DatabaseVersionKey).await?;
+        let ln_db_version = if let Some(ondisk_version) = ondisk_version {
+            let current_dbversion = ondisk_version;
+
+            if current_dbversion > DATABASE_VERSION {
+                return Err(anyhow::anyhow!(
+                    "On disk database ln version was higher than the code database version."
+                ));
+            }
+
+            // TODO: Add loop here
+
+            current_dbversion
+        } else {
+            tracing::info!("LN module no database version found.");
+            dbtx.insert_entry(&DatabaseVersionKey, &DATABASE_VERSION)
+                .await?;
+            DATABASE_VERSION
+        };
+
         dbtx.commit_tx().await?;
+        tracing::info!("LN module db version: {}", ln_db_version);
         Ok(())
     }
 

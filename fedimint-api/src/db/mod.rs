@@ -685,14 +685,8 @@ where
 #[derive(Debug, Encodable, Decodable, Serialize)]
 pub struct DatabaseVersionKey;
 
-#[derive(Debug, Encodable, Decodable, Serialize, Clone)]
+#[derive(Debug, Encodable, Decodable, Serialize, Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub struct DatabaseVersion(pub u64);
-
-impl DatabaseVersion {
-    pub fn new(version: u64) -> DatabaseVersion {
-        DatabaseVersion(version)
-    }
-}
 
 impl std::fmt::Display for DatabaseVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

@@ -1218,7 +1218,7 @@ impl FederationTest {
                     info!(module_instance_id = id, kind = %kind, "Use overriden module");
                     let isolated_db = db.new_isolated(id);
                     module
-                        .migrate_database(&isolated_db)
+                        .migrate_database(isolated_db)
                         .await
                         .expect("DB Error migrating database");
                     modules.insert(id, module);
@@ -1235,7 +1235,7 @@ impl FederationTest {
                         .unwrap();
                     let isolated_db = db.new_isolated(id);
                     module
-                        .migrate_database(&isolated_db)
+                        .migrate_database(isolated_db)
                         .await
                         .expect("DB Error migrating database");
                     modules.insert(id, module);

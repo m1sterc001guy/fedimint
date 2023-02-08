@@ -1,12 +1,14 @@
 use std::time::SystemTime;
 
-use fedimint_api::db::DatabaseKeyPrefixConst;
+use fedimint_api::db::{DatabaseKeyPrefixConst, DatabaseVersion};
 use fedimint_api::encoding::{Decodable, Encodable};
 use fedimint_api::{Amount, OutPoint, PeerId};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
 use crate::{MintOutputBlindSignatures, MintOutputSignatureShare, Nonce};
+
+pub const DATABASE_VERSION: DatabaseVersion = DatabaseVersion(0);
 
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]

@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use bitcoin_hashes::sha256;
 use common::DummyDecoder;
-use db::{ExampleKey, ExampleKeyPrefixV1, DATABASE_VERSION};
+use db::DATABASE_VERSION;
 use fedimint_api::cancellable::Cancellable;
 use fedimint_api::config::{
     ConfigGenParams, DkgPeerMsg, ModuleGenParams, ServerModuleConfig, TypedServerModuleConfig,
@@ -25,11 +25,11 @@ use fedimint_api::net::peers::MuxPeerConnections;
 use fedimint_api::server::DynServerModule;
 use fedimint_api::task::TaskGroup;
 use fedimint_api::{plugin_types_trait_impl, OutPoint, PeerId, ServerModule};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config::{DummyClientConfig, DummyConfig, DummyConfigConsensus, DummyConfigPrivate};
+use crate::db::migrate_dummy_db_version_0;
 use crate::serde_json::Value;
 
 pub mod common;
@@ -204,47 +204,22 @@ impl ServerModule for Dummy {
         DummyDecoder
     }
 
-    async fn migrate_database(&self, db: &Database) -> Result<(), anyhow::Error> {
+    async fn migrate_database(&self, db: Database) -> Result<(), anyhow::Error> {
         let mut dbtx = db.begin_transaction().await;
         let ondisk_version = dbtx.get_value(&DatabaseVersionKey).await?;
         let dummy_db_version = if let Some(ondisk_version) = ondisk_version {
-            let mut current_dbversion = ondisk_version.0;
+            let mut current_dbversion = ondisk_version;
 
-            if current_dbversion > *DATABASE_VERSION {
+            if current_dbversion > DATABASE_VERSION {
                 return Err(anyhow!(
-                    "On disk database Dummy Version was higher than the code database version."
+                    "On disk database dummy version was higher than the code database version."
                 ));
             }
 
-            while current_dbversion < *DATABASE_VERSION {
+            while current_dbversion < DATABASE_VERSION {
                 match current_dbversion {
-                    1 => {
-                        let mut read_dbtx = db.begin_transaction().await;
-                        let mut write_dbtx = db.begin_transaction().await;
-
-                        let example_keys_v1 = read_dbtx
-                            .find_by_prefix(&ExampleKeyPrefixV1)
-                            .await
-                            .map(|res| res.unwrap())
-                            .collect::<Vec<_>>()
-                            .await;
-                        write_dbtx.remove_by_prefix(&ExampleKeyPrefixV1).await?;
-                        for (key, _) in example_keys_v1 {
-                            let key_v2 = ExampleKey(key.0, format!("Example String"));
-                            write_dbtx.insert_new_entry(&key_v2, &()).await?;
-                        }
-
-                        let new_version = DatabaseVersion::new(2);
-                        write_dbtx
-                            .insert_entry(&DatabaseVersionKey, &new_version)
-                            .await?;
-
-                        write_dbtx.commit_tx().await?;
-                        current_dbversion = new_version.0;
-                        tracing::info!(
-                            "Dummy module successfully migrated to version {}",
-                            new_version
-                        );
+                    DatabaseVersion(0) => {
+                        current_dbversion = migrate_dummy_db_version_0(&db).await?;
                     }
                     _ => {}
                 }
@@ -253,12 +228,9 @@ impl ServerModule for Dummy {
             current_dbversion
         } else {
             tracing::info!("Dummy module no database version found.");
-            dbtx.insert_entry(
-                &DatabaseVersionKey,
-                &DatabaseVersion::new(*DATABASE_VERSION),
-            )
-            .await?;
-            *DATABASE_VERSION
+            dbtx.insert_entry(&DatabaseVersionKey, &DATABASE_VERSION)
+                .await?;
+            DATABASE_VERSION
         };
 
         dbtx.commit_tx().await?;
