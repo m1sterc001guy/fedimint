@@ -56,6 +56,16 @@ enum DbCommand {
         #[arg(required = false)]
         prefixes: Option<String>,
     },
+    /// Print the schema for the specified module and/or prefixes
+    Schema {
+        cfg_dir: PathBuf,
+        #[arg(env = "FM_PASSWORD")]
+        password: String,
+        #[arg(required = false)]
+        modules: Option<String>,
+        #[arg(required = false)]
+        prefixes: Option<String>,
+    },
 }
 
 fn hex_parser(hex: &str) -> Result<Bytes> {
@@ -130,6 +140,33 @@ async fn main() -> Result<()> {
             let mut dbdump =
                 DatabaseDump::new(cfg_dir, options.database, password, modules, prefix_names);
             dbdump.dump_database().await;
+        }
+        DbCommand::Schema {
+            cfg_dir,
+            modules,
+            prefixes,
+            password,
+        } => {
+            // TODO: Refactor this since its copied
+            let modules = match modules {
+                Some(mods) => mods
+                    .split(',')
+                    .map(|s| s.to_string().to_lowercase())
+                    .collect::<Vec<String>>(),
+                None => Vec::new(),
+            };
+
+            let prefix_names = match prefixes {
+                Some(db_prefixes) => db_prefixes
+                    .split(',')
+                    .map(|s| s.to_string().to_lowercase())
+                    .collect::<Vec<String>>(),
+                None => Vec::new(),
+            };
+
+            let mut dbdump =
+                DatabaseDump::new(cfg_dir, options.database, password, modules, prefix_names);
+            dbdump.dump_schema().await;
         }
     }
 

@@ -1155,6 +1155,44 @@ impl DecodingError {
 }
 
 #[macro_export]
+macro_rules! push_schema_no_serde {
+    ($dbtx:ident, $prefix_type:expr, $prefix_name:expr, $map:ident) => {
+        let mut field_schema: BTreeMap<String, Box<dyn Serialize>> = BTreeMap::new();
+        let pair = $dbtx.find_by_prefix(&$prefix_type).await.next().await;
+        let pair_type = $prefix_name.to_string();
+        if let Some(key_pair) = pair {
+            let (key, value) = key_pair.unwrap();
+            let key_schema = schema_for_value!(key);
+            let value_schema = schema_for_value!(SerdeWrapper::from_encodable(value));
+            field_schema.insert("Key".to_string(), Box::new(key_schema));
+            field_schema.insert("Value".to_string(), Box::new(value_schema));
+            $map.insert(pair_type, Box::new(field_schema));
+        } else {
+            println!("No instances of {pair_type} in the database.");
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! push_schema {
+    ($dbtx:ident, $prefix_type:expr, $prefix_name:expr, $map:ident) => {
+        let mut field_schema: BTreeMap<String, Box<dyn Serialize>> = BTreeMap::new();
+        let pair = $dbtx.find_by_prefix(&$prefix_type).await.next().await;
+        let pair_type = $prefix_name.to_string();
+        if let Some(key_pair) = pair {
+            let (key, value) = key_pair.unwrap();
+            let key_schema = schema_for_value!(key);
+            let value_schema = schema_for_value!(value);
+            field_schema.insert("Key".to_string(), Box::new(key_schema));
+            field_schema.insert("Value".to_string(), Box::new(value_schema));
+            $map.insert(pair_type, Box::new(field_schema));
+        } else {
+            println!("No instances of {pair_type} in the database.");
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! push_db_pair_items {
     ($dbtx:ident, $prefix_type:expr, $key_type:ty, $value_type:ty, $map:ident, $key_literal:literal) => {
         let db_items = $dbtx

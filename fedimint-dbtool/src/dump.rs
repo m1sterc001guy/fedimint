@@ -8,7 +8,10 @@ use fedimint_core::encoding::Encodable;
 use fedimint_core::module::DynServerModuleGen;
 use fedimint_core::module::__reexports::serde_json;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
-use fedimint_core::{push_db_key_items, push_db_pair_items, push_db_pair_items_no_serde};
+use fedimint_core::{
+    push_db_key_items, push_db_pair_items, push_db_pair_items_no_serde, push_schema,
+    push_schema_no_serde,
+};
 use fedimint_ln_server::LightningGen;
 use fedimint_mint_server::MintGen;
 use fedimint_rocksdb::RocksDbReadOnly;
@@ -21,6 +24,7 @@ use mint_client::db as ClientRange;
 use mint_client::ln::db as ClientLightningRange;
 use mint_client::mint::db as ClientMintRange;
 use mint_client::wallet::db as ClientWalletRange;
+use schemars::schema_for_value;
 use strum::IntoEnumIterator;
 
 #[derive(Debug, serde::Serialize)]
@@ -103,10 +107,20 @@ impl<'a> DatabaseDump<'a> {
         println!("{json}");
     }
 
-    /// Iterates through all the specified ranges in the database and retrieves
+    /// Iterates through all the specified modules in the database and retrieves
+    /// the schema for each module and/or prefix
+    pub async fn dump_schema(&mut self) {
+        if self.modules.is_empty() || self.modules.contains(&"consensus".to_string()) {
+            self.retrieve_consensus_schema().await;
+        }
+
+        self.print_database();
+    }
+
+    /// Iterates through all the specified modules in the database and retrieves
     /// the data for each range. Prints serialized contents at the end.
     pub async fn dump_database(&mut self) {
-        if !self.modules.is_empty() && self.modules.contains(&"consensus".to_string()) {
+        if self.modules.is_empty() || self.modules.contains(&"consensus".to_string()) {
             self.retrieve_consensus_data().await;
         }
 
@@ -145,6 +159,67 @@ impl<'a> DatabaseDump<'a> {
         }
 
         self.print_database();
+    }
+
+    async fn retrieve_consensus_schema(&mut self) {
+        let mut schema: BTreeMap<String, Box<dyn Serialize>> = BTreeMap::new();
+        let dbtx = &mut self.read_only;
+        let prefix_names = &self.prefixes;
+
+        let filtered_prefixes = ConsensusRange::DbKeyPrefix::iter().filter(|f| {
+            prefix_names.is_empty() || prefix_names.contains(&f.to_string().to_lowercase())
+        });
+
+        for table in filtered_prefixes {
+            match table {
+                ConsensusRange::DbKeyPrefix::AcceptedTransaction => {
+                    push_schema_no_serde!(
+                        dbtx,
+                        ConsensusRange::AcceptedTransactionKeyPrefix,
+                        ConsensusRange::DbKeyPrefix::AcceptedTransaction,
+                        schema
+                    );
+                }
+                ConsensusRange::DbKeyPrefix::DropPeer => {
+                    push_schema!(
+                        dbtx,
+                        ConsensusRange::DropPeerKeyPrefix,
+                        ConsensusRange::DbKeyPrefix::DropPeer,
+                        schema
+                    );
+                }
+                ConsensusRange::DbKeyPrefix::RejectedTransaction => {
+                    push_schema!(
+                        dbtx,
+                        ConsensusRange::RejectedTransactionKeyPrefix,
+                        ConsensusRange::DbKeyPrefix::RejectedTransaction,
+                        schema
+                    );
+                }
+                ConsensusRange::DbKeyPrefix::EpochHistory => {
+                    push_schema_no_serde!(
+                        dbtx,
+                        ConsensusRange::EpochHistoryKeyPrefix,
+                        ConsensusRange::DbKeyPrefix::EpochHistory,
+                        schema
+                    );
+                }
+                ConsensusRange::DbKeyPrefix::LastEpoch => {}
+                ConsensusRange::DbKeyPrefix::ClientConfigSignature => {
+                    push_schema!(
+                        dbtx,
+                        ConsensusRange::ClientConfigSignatureKeyPrefix,
+                        ConsensusRange::DbKeyPrefix::ClientConfigSignature,
+                        schema
+                    );
+                }
+                // Module is a global prefix for all module data
+                ConsensusRange::DbKeyPrefix::Module => {}
+            }
+        }
+
+        self.serialized
+            .insert("Consensus".to_string(), Box::new(schema));
     }
 
     /// Iterates through each of the prefixes within the consensus range and
