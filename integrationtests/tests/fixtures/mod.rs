@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap};
-use std::env;
 use std::future::Future;
 use std::iter::repeat;
 use std::net::SocketAddr;
@@ -8,6 +7,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use std::{env, fs};
 
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::{secp256k1, Address, KeyPair};
@@ -30,6 +30,7 @@ use fedimint_core::{core, sats, Amount, OutPoint, PeerId, TieredMulti};
 use fedimint_ln::{LightningGateway, LightningGen};
 use fedimint_mint::db::NonceKeyPrefix;
 use fedimint_mint::{MintGen, MintOutput};
+use fedimint_server::config::io::read_server_config;
 use fedimint_server::config::{ServerConfig, ServerConfigParams};
 use fedimint_server::consensus::{
     ConsensusProposal, FedimintConsensus, HbbftConsensusOutcome, TransactionSubmissionError,
@@ -163,22 +164,33 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
     let fixtures = match env::var("FM_TEST_DISABLE_MOCKS") {
         Ok(s) if s == "1" => {
             info!("Testing with REAL Bitcoin and Lightning services");
-            let mut config_task_group = task_group.make_subgroup().await;
-            let (server_config, client_config) = distributed_config(
-                &peers,
-                params,
-                module_inits.clone(),
-                max_evil,
-                &mut config_task_group,
-            )
-            .await
-            .expect("distributed config should not be canceled");
-            config_task_group
-                .shutdown_join_all(None)
-                .await
-                .expect("Distributed config did not exit cleanly");
 
             let dir = env::var("FM_TEST_DIR").expect("Must have test dir defined for real tests");
+            let (server_config, client_config) = if env::var("FM_TEST_USE_EXISTING_FED").is_ok() {
+                get_configs(
+                    &peers,
+                    PathBuf::from(dir.clone()).join("cfg"),
+                    module_inits.clone(),
+                )
+                .await
+            } else {
+                let mut config_task_group = task_group.make_subgroup().await;
+                let (server_config, client_config) = distributed_config(
+                    &peers,
+                    params,
+                    module_inits.clone(),
+                    max_evil,
+                    &mut config_task_group,
+                )
+                .await
+                .expect("distributed config should not be canceled");
+                config_task_group
+                    .shutdown_join_all(None)
+                    .await
+                    .expect("Distributed config did not exit cleanly");
+                (server_config, client_config)
+            };
+
             let bitcoin_rpc_url =
                 match read_bitcoin_backend_from_global_env().expect("invalid bitcoin rpc url") {
                     fedimint_core::bitcoin_rpc::BitcoindRpcBackend::Bitcoind(url) => url,
@@ -204,7 +216,9 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
 
             let connect_gen =
                 |cfg: &ServerConfig| TlsTcpConnector::new(cfg.tls_config()).into_dyn();
-            let fed_db = |decoders| Database::new(rocks(dir.clone()), decoders);
+            let fed_db = |decoders, cfg: &ServerConfig| {
+                Database::new(rocks(dir.clone(), Some(cfg.local.identity)), decoders)
+            };
             let fed = FederationTest::new(
                 server_config,
                 &fed_db,
@@ -220,7 +234,7 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
                 let db_name = format!("client-{}", rng().next_u64());
                 Database::new(sqlite(dir.clone(), db_name).await, decoders.clone())
             } else {
-                Database::new(rocks(dir.clone()), decoders.clone())
+                Database::new(rocks(dir.clone(), None), decoders.clone())
             };
 
             let user_cfg = UserClientConfig(client_config.clone());
@@ -273,7 +287,8 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
             let connect_gen =
                 move |cfg: &ServerConfig| net_ref.connector(cfg.local.identity).into_dyn();
 
-            let fed_db = |decoders| Database::new(MemDatabase::new(), decoders);
+            let fed_db =
+                |decoders, _cfg: &ServerConfig| Database::new(MemDatabase::new(), decoders);
             let fed = FederationTest::new(
                 server_config,
                 &fed_db,
@@ -411,15 +426,65 @@ async fn distributed_config(
     .collect();
 
     let (_, config) = configs.first().unwrap().clone();
-
-    Ok((
-        configs.into_iter().collect(),
-        config.consensus.to_config_response(&registry).client,
-    ))
+    let client_config = config.consensus.to_config_response(&registry).client;
+    Ok((configs.into_iter().collect(), client_config))
 }
 
-fn rocks(dir: String) -> fedimint_rocksdb::RocksDb {
-    let db_dir = PathBuf::from(dir).join(format!("db-{}", rng().next_u64()));
+async fn get_configs(
+    peers: &[PeerId],
+    config_dir: PathBuf,
+    registry: ModuleGenRegistry,
+) -> (BTreeMap<PeerId, ServerConfig>, ClientConfig) {
+    tracing::info!("ConfigDir: {:?}", config_dir);
+    let mut server_configs = BTreeMap::new();
+    for peer in peers {
+        let password = format!("pass{}", peer.clone());
+        let cfg_dir = config_dir.join(format!("server-{}", peer));
+        let cfg = read_server_config(&password, cfg_dir).unwrap();
+        server_configs.insert(*peer, cfg);
+    }
+    let client_config = server_configs
+        .first_key_value()
+        .unwrap()
+        .1
+        .consensus
+        .to_config_response(&registry)
+        .client;
+    (server_configs, client_config)
+}
+
+fn rocks(dir: String, peer: Option<PeerId>) -> fedimint_rocksdb::RocksDb {
+    let db_extension = if let Some(peer) = peer {
+        if env::var("FM_TEST_USE_EXISTING_FED").is_ok() {
+            // TODO: Copy federation from somewhere else to this directory
+
+            tracing::info!("JUMOELL reading exisitng directories...");
+            let directories = fs::read_dir(dir.clone()).unwrap();
+            let mut ext = format!("db-{}-{}", peer, rng().next_u64());
+            for path in directories {
+                let path = path.unwrap().path();
+                if path.is_dir()
+                    && path
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with(&format!("db-{}", peer))
+                {
+                    ext = path.file_name().unwrap().to_str().unwrap().to_string();
+                }
+            }
+
+            ext
+        } else {
+            format!("db-{}-{}", peer, rng().next_u64())
+        }
+    } else {
+        format!("db-client-{}", rng().next_u64())
+    };
+
+    let db_dir = PathBuf::from(dir).join(db_extension);
+    tracing::info!("Rocksdb directory: {:?}", db_dir);
     fedimint_rocksdb::RocksDb::open(db_dir).unwrap()
 }
 
@@ -1158,7 +1223,7 @@ impl FederationTest {
 
     async fn new(
         server_config: BTreeMap<PeerId, ServerConfig>,
-        database_gen: &impl Fn(ModuleDecoderRegistry) -> Database,
+        database_gen: &impl Fn(ModuleDecoderRegistry, &ServerConfig) -> Database,
         bitcoin_gen: &impl Fn() -> DynBitcoindRpc,
         connect_gen: &impl Fn(&ServerConfig) -> PeerConnector<EpochMessage>,
         module_inits: ModuleGenRegistry,
@@ -1173,7 +1238,7 @@ impl FederationTest {
         let servers = join_all(server_config.values().map(|cfg| async {
             let btc_rpc = bitcoin_gen();
             let decoders = module_inits.decoders(cfg.iter_module_instances()).unwrap();
-            let db = database_gen(decoders.clone());
+            let db = database_gen(decoders.clone(), cfg);
             let mut task_group = task_group.clone();
 
             let mut override_modules = override_modules(cfg.clone(), db.clone()).await;

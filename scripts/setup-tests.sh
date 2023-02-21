@@ -4,7 +4,7 @@ set -u
 
 echo "Setting up tests..."
 
-FM_FED_SIZE=${1:-4}
+FM_FED_SIZE=${1:-2}
 
 source ./scripts/build.sh $FM_FED_SIZE
 
