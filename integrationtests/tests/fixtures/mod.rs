@@ -166,6 +166,7 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
             info!("Testing with REAL Bitcoin and Lightning services");
 
             let dir = env::var("FM_TEST_DIR").expect("Must have test dir defined for real tests");
+            /*
             if env::var("FM_TEST_USE_EXISTING_FED").is_ok() {
                 let directories = fs::read_dir(dir.clone()).unwrap();
                 for path in directories {
@@ -179,11 +180,12 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
                 }
 
                 copy_dir(
-                    Path::new("/home/jumoell/Projects/fedimint/databases/2023-02-21-fed"),
+                    Path::new("/home/jumoell/Projects/fedimint/databases/2023-02-21-guardians-2"),
                     Path::new(dir.as_str()),
                 )
                 .expect("Error while copying previous federation");
             }
+            */
 
             let (server_config, client_config) = if env::var("FM_TEST_USE_EXISTING_FED").is_ok() {
                 get_configs(

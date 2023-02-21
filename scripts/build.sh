@@ -4,7 +4,8 @@ source ./scripts/lib.sh
 echo "Run with 'source ./scripts/build.sh [fed_size] [dir]"
 
 # allow for overriding arguments
-export FM_FED_SIZE=${1:-4}
+#export FM_FED_SIZE=${1:-4}
+export FM_FED_SIZE=2
 BASE_PORT=$((8173 + 10000))
 
 # If $TMP contains '/nix-shell.' it is already unique to the
