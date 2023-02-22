@@ -509,10 +509,12 @@ fn rocks(dir: String, peer: Option<PeerId>) -> fedimint_rocksdb::RocksDb {
                         .starts_with(&format!("db-{}", peer))
                 {
                     ext = path.file_name().unwrap().to_str().unwrap().to_string();
+                    break;
                 }
             }
 
             ext
+            //format!("db-{}-{}", peer, rng().next_u64())
         } else {
             format!("db-{}-{}", peer, rng().next_u64())
         }
@@ -1083,7 +1085,7 @@ impl FederationTest {
             for (i, server) in self.servers.iter().enumerate() {
                 let server = server.clone();
                 task_group
-                    .spawn(format!("server-{i}-consensu_epoch"), move |_| async {
+                    .spawn(format!("server-{i}-consensus_epoch"), move |_| async {
                         Self::consensus_epoch(server, Duration::from_millis(0)).await
                     })
                     .await;

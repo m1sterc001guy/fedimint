@@ -44,6 +44,7 @@ async fn peg_in_and_peg_out_with_fees() -> Result<()> {
         bitcoin
             .mine_blocks(fed.wallet.consensus.finality_delay as u64)
             .await;
+        fed.rejoin_consensus().await.unwrap();
         fed.run_consensus_epochs(1).await;
 
         user.client.peg_in(proof, tx, rng()).await.unwrap();

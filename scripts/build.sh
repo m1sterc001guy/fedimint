@@ -20,7 +20,7 @@ else
   FM_TMP_DIR="${2-"$(mktemp -d)"}"
 fi
 export FM_TMP_DIR
-export FM_TEST_FAST_WEAK_CRYPTO="1"
+#export FM_TEST_FAST_WEAK_CRYPTO="1"
 
 echo "Setting up env variables in $FM_TMP_DIR"
 
