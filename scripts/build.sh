@@ -4,8 +4,7 @@ source ./scripts/lib.sh
 echo "Run with 'source ./scripts/build.sh [fed_size] [dir]"
 
 # allow for overriding arguments
-#export FM_FED_SIZE=${1:-4}
-export FM_FED_SIZE=2
+export FM_FED_SIZE=${1:-4}
 BASE_PORT=$((8173 + 10000))
 
 # If $TMP contains '/nix-shell.' it is already unique to the
@@ -20,7 +19,7 @@ else
   FM_TMP_DIR="${2-"$(mktemp -d)"}"
 fi
 export FM_TMP_DIR
-#export FM_TEST_FAST_WEAK_CRYPTO="1"
+export FM_TEST_FAST_WEAK_CRYPTO="1"
 
 echo "Setting up env variables in $FM_TMP_DIR"
 

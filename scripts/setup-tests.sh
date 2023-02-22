@@ -4,10 +4,13 @@ set -u
 
 echo "Setting up tests..."
 
-FM_FED_SIZE=${1:-2}
+FM_FED_SIZE=${1:-4}
 
 source ./scripts/build.sh $FM_FED_SIZE
-cp -r /home/jumoell/Projects/fedimint/databases/2023-02-21-strong-crypto/* $FM_TEST_DIR
+if [ ! -z "$FM_TEST_USE_EXISTING_FED" ]; then
+  export FM_TEST_FAST_WEAK_CRYPTO="0"
+  cp -r /home/jumoell/Projects/fedimint/databases/2023-02-21-strong-crypto/* $FM_TEST_DIR
+fi
 
 # Starts Bitcoin and 2 LN nodes, opening a channel between the LN nodes
 POLL_INTERVAL=1

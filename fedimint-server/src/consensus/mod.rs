@@ -585,7 +585,6 @@ impl FedimintConsensus {
         rejected_txs: BTreeSet<TransactionId>,
     ) -> SignedEpochOutcome {
         let prev_epoch_key = EpochHistoryKey(outcome.epoch.saturating_sub(1));
-        tracing::info!("JUMOELL prev_epoch_key {:?}", prev_epoch_key);
         let peers: Vec<PeerId> = outcome.contributions.keys().cloned().collect();
         let maybe_prev_epoch = dbtx.get_value(&prev_epoch_key).await.expect("DB error");
 

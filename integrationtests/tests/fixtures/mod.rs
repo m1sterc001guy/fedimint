@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::iter::repeat;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::Arc;
@@ -166,27 +166,6 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
             info!("Testing with REAL Bitcoin and Lightning services");
 
             let dir = env::var("FM_TEST_DIR").expect("Must have test dir defined for real tests");
-            /*
-            if env::var("FM_TEST_USE_EXISTING_FED").is_ok() {
-                let directories = fs::read_dir(dir.clone()).unwrap();
-                for path in directories {
-                    let file_path = path.unwrap().path();
-                    let file_name = file_path.file_name().unwrap().to_str().unwrap();
-                    if file_path.is_dir()
-                        && (file_name.starts_with(&format!("db-")) || file_name.starts_with("cfg"))
-                    {
-                        fs::remove_dir_all(file_path).expect("Error removing previous config/db");
-                    }
-                }
-
-                copy_dir(
-                    Path::new("/home/jumoell/Projects/fedimint/databases/2023-02-21-guardians-2"),
-                    Path::new(dir.as_str()),
-                )
-                .expect("Error while copying previous federation");
-            }
-            */
-
             let (server_config, client_config) = if env::var("FM_TEST_USE_EXISTING_FED").is_ok() {
                 get_configs(
                     &peers,
@@ -474,25 +453,6 @@ async fn get_configs(
     (server_configs, client_config)
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
-    if src.is_dir() {
-        fs::create_dir_all(dst)?;
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            let path = entry.path();
-            let new_dst = dst.join(path.strip_prefix(src).unwrap());
-            if path.is_dir() {
-                copy_dir(&path, &new_dst)?;
-            } else {
-                fs::copy(&path, &new_dst)?;
-            }
-        }
-    } else {
-        fs::copy(src, dst)?;
-    }
-    Ok(())
-}
-
 fn rocks(dir: String, peer: Option<PeerId>) -> fedimint_rocksdb::RocksDb {
     let db_extension = if let Some(peer) = peer {
         if env::var("FM_TEST_USE_EXISTING_FED").is_ok() {
@@ -514,7 +474,6 @@ fn rocks(dir: String, peer: Option<PeerId>) -> fedimint_rocksdb::RocksDb {
             }
 
             ext
-            //format!("db-{}-{}", peer, rng().next_u64())
         } else {
             format!("db-{}-{}", peer, rng().next_u64())
         }
