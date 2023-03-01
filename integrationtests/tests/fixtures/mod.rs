@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
-use std::env;
 use std::future::Future;
 use std::iter::repeat;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+use std::{env, fs};
 
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::{secp256k1, Address, KeyPair};
@@ -44,6 +44,7 @@ use fedimint_server::net::peers::PeerConnector;
 use fedimint_server::{consensus, EpochMessage, FedimintServer};
 use fedimint_testing::btc::fixtures::FakeBitcoinTest;
 use fedimint_testing::btc::BitcoinTest;
+use fedimint_testing::copy_directory;
 use fedimint_testing::ln::fixtures::FakeLightningTest;
 use fedimint_testing::ln::LightningTest;
 use fedimint_wallet::config::WalletConfig;
@@ -104,6 +105,44 @@ pub struct Fixtures {
     pub task_group: TaskGroup,
 }
 
+/// Iterates through every directory in the `FM_TEST_DIR` and copies the
+/// directories that begin with "db-". These are the databases of the federation
+/// members for the integration test. These databases are backed up to a
+/// supplied directory called `backup_parent`.
+///
+/// Backing up the databases is used to taking a snapshot of the federation
+/// members database state for every integration test. Unit test suites from
+/// newer code versions can then read these databases to verify that database
+/// migrations are working properly.
+///
+/// This function will always copy the databases using the following pattern:
+///
+/// <backup_parent>
+///     test-X
+///         db-A-B
+///         db-C-D
+/// X, B, and D are random numbers. A and C are the PeerId's of the federation
+/// members.
+fn backup_databases(backup_parent: &Path) -> anyhow::Result<()> {
+    let backup_dir = backup_parent.join(format!("test-{}", rng().next_u64()));
+    let test_dir = env::var("FM_TEST_DIR")?;
+    let db_dir = Path::new(&test_dir);
+
+    let files = fs::read_dir(db_dir)?;
+    for file in files.flatten() {
+        let name = file.file_name().into_string().unwrap();
+        if name.starts_with("db-") {
+            let src = file.path();
+            let dst = backup_dir.join(name);
+            tracing::info!("Copying from {:?} to {:?}", src, dst);
+            copy_directory(&src, &dst)?;
+            fs::remove_dir_all(&src)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Helper for generating fixtures, passing them into test code, then shutting
 /// down the task thread when the test is complete.
 pub async fn test<B>(
@@ -128,6 +167,11 @@ where
         fixtures.lightning,
     )
     .await;
+
+    if let Ok(backup_dir) = env::var("FM_TEST_DB_BACKUP_DIR") {
+        backup_databases(Path::new(&backup_dir))?;
+    }
+
     fixtures.task_group.shutdown_join_all(None).await
 }
 
@@ -211,7 +255,9 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
 
             let connect_gen =
                 |cfg: &ServerConfig| TlsTcpConnector::new(cfg.tls_config()).into_dyn();
-            let fed_db = |decoders| Database::new(rocks(dir.clone()), decoders);
+            let fed_db = |decoders, cfg: &ServerConfig| {
+                Database::new(rocks(dir.clone(), Some(cfg.local.identity)), decoders)
+            };
             let fed = FederationTest::new(
                 server_config,
                 &fed_db,
@@ -227,7 +273,7 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
                 let db_name = format!("client-{}", rng().next_u64());
                 Database::new(sqlite(dir.clone(), db_name).await, decoders.clone())
             } else {
-                Database::new(rocks(dir.clone()), decoders.clone())
+                Database::new(rocks(dir.clone(), None), decoders.clone())
             };
 
             let user_cfg = UserClientConfig(client_config.clone());
@@ -282,7 +328,8 @@ pub async fn fixtures(num_peers: u16) -> anyhow::Result<Fixtures> {
             let connect_gen =
                 move |cfg: &ServerConfig| net_ref.connector(cfg.local.identity).into_dyn();
 
-            let fed_db = |decoders| Database::new(MemDatabase::new(), decoders);
+            let fed_db =
+                |decoders, _cfg: &ServerConfig| Database::new(MemDatabase::new(), decoders);
             let fed = FederationTest::new(
                 server_config,
                 &fed_db,
@@ -426,8 +473,12 @@ async fn distributed_config(
     ))
 }
 
-fn rocks(dir: String) -> fedimint_rocksdb::RocksDb {
-    let db_dir = PathBuf::from(dir).join(format!("db-{}", rng().next_u64()));
+fn rocks(dir: String, peer_id: Option<PeerId>) -> fedimint_rocksdb::RocksDb {
+    let db_dir = if let Some(peer_id) = peer_id {
+        PathBuf::from(dir).join(format!("db-{}-{}", peer_id, rng().next_u64()))
+    } else {
+        PathBuf::from(dir).join(format!("dbclient-{}", rng().next_u64()))
+    };
     fedimint_rocksdb::RocksDb::open(db_dir).unwrap()
 }
 
@@ -1154,7 +1205,7 @@ impl FederationTest {
 
     async fn new(
         server_config: BTreeMap<PeerId, ServerConfig>,
-        database_gen: &impl Fn(ModuleDecoderRegistry) -> Database,
+        database_gen: &impl Fn(ModuleDecoderRegistry, &ServerConfig) -> Database,
         bitcoin_gen: &impl Fn() -> DynBitcoindRpc,
         connect_gen: &impl Fn(&ServerConfig) -> PeerConnector<EpochMessage>,
         module_inits: ServerModuleGenRegistry,
@@ -1169,7 +1220,7 @@ impl FederationTest {
         let servers = join_all(server_config.values().map(|cfg| async {
             let btc_rpc = bitcoin_gen();
             let decoders = module_inits.decoders(cfg.iter_module_instances()).unwrap();
-            let db = database_gen(decoders.clone());
+            let db = database_gen(decoders.clone(), cfg);
             let mut task_group = task_group.clone();
 
             let mut override_modules = override_modules(cfg.clone(), db.clone()).await;

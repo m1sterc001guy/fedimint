@@ -48,6 +48,7 @@ tokio-util = { version = "0.7.4", features = [ "codec" ] }
 tracing-subscriber = { version = "0.3.16", features = [ "env-filter" ] }
 
 [dev-dependencies]
+fedimint-testing = { path = "../fedimint-testing" }
 test-log = { version = "0.2", features = [ "trace" ], default-features = false }
 
 [build-dependencies]

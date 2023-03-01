@@ -1,12 +1,18 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::future::Future;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::{fs, io};
 
+use async_recursion::async_recursion;
 use async_trait::async_trait;
 use fedimint_core::config::{ClientModuleConfig, ConfigGenParams, ServerModuleConfig};
-use fedimint_core::core::{ModuleInstanceId, LEGACY_HARDCODED_INSTANCE_ID_WALLET};
+use fedimint_core::core::{
+    ModuleInstanceId, LEGACY_HARDCODED_INSTANCE_ID_LN, LEGACY_HARDCODED_INSTANCE_ID_MINT,
+    LEGACY_HARDCODED_INSTANCE_ID_WALLET,
+};
 use fedimint_core::db::mem_impl::MemDatabase;
 use fedimint_core::db::{Database, ModuleDatabaseTransaction};
 use fedimint_core::module::interconnect::ModuleInterconect;
@@ -16,6 +22,12 @@ use fedimint_core::module::{
     TransactionItemAmount,
 };
 use fedimint_core::{OutPoint, PeerId, ServerModule};
+use fedimint_ln::Lightning;
+use fedimint_mint::Mint;
+use fedimint_rocksdb::RocksDb;
+use fedimint_wallet::Wallet;
+use rand::rngs::OsRng;
+use rand::RngCore;
 
 pub mod btc;
 pub mod ln;
@@ -340,6 +352,106 @@ where
     }
 
     first
+}
+
+/// Recursively iterates through all of the databases in the 'db_dir' directory
+/// and applies a function to each database. This function expects the following
+/// directory layout:
+///
+/// <root>
+///   test-X
+///      db-A-B
+///      db-C-D
+///
+/// X, B, and D are random numbers. A and C are the `PeerId` of the guardian who
+/// owned the database. There can be an arbitrary number of tests and databases.
+///
+/// When this function finds a directory named "db-", it will create a temporary
+/// database using the contents of this directory. The supplied closure is then
+/// executed against the temporary database. This is useful for testing database
+/// migrations from a pre-supplied database backup directory.
+#[async_recursion]
+pub async fn apply_to_databases<'a, F, Fut>(
+    db_dir: &Path,
+    f: F,
+    migrated_values: &mut BTreeMap<u8, usize>,
+) where
+    F: Fn(Database) -> Fut + Send + Sync + Copy,
+    Fut: futures::Future<Output = BTreeMap<u8, usize>> + Send + 'a,
+{
+    let files = fs::read_dir(db_dir).unwrap();
+    for file in files.flatten() {
+        let name = file.file_name().into_string().unwrap();
+        if name.starts_with("test-") {
+            apply_to_databases(&db_dir.join(file.path()), f, migrated_values).await;
+        } else if name.starts_with("db-") {
+            let temp_db = open_temp_db_and_copy(
+                format!("{}-{}", name.as_str(), OsRng.next_u64()),
+                &file.path(),
+            );
+            let num_migrated_values = f(temp_db).await;
+            for (key, value) in num_migrated_values {
+                let prev_val = if let Some(val) = migrated_values.get(&key) {
+                    *val
+                } else {
+                    0
+                };
+                migrated_values.insert(key, value + prev_val);
+            }
+        }
+    }
+}
+
+/// Open a temporary `Database` and copy the contents from `src_dir` to the
+/// `Database`. This is useful for obtaining a temporary copy of a database that
+/// can be used for testing migrations from a old database copy with the new
+/// code.
+fn open_temp_db_and_copy(temp_path: String, src_dir: &Path) -> Database {
+    // First copy the contents from src_dir to the path where the database will be
+    // open
+    let path = tempfile::Builder::new()
+        .prefix(temp_path.as_str())
+        .tempdir()
+        .unwrap();
+    copy_directory(src_dir, path.path()).expect("Error copying database to temporary directory");
+
+    let decoders = ModuleDecoderRegistry::from_iter([
+        (
+            LEGACY_HARDCODED_INSTANCE_ID_LN,
+            <Lightning as ServerModule>::decoder(),
+        ),
+        (
+            LEGACY_HARDCODED_INSTANCE_ID_MINT,
+            <Mint as ServerModule>::decoder(),
+        ),
+        (
+            LEGACY_HARDCODED_INSTANCE_ID_WALLET,
+            <Wallet as ServerModule>::decoder(),
+        ),
+    ]);
+
+    Database::new(RocksDb::open(path).unwrap(), decoders)
+}
+
+/// Recursively copies a directory from the source `Path` to the destination
+/// `Path`. Used to make backup copies of databases for testing database
+/// migrations.
+pub fn copy_directory(src: &Path, dst: &Path) -> io::Result<()> {
+    // Create the destination directory if it doesn't exist
+    fs::create_dir_all(dst)?;
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            copy_directory(&path, &dst.join(entry.file_name()))?;
+        } else {
+            let dst_path = dst.join(entry.file_name());
+            fs::copy(&path, &dst_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 struct FakeInterconnect(

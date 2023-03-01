@@ -118,3 +118,143 @@ impl_db_lookup!(
     key = LightningGatewayKey,
     query_prefix = LightningGatewayKeyPrefix
 );
+
+#[cfg(test)]
+mod fedimint_migration_tests {
+    use std::collections::BTreeMap;
+    use std::env;
+    use std::path::Path;
+
+    use fedimint_core::core::LEGACY_HARDCODED_INSTANCE_ID_LN;
+    use fedimint_core::db::apply_migrations;
+    use fedimint_core::module::DynModuleGen;
+    use fedimint_testing::apply_to_databases;
+    use futures::StreamExt;
+    use strum::IntoEnumIterator;
+
+    use crate::db::{
+        AgreedDecryptionShareKeyPrefix, ContractKeyPrefix, ContractUpdateKeyPrefix, DbKeyPrefix,
+        LightningGatewayKeyPrefix, ProposeDecryptionShareKeyPrefix,
+    };
+    use crate::LightningGen;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_lightning_database_migration() {
+        // Only run the database migration test if the database backup directory
+        // environment variable has been defined
+        let backup_dir = env::var("FM_TEST_DB_BACKUP_DIR");
+        if let Ok(backup_dir) = backup_dir {
+            let mut migrated_values = BTreeMap::new();
+            apply_to_databases(
+                Path::new(&backup_dir),
+                |db| async move {
+                    // First apply all of the database migrations so that the data can be properly
+                    // read.
+                    let module = DynModuleGen::from(LightningGen);
+                    let isolated_db = db.new_isolated(LEGACY_HARDCODED_INSTANCE_ID_LN);
+                    apply_migrations(
+                        &isolated_db,
+                        module.module_kind().to_string(),
+                        module.database_version(),
+                        module.get_database_migrations(),
+                    )
+                    .await
+                    .expect("Error applying migrations to temp database");
+
+                    // Verify that all of the data from the lightning namespace can be read. If a
+                    // database migration failed or was not properly supplied,
+                    // this will fail.
+                    let mut migrated_pairs: BTreeMap<u8, usize> = BTreeMap::new();
+                    let mut dbtx = isolated_db.begin_transaction().await;
+
+                    for prefix in DbKeyPrefix::iter() {
+                        match prefix {
+                            DbKeyPrefix::Contract => {
+                                let contracts = dbtx
+                                    .find_by_prefix(&ContractKeyPrefix)
+                                    .await
+                                    .collect::<Vec<_>>()
+                                    .await;
+                                let num_contracts = contracts.len();
+                                for contract in contracts {
+                                    contract.expect("Error deserializing contract");
+                                }
+                                migrated_pairs.insert(DbKeyPrefix::Contract as u8, num_contracts);
+                            }
+                            DbKeyPrefix::AgreedDecryptionShare => {
+                                let agreed_decryption_shares = dbtx
+                                    .find_by_prefix(&AgreedDecryptionShareKeyPrefix)
+                                    .await
+                                    .collect::<Vec<_>>()
+                                    .await;
+                                let num_shares = agreed_decryption_shares.len();
+                                for share in agreed_decryption_shares {
+                                    share.expect("Error deserializing AgreedDecryptionShare");
+                                }
+                                migrated_pairs
+                                    .insert(DbKeyPrefix::AgreedDecryptionShare as u8, num_shares);
+                            }
+                            DbKeyPrefix::ContractUpdate => {
+                                let contract_updates = dbtx
+                                    .find_by_prefix(&ContractUpdateKeyPrefix)
+                                    .await
+                                    .collect::<Vec<_>>()
+                                    .await;
+                                let num_updates = contract_updates.len();
+                                for update in contract_updates {
+                                    update.expect("Error deserializing ContractUpdate");
+                                }
+                                migrated_pairs
+                                    .insert(DbKeyPrefix::ContractUpdate as u8, num_updates);
+                            }
+                            DbKeyPrefix::LightningGateway => {
+                                let gateways = dbtx
+                                    .find_by_prefix(&LightningGatewayKeyPrefix)
+                                    .await
+                                    .collect::<Vec<_>>()
+                                    .await;
+                                let num_gateways = gateways.len();
+                                for gateway in gateways {
+                                    gateway.expect("Error deserializing LightningGateway");
+                                }
+                                migrated_pairs
+                                    .insert(DbKeyPrefix::LightningGateway as u8, num_gateways);
+                            }
+                            DbKeyPrefix::Offer => {
+                                // TODO: Offers are temporary database entries
+                                // that are removed once a contract is created,
+                                // therefore currently it is not expected that
+                                // the backup databases will have any offer
+                                // record.
+                            }
+                            DbKeyPrefix::ProposeDecryptionShare => {
+                                let proposed_decryption_shares = dbtx
+                                    .find_by_prefix(&ProposeDecryptionShareKeyPrefix)
+                                    .await
+                                    .collect::<Vec<_>>()
+                                    .await;
+                                let num_shares = proposed_decryption_shares.len();
+                                for share in proposed_decryption_shares {
+                                    share.expect("Error deserializing ProposeDecryptionShare");
+                                }
+                                migrated_pairs
+                                    .insert(DbKeyPrefix::ProposeDecryptionShare as u8, num_shares);
+                            }
+                        }
+                    }
+
+                    migrated_pairs
+                },
+                &mut migrated_values,
+            )
+            .await;
+
+            // Verify that all records were able to be read at least once. This guarantees
+            // that, over the supplied database backup directory, at least one
+            // record was read per record type.
+            for (_, value) in migrated_values {
+                assert!(value > 0);
+            }
+        }
+    }
+}

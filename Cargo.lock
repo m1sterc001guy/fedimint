@@ -126,6 +126,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-recursion"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b015a331cc64ebd1774ba119538573603427eaace0a1950c423ab971f903796"
+dependencies = [
+ "proc-macro2",
+ "quote 1.0.23",
+ "syn 1.0.107",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1236,6 +1247,7 @@ dependencies = [
  "fedimint-core",
  "fedimint-mint-common",
  "fedimint-server",
+ "fedimint-testing",
  "futures",
  "impl-tools",
  "itertools",
@@ -1250,6 +1262,7 @@ dependencies = [
  "test-log",
  "thiserror",
  "threshold_crypto",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1284,6 +1297,7 @@ dependencies = [
  "fedimint-build",
  "fedimint-core",
  "fedimint-logging",
+ "fedimint-testing",
  "futures",
  "hbbft",
  "impl-tools",
@@ -1333,11 +1347,14 @@ name = "fedimint-testing"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-recursion",
  "async-trait",
  "bitcoin",
  "fedimint-bitcoind",
  "fedimint-core",
  "fedimint-ln",
+ "fedimint-mint",
+ "fedimint-rocksdb",
  "fedimint-server",
  "fedimint-wallet",
  "futures",
@@ -1349,6 +1366,7 @@ dependencies = [
  "secp256k1-zkp",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1401,6 +1419,7 @@ dependencies = [
  "fedimint-bitcoind",
  "fedimint-core",
  "fedimint-server",
+ "fedimint-testing",
  "futures",
  "impl-tools",
  "miniscript",
