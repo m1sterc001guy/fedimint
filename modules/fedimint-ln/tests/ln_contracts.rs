@@ -139,7 +139,7 @@ async fn test_incoming() {
 
     let offer = IncomingContractOffer {
         amount: Amount::from_sats(42),
-        hash,
+        hash: secp256k1::hashes::sha256::Hash::hash("01234567".as_bytes()),
         encrypted_preimage: EncryptedPreimage::new(
             preimage.clone(),
             &fed.client_cfg_typed::<LightningClientConfig>()

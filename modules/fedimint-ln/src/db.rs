@@ -121,140 +121,221 @@ impl_db_lookup!(
 
 #[cfg(test)]
 mod fedimint_migration_tests {
-    use std::collections::BTreeMap;
     use std::env;
     use std::path::Path;
+    use std::str::FromStr;
+    use std::time::SystemTime;
 
-    use fedimint_core::core::LEGACY_HARDCODED_INSTANCE_ID_LN;
-    use fedimint_core::db::apply_migrations;
+    use bitcoin_hashes::Hash;
+    use fedimint_core::db::{apply_migrations, Database};
     use fedimint_core::module::DynModuleGen;
-    use fedimint_testing::apply_to_databases;
+    use fedimint_core::{OutPoint, TransactionId};
+    use fedimint_testing::{open_temp_db, validate_migrations};
     use futures::StreamExt;
+    use rand::distributions::Standard;
+    use rand::prelude::Distribution;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
     use strum::IntoEnumIterator;
+    use threshold_crypto::{DecryptionShare, G1Projective};
+    use url::Url;
 
+    use super::{
+        AgreedDecryptionShareKey, ContractKey, ContractUpdateKey, LightningGatewayKey, OfferKey,
+        ProposeDecryptionShareKey,
+    };
+    use crate::contracts::account::AccountContract;
+    use crate::contracts::incoming::{IncomingContractOffer, OfferId};
+    use crate::contracts::{
+        self, ContractId, EncryptedPreimage, Preimage, PreimageDecryptionShare,
+    };
     use crate::db::{
         AgreedDecryptionShareKeyPrefix, ContractKeyPrefix, ContractUpdateKeyPrefix, DbKeyPrefix,
-        LightningGatewayKeyPrefix, ProposeDecryptionShareKeyPrefix,
+        LightningGatewayKeyPrefix, OfferKeyPrefix, ProposeDecryptionShareKeyPrefix,
     };
-    use crate::LightningGen;
+    use crate::{ContractAccount, LightningGateway, LightningGen, LightningOutputOutcome};
+
+    async fn create_db_with_v0_data(db: Database) -> anyhow::Result<()> {
+        let mut dbtx = db.begin_transaction().await;
+        let contract_id = ContractId::from_str(
+            "0123456789012345678901234567890101234567890123456789012345678901",
+        )
+        .unwrap();
+        let amount = fedimint_core::Amount { msats: 1000 };
+        let (_, pk) = secp256k1::generate_keypair(&mut OsRng);
+        let contract = contracts::FundedContract::Account(AccountContract {
+            key: pk.x_only_public_key().0,
+        });
+        let acct = ContractAccount { amount, contract };
+        dbtx.insert_new_entry(&ContractKey(contract_id), &acct)
+            .await
+            .expect("Error inserting ContractAccount");
+
+        let threshold_key = threshold_crypto::PublicKey::from(G1Projective::identity());
+        let preimage = Preimage([
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+            9, 0, 1,
+        ]);
+        let offer = IncomingContractOffer {
+            amount: fedimint_core::Amount { msats: 1000 },
+            hash: secp256k1::hashes::sha256::Hash::hash("01234567".as_bytes()),
+            encrypted_preimage: EncryptedPreimage::new(preimage, &threshold_key),
+            expiry_time: None,
+        };
+        let offer_key = OfferKey(offer.hash);
+        dbtx.insert_new_entry(&offer_key, &offer)
+            .await
+            .expect("Error inserting Offer");
+
+        let contract_update_key = ContractUpdateKey(OutPoint {
+            txid: TransactionId::all_zeros(),
+            out_idx: 0,
+        });
+        let lightning_output_outcome = LightningOutputOutcome::Offer {
+            id: OfferId::from_str(
+                "0123456789012345678901234567890101234567890123456789012345678901",
+            )
+            .unwrap(),
+        };
+        dbtx.insert_new_entry(&contract_update_key, &lightning_output_outcome)
+            .await
+            .expect("Error inserting ContractUpdate");
+
+        let propose_decryption_share_key = ProposeDecryptionShareKey(contract_id);
+        let dec_share: DecryptionShare = Standard.sample(&mut OsRng);
+        let preimage_decryption_share = PreimageDecryptionShare(dec_share);
+        dbtx.insert_new_entry(&propose_decryption_share_key, &preimage_decryption_share)
+            .await
+            .expect("Error insert ProposeDecryptionShare");
+
+        let agreed_decryption_share_key = AgreedDecryptionShareKey(contract_id, 0.into());
+        dbtx.insert_new_entry(&agreed_decryption_share_key, &preimage_decryption_share)
+            .await
+            .expect("Error inserting AgreedDecryptionShareKey");
+
+        let lightning_gateway_key = LightningGatewayKey(pk);
+        let gateway = LightningGateway {
+            mint_channel_id: 100,
+            mint_pub_key: pk.x_only_public_key().0,
+            node_pub_key: pk,
+            api: Url::parse("http://example.com")
+                .expect("Could not parse URL to generate GatewayClientConfig API endpoint"),
+            route_hints: vec![],
+            valid_until: SystemTime::now(),
+        };
+        dbtx.insert_new_entry(&lightning_gateway_key, &gateway)
+            .await
+            .expect("Error inserting LightningGateway");
+
+        dbtx.commit_tx()
+            .await
+            .expect("Error committing to database");
+        Ok(())
+    }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn verify_lightning_database_migration() {
-        // Only run the database migration test if the database backup directory
-        // environment variable has been defined
-        let backup_dir = env::var("FM_TEST_DB_BACKUP_DIR");
-        if let Ok(backup_dir) = backup_dir {
-            let mut migrated_values = BTreeMap::new();
-            apply_to_databases(
-                Path::new(&backup_dir),
-                |db| async move {
-                    // First apply all of the database migrations so that the data can be properly
-                    // read.
-                    let module = DynModuleGen::from(LightningGen);
-                    let isolated_db = db.new_isolated(LEGACY_HARDCODED_INSTANCE_ID_LN);
-                    apply_migrations(
-                        &isolated_db,
-                        module.module_kind().to_string(),
-                        module.database_version(),
-                        module.get_database_migrations(),
-                    )
-                    .await
-                    .expect("Error applying migrations to temp database");
+    async fn prepare_migration_snapshots() {
+        if let Ok(parent_dir) = env::var("FM_TEST_DB_BACKUP_DIR") {
+            let dir_v0 =
+                Path::new(&parent_dir).join(format!("lightning-{}-{}", "v0", OsRng.next_u64()));
+            create_db_with_v0_data(open_temp_db(&dir_v0))
+                .await
+                .expect("Error preparing temporary database");
+        }
+    }
 
-                    // Verify that all of the data from the lightning namespace can be read. If a
-                    // database migration failed or was not properly supplied,
-                    // this will fail.
-                    let mut migrated_pairs: BTreeMap<u8, usize> = BTreeMap::new();
-                    let mut dbtx = isolated_db.begin_transaction().await;
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_migrations() {
+        if let Ok(parent_dir) = env::var("FM_TEST_DB_BACKUP_DIR") {
+            validate_migrations(Path::new(&parent_dir), |db| async move {
+                let module = DynModuleGen::from(LightningGen);
+                apply_migrations(
+                    &db,
+                    module.module_kind().to_string(),
+                    module.database_version(),
+                    module.get_database_migrations(),
+                )
+                .await
+                .expect("Error applying migrations to temp database");
 
-                    for prefix in DbKeyPrefix::iter() {
-                        match prefix {
-                            DbKeyPrefix::Contract => {
-                                let contracts = dbtx
-                                    .find_by_prefix(&ContractKeyPrefix)
-                                    .await
-                                    .collect::<Vec<_>>()
-                                    .await;
-                                let num_contracts = contracts.len();
-                                for contract in contracts {
-                                    contract.expect("Error deserializing contract");
-                                }
-                                migrated_pairs.insert(DbKeyPrefix::Contract as u8, num_contracts);
+                // Verify that all of the data from the lightning namespace can be read. If a
+                // database migration failed or was not properly supplied,
+                // this will fail.
+                let mut dbtx = db.begin_transaction().await;
+
+                for prefix in DbKeyPrefix::iter() {
+                    match prefix {
+                        DbKeyPrefix::Contract => {
+                            let contracts = dbtx
+                                .find_by_prefix(&ContractKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_contracts = contracts.len();
+                            assert!(num_contracts > 0, "validate_migrations was not able to read any contracts");
+                            for contract in contracts {
+                                contract.expect("Error reading contract");
                             }
-                            DbKeyPrefix::AgreedDecryptionShare => {
-                                let agreed_decryption_shares = dbtx
-                                    .find_by_prefix(&AgreedDecryptionShareKeyPrefix)
-                                    .await
-                                    .collect::<Vec<_>>()
-                                    .await;
-                                let num_shares = agreed_decryption_shares.len();
-                                for share in agreed_decryption_shares {
-                                    share.expect("Error deserializing AgreedDecryptionShare");
-                                }
-                                migrated_pairs
-                                    .insert(DbKeyPrefix::AgreedDecryptionShare as u8, num_shares);
+                        }
+                        DbKeyPrefix::AgreedDecryptionShare => {
+                            let agreed_decryption_shares = dbtx
+                                .find_by_prefix(&AgreedDecryptionShareKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_shares = agreed_decryption_shares.len();
+                            assert!(num_shares > 0, "validate_migrations was not able to read any AgreedDecryptionShares");
+                            for share in agreed_decryption_shares {
+                                share.expect("Error reading AgreedDecryptionShare");
                             }
-                            DbKeyPrefix::ContractUpdate => {
-                                let contract_updates = dbtx
-                                    .find_by_prefix(&ContractUpdateKeyPrefix)
-                                    .await
-                                    .collect::<Vec<_>>()
-                                    .await;
-                                let num_updates = contract_updates.len();
-                                for update in contract_updates {
-                                    update.expect("Error deserializing ContractUpdate");
-                                }
-                                migrated_pairs
-                                    .insert(DbKeyPrefix::ContractUpdate as u8, num_updates);
+                        }
+                        DbKeyPrefix::ContractUpdate => {
+                            let contract_updates = dbtx
+                                .find_by_prefix(&ContractUpdateKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_updates = contract_updates.len();
+                            assert!(num_updates > 0, "validate_migrations was not able to read any ContractUpdates");
+                            for update in contract_updates {
+                                update.expect("Error reading ContractUpdate");
                             }
-                            DbKeyPrefix::LightningGateway => {
-                                let gateways = dbtx
-                                    .find_by_prefix(&LightningGatewayKeyPrefix)
-                                    .await
-                                    .collect::<Vec<_>>()
-                                    .await;
-                                let num_gateways = gateways.len();
-                                for gateway in gateways {
-                                    gateway.expect("Error deserializing LightningGateway");
-                                }
-                                migrated_pairs
-                                    .insert(DbKeyPrefix::LightningGateway as u8, num_gateways);
+                        }
+                        DbKeyPrefix::LightningGateway => {
+                            let gateways = dbtx
+                                .find_by_prefix(&LightningGatewayKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_gateways = gateways.len();
+                            assert!(num_gateways > 0, "validate_migrations was not able to read any LightningGateways");
+                            for gateway in gateways {
+                                gateway.expect("Error reading LightningGateway");
                             }
-                            DbKeyPrefix::Offer => {
-                                // TODO: Offers are temporary database entries
-                                // that are removed once a contract is created,
-                                // therefore currently it is not expected that
-                                // the backup databases will have any offer
-                                // record.
+                        }
+                        DbKeyPrefix::Offer => {
+                            let offers = dbtx.find_by_prefix(&OfferKeyPrefix).await.collect::<Vec<_>>().await;
+                            let num_offers = offers.len();
+                            assert!(num_offers > 0, "validate_migrations was not able to read any Offers");
+                            for offer in offers {
+                                offer.expect("Error reading Offer");
                             }
-                            DbKeyPrefix::ProposeDecryptionShare => {
-                                let proposed_decryption_shares = dbtx
-                                    .find_by_prefix(&ProposeDecryptionShareKeyPrefix)
-                                    .await
-                                    .collect::<Vec<_>>()
-                                    .await;
-                                let num_shares = proposed_decryption_shares.len();
-                                for share in proposed_decryption_shares {
-                                    share.expect("Error deserializing ProposeDecryptionShare");
-                                }
-                                migrated_pairs
-                                    .insert(DbKeyPrefix::ProposeDecryptionShare as u8, num_shares);
+                        }
+                        DbKeyPrefix::ProposeDecryptionShare => {
+                            let proposed_decryption_shares = dbtx
+                                .find_by_prefix(&ProposeDecryptionShareKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_shares = proposed_decryption_shares.len();
+                            assert!(num_shares > 0, "validate_migrations was not able to read any ProposeDecryptionShares");
+                            for share in proposed_decryption_shares {
+                                share.expect("Error reading ProposeDecryptionShare");
                             }
                         }
                     }
-
-                    migrated_pairs
-                },
-                &mut migrated_values,
-            )
-            .await;
-
-            // Verify that all records were able to be read at least once. This guarantees
-            // that, over the supplied database backup directory, at least one
-            // record was read per record type.
-            for (_, value) in migrated_values {
-                assert!(value > 0);
-            }
+                }
+            }).await;
         }
     }
 }

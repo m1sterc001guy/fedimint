@@ -402,6 +402,22 @@ pub async fn apply_to_databases<'a, F, Fut>(
     }
 }
 
+pub async fn validate_migrations<F, Fut>(db_dir: &Path, validate: F)
+where
+    F: Fn(Database) -> Fut,
+    Fut: futures::Future<Output = ()>,
+{
+    let files = fs::read_dir(db_dir).unwrap();
+    for file in files.flatten() {
+        let name = file.file_name().into_string().unwrap();
+        let temp_db = open_temp_db_and_copy(
+            format!("{}-{}", name.as_str(), OsRng.next_u64()),
+            &file.path(),
+        );
+        validate(temp_db).await;
+    }
+}
+
 /// Open a temporary `Database` and copy the contents from `src_dir` to the
 /// `Database`. This is useful for obtaining a temporary copy of a database that
 /// can be used for testing migrations from a old database copy with the new
@@ -415,6 +431,25 @@ fn open_temp_db_and_copy(temp_path: String, src_dir: &Path) -> Database {
         .unwrap();
     copy_directory(src_dir, path.path()).expect("Error copying database to temporary directory");
 
+    let decoders = ModuleDecoderRegistry::from_iter([
+        (
+            LEGACY_HARDCODED_INSTANCE_ID_LN,
+            <Lightning as ServerModule>::decoder(),
+        ),
+        (
+            LEGACY_HARDCODED_INSTANCE_ID_MINT,
+            <Mint as ServerModule>::decoder(),
+        ),
+        (
+            LEGACY_HARDCODED_INSTANCE_ID_WALLET,
+            <Wallet as ServerModule>::decoder(),
+        ),
+    ]);
+
+    Database::new(RocksDb::open(path).unwrap(), decoders)
+}
+
+pub fn open_temp_db(path: &Path) -> Database {
     let decoders = ModuleDecoderRegistry::from_iter([
         (
             LEGACY_HARDCODED_INSTANCE_ID_LN,
