@@ -155,12 +155,16 @@ mod fedimint_migration_tests {
     };
     use crate::{ContractAccount, LightningGateway, LightningGen, LightningOutputOutcome};
 
+    const STRING_64: &str = "0123456789012345678901234567890101234567890123456789012345678901";
+    const BYTE_8: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+    const BYTE_32: [u8; 32] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+        0, 1,
+    ];
+
     async fn create_db_with_v0_data(db: Database) -> anyhow::Result<()> {
         let mut dbtx = db.begin_transaction().await;
-        let contract_id = ContractId::from_str(
-            "0123456789012345678901234567890101234567890123456789012345678901",
-        )
-        .unwrap();
+        let contract_id = ContractId::from_str(STRING_64).unwrap();
         let amount = fedimint_core::Amount { msats: 1000 };
         let (_, pk) = secp256k1::generate_keypair(&mut OsRng);
         let contract = contracts::FundedContract::Account(AccountContract {
@@ -172,13 +176,10 @@ mod fedimint_migration_tests {
             .expect("Error inserting ContractAccount");
 
         let threshold_key = threshold_crypto::PublicKey::from(G1Projective::identity());
-        let preimage = Preimage([
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8,
-            9, 0, 1,
-        ]);
+        let preimage = Preimage(BYTE_32);
         let offer = IncomingContractOffer {
             amount: fedimint_core::Amount { msats: 1000 },
-            hash: secp256k1::hashes::sha256::Hash::hash("01234567".as_bytes()),
+            hash: secp256k1::hashes::sha256::Hash::hash(&BYTE_8),
             encrypted_preimage: EncryptedPreimage::new(preimage, &threshold_key),
             expiry_time: None,
         };
@@ -192,10 +193,7 @@ mod fedimint_migration_tests {
             out_idx: 0,
         });
         let lightning_output_outcome = LightningOutputOutcome::Offer {
-            id: OfferId::from_str(
-                "0123456789012345678901234567890101234567890123456789012345678901",
-            )
-            .unwrap(),
+            id: OfferId::from_str(STRING_64).unwrap(),
         };
         dbtx.insert_new_entry(&contract_update_key, &lightning_output_outcome)
             .await

@@ -148,19 +148,92 @@ mod fedimint_migration_tests {
     use std::env;
     use std::path::Path;
 
+    use bitcoin_hashes::Hash;
     use fedimint_core::core::LEGACY_HARDCODED_INSTANCE_ID_MINT;
-    use fedimint_core::db::apply_migrations;
+    use fedimint_core::db::{apply_migrations, Database};
     use fedimint_core::module::DynModuleGen;
-    use fedimint_testing::apply_to_databases;
+    use fedimint_core::{Amount, OutPoint, TieredMulti, TransactionId};
+    use fedimint_testing::{apply_to_databases, open_temp_db};
     use futures::StreamExt;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
     use strum::IntoEnumIterator;
+    use tbs::{
+        blind_message, sign_blinded_msg, BlindingKey, FromRandom, Message, Scalar, SecretKeyShare,
+    };
 
+    use super::{
+        NonceKey, OutputOutcomeKey, ProposedPartialSignatureKey, ReceivedPartialSignatureKey,
+    };
     use crate::db::{
         DbKeyPrefix, EcashBackupKeyPrefix, MintAuditItemKeyPrefix, NonceKeyPrefix,
         OutputOutcomeKeyPrefix, ProposedPartialSignaturesKeyPrefix,
         ReceivedPartialSignaturesKeyPrefix,
     };
-    use crate::MintGen;
+    use crate::{MintGen, MintOutputSignatureShare, Nonce};
+
+    const BYTE_8: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+    const BYTE_32: [u8; 32] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+        0, 1,
+    ];
+
+    async fn create_db_with_v0_data(db: Database) -> anyhow::Result<()> {
+        let mut dbtx = db.begin_transaction().await;
+
+        let (_, pk) = secp256k1::generate_keypair(&mut OsRng);
+        let nonce_key = NonceKey(Nonce(pk.x_only_public_key().0));
+        dbtx.insert_new_entry(&nonce_key, &())
+            .await
+            .expect("Error inserting NonceKey");
+
+        let out_point = OutPoint {
+            txid: TransactionId::from_slice(&BYTE_32).unwrap(),
+            out_idx: 0,
+        };
+        let proposed_partial_signature_key = ProposedPartialSignatureKey { out_point };
+        let blinding_key = BlindingKey::random();
+        let message = Message::from_bytes(&BYTE_8);
+        let blinded_message = blind_message(message, blinding_key);
+        let secret_key_share = SecretKeyShare(Scalar::from_random(&mut OsRng));
+        let blind_signature_share = sign_blinded_msg(blinded_message, secret_key_share);
+        let mut tiers = BTreeMap::new();
+        tiers.insert(
+            Amount::from_sats(1000),
+            vec![(blinded_message, blind_signature_share)],
+        );
+        let shares: TieredMulti<(tbs::BlindedMessage, tbs::BlindedSignatureShare)> =
+            TieredMulti::new(tiers);
+        let mint_output = MintOutputSignatureShare(shares);
+        dbtx.insert_new_entry(&proposed_partial_signature_key, &mint_output)
+            .await
+            .expect("Error inserting ProposedPartialSignatureKey");
+
+        let received_partial_signature_key = ReceivedPartialSignatureKey {
+            request_id: out_point,
+            peer_id: 1.into(),
+        };
+        dbtx.insert_new_entry(&received_partial_signature_key, &mint_output)
+            .await
+            .expect("Error inserting ReceivedPartialSignatureKey");
+
+        let output_outcome_key = OutputOutcomeKey(out_point);
+
+        dbtx.commit_tx()
+            .await
+            .expect("Error committing to database");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_migration_snapshots() {
+        if let Ok(parent_dir) = env::var("FM_TEST_DB_BACKUP_DIR") {
+            let dir_v0 = Path::new(&parent_dir).join(format!("mint-{}-{}", "v0", OsRng.next_u64()));
+            create_db_with_v0_data(open_temp_db(&dir_v0))
+                .await
+                .expect("Error preparing temporary database");
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn verify_mint_database_migration() {
