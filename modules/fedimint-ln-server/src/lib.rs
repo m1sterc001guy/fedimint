@@ -892,7 +892,7 @@ mod fedimint_migration_tests {
         FundedIncomingContract, IncomingContract, IncomingContractOffer, OfferId,
     };
     use fedimint_ln_common::contracts::{
-        ContractId, DecryptedPreimage, EncryptedPreimage, FundedContract, Preimage,
+        outgoing, ContractId, DecryptedPreimage, EncryptedPreimage, FundedContract, Preimage,
         PreimageDecryptionShare,
     };
     use fedimint_ln_common::db::{
@@ -903,6 +903,7 @@ mod fedimint_migration_tests {
     };
     use fedimint_testing::{prepare_snapshot, validate_migrations};
     use futures::StreamExt;
+    use lightning_invoice::Invoice;
     use rand::distributions::Standard;
     use rand::prelude::Distribution;
     use rand::rngs::OsRng;
@@ -919,6 +920,12 @@ mod fedimint_migration_tests {
         0, 1,
     ];
 
+    /// Create a database with version 0 data. The database produced is not
+    /// intended to be real data or semantically correctly. It is only
+    /// intended to provide coverage when reading the database
+    /// in future code versions. This function should not be updated when
+    /// database keys/values change - instead a new function should be added
+    /// that creates a new database backup that can be tested.
     async fn create_db_with_v0_data(mut dbtx: DatabaseTransaction<'_>) {
         let contract_id = ContractId::from_str(STRING_64).unwrap();
         let amount = fedimint_core::Amount { msats: 1000 };
@@ -934,24 +941,44 @@ mod fedimint_migration_tests {
             txid: TransactionId::all_zeros(),
             out_idx: 0,
         };
-        let contract = FundedContract::Incoming(FundedIncomingContract {
+        let incoming_contract = FundedContract::Incoming(FundedIncomingContract {
             contract: incoming_contract,
             out_point,
         });
         dbtx.insert_new_entry(
             &ContractKey(contract_id),
-            &ContractAccount { amount, contract },
+            &ContractAccount {
+                amount,
+                contract: incoming_contract,
+            },
         )
         .await;
-        // TODO: Need to insert OutgoingContract here too
+        let invoice = str::parse::<Invoice>("lnbc10u1pjq37rgsp5cry9r0qqdzp0tl0m27jedvxtrazq0v8xh5rfvzuhm7yxydg50m9qpp5r0cjzjzt7pjwae8trp6dtteh6hstdakzv68atpqx0zshaexghpwsdqqcqpjrzjqfzekav6v27ra0lf3geqmg3hj3xvfu652cuyhk8aa7naqdqvwh6x7zagh5qqy3qqqyqqqqqpqqqqqqgq9q9qyysgq6vf5z83a2q2ua9nwanmc7pql26pwt8smt2xzwp7kjd0mgplmy925s5yz6nlfxt99p2dlffw82gw8kte7lv87pcf4nahslg2vyhhkzwqqxuqmgp");
+        let outgoing_contract = FundedContract::Outgoing(outgoing::OutgoingContract {
+            hash: secp256k1::hashes::sha256::Hash::hash(&[0, 2, 3, 4, 5, 6, 7, 8]),
+            gateway_key: pk.x_only_public_key().0,
+            timelock: 1000000,
+            user_key: pk.x_only_public_key().0,
+            invoice: invoice.unwrap(),
+            cancelled: false,
+        });
+        dbtx.insert_new_entry(
+            &ContractKey(contract_id),
+            &ContractAccount {
+                amount,
+                contract: outgoing_contract,
+            },
+        )
+        .await;
 
-        let offer = IncomingContractOffer {
+        let incoming_offer = IncomingContractOffer {
             amount: fedimint_core::Amount { msats: 1000 },
             hash: secp256k1::hashes::sha256::Hash::hash(&BYTE_8),
             encrypted_preimage: EncryptedPreimage::new(Preimage(BYTE_32), &threshold_key),
             expiry_time: None,
         };
-        dbtx.insert_new_entry(&OfferKey(offer.hash), &offer).await;
+        dbtx.insert_new_entry(&OfferKey(incoming_offer.hash), &incoming_offer)
+            .await;
 
         let contract_update_key = ContractUpdateKey(OutPoint {
             txid: TransactionId::from_slice(&BYTE_32).unwrap(),
