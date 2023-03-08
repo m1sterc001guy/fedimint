@@ -925,7 +925,7 @@ mod fedimint_migration_tests {
     ];
 
     /// Create a database with version 0 data. The database produced is not
-    /// intended to be real data or semantically correctly. It is only
+    /// intended to be real data or semantically correct. It is only
     /// intended to provide coverage when reading the database
     /// in future code versions. This function should not be updated when
     /// database keys/values change - instead a new function should be added
