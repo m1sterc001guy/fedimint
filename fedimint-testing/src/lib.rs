@@ -4,13 +4,13 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::{fs, io};
+use std::{env, fs, io};
 
 use async_trait::async_trait;
 use fedimint_core::config::{ClientModuleConfig, ConfigGenParams, ServerModuleConfig};
 use fedimint_core::core::{ModuleInstanceId, LEGACY_HARDCODED_INSTANCE_ID_WALLET};
 use fedimint_core::db::mem_impl::MemDatabase;
-use fedimint_core::db::{Database, ModuleDatabaseTransaction};
+use fedimint_core::db::{Database, DatabaseTransaction, ModuleDatabaseTransaction};
 use fedimint_core::module::interconnect::ModuleInterconect;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::module::{
@@ -18,11 +18,12 @@ use fedimint_core::module::{
     TransactionItemAmount,
 };
 use fedimint_core::{OutPoint, PeerId, ServerModule};
-use fedimint_ln::Lightning;
+use fedimint_ln_server::Lightning;
 use fedimint_mint_server::Mint;
 use fedimint_rocksdb::RocksDb;
 use fedimint_server::core::{LEGACY_HARDCODED_INSTANCE_ID_LN, LEGACY_HARDCODED_INSTANCE_ID_MINT};
-use fedimint_wallet::Wallet;
+use fedimint_wallet_server::Wallet;
+use futures::future::BoxFuture;
 use rand::rngs::OsRng;
 use rand::RngCore;
 
@@ -349,24 +350,8 @@ where
     first
 }
 
-pub async fn validate_migrations<F, Fut>(db_dir: &Path, validate: F)
-where
-    F: Fn(Database) -> Fut,
-    Fut: futures::Future<Output = ()>,
-{
-    let files = fs::read_dir(db_dir).unwrap();
-    for file in files.flatten() {
-        let name = file.file_name().into_string().unwrap();
-        let temp_db = open_temp_db_and_copy(
-            format!("{}-{}", name.as_str(), OsRng.next_u64()),
-            &file.path(),
-        );
-        validate(temp_db).await;
-    }
-}
-
-pub fn open_temp_db(path: &Path) -> Database {
-    let decoders = ModuleDecoderRegistry::from_iter([
+fn legacy_module_decoders() -> ModuleDecoderRegistry {
+    ModuleDecoderRegistry::from_iter([
         (
             LEGACY_HARDCODED_INSTANCE_ID_LN,
             <Lightning as ServerModule>::decoder(),
@@ -379,9 +364,41 @@ pub fn open_temp_db(path: &Path) -> Database {
             LEGACY_HARDCODED_INSTANCE_ID_WALLET,
             <Wallet as ServerModule>::decoder(),
         ),
-    ]);
+    ])
+}
 
-    Database::new(RocksDb::open(path).unwrap(), decoders)
+pub async fn prepare_snapshot<F>(snapshot_name: &str, prepare_fn: F)
+where
+    F: for<'a> Fn(DatabaseTransaction<'a>) -> BoxFuture<'a, ()>,
+{
+    if let Ok(parent_dir) = env::var("FM_TEST_DB_BACKUP_DIR") {
+        let snapshot_dir = Path::new(&parent_dir).join(snapshot_name);
+        let db = Database::new(
+            RocksDb::open(snapshot_dir).unwrap(),
+            legacy_module_decoders(),
+        );
+        let dbtx = db.begin_transaction().await;
+        prepare_fn(dbtx).await;
+    }
+}
+
+pub async fn validate_migrations<F, Fut>(validate: F)
+where
+    F: Fn(Database) -> Fut,
+    Fut: futures::Future<Output = ()>,
+{
+    if let Ok(parent_dir) = env::var("FM_TEST_DB_BACKUP_DIR") {
+        let db_dir = Path::new(&parent_dir);
+        let files = fs::read_dir(db_dir).unwrap();
+        for file in files.flatten() {
+            let name = file.file_name().into_string().unwrap();
+            let temp_db = open_temp_db_and_copy(
+                format!("{}-{}", name.as_str(), OsRng.next_u64()),
+                &file.path(),
+            );
+            validate(temp_db).await;
+        }
+    }
 }
 
 fn open_temp_db_and_copy(temp_path: String, src_dir: &Path) -> Database {
@@ -393,22 +410,7 @@ fn open_temp_db_and_copy(temp_path: String, src_dir: &Path) -> Database {
         .unwrap();
     copy_directory(src_dir, path.path()).expect("Error copying database to temporary directory");
 
-    let decoders = ModuleDecoderRegistry::from_iter([
-        (
-            LEGACY_HARDCODED_INSTANCE_ID_LN,
-            <Lightning as ServerModule>::decoder(),
-        ),
-        (
-            LEGACY_HARDCODED_INSTANCE_ID_MINT,
-            <Mint as ServerModule>::decoder(),
-        ),
-        (
-            LEGACY_HARDCODED_INSTANCE_ID_WALLET,
-            <Wallet as ServerModule>::decoder(),
-        ),
-    ]);
-
-    Database::new(RocksDb::open(path).unwrap(), decoders)
+    Database::new(RocksDb::open(path).unwrap(), legacy_module_decoders())
 }
 
 pub fn copy_directory(src: &Path, dst: &Path) -> io::Result<()> {
