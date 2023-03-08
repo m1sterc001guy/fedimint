@@ -20,11 +20,8 @@ mint-client = { path = "../client/client-lib" }
 fedimint-core  = { path = "../fedimint-core" }
 fedimint-bitcoind = { path = "../fedimint-bitcoind" }
 fedimint-ln-client = { path = "../modules/fedimint-ln-client" }
-fedimint-ln-server = { path = "../modules/fedimint-ln-server" }
-fedimint-mint-server = { path = "../modules/fedimint-mint-server" }
 fedimint-server = { path = "../fedimint-server" }
 fedimint-wallet-client = { path = "../modules/fedimint-wallet-client" }
-fedimint-wallet-server = { path = "../modules/fedimint-wallet-server" }
 fedimint-rocksdb = { path = "../fedimint-rocksdb" }
 ln-gateway = { path = "../gateway/ln-gateway" }
 futures = "0.3"

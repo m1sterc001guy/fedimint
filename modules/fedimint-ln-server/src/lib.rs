@@ -885,9 +885,11 @@ mod fedimint_migration_tests {
     use std::time::SystemTime;
 
     use bitcoin_hashes::Hash;
+    use fedimint_core::core::LEGACY_HARDCODED_INSTANCE_ID_LN;
     use fedimint_core::db::{apply_migrations, DatabaseTransaction};
+    use fedimint_core::module::registry::ModuleDecoderRegistry;
     use fedimint_core::module::DynServerModuleGen;
-    use fedimint_core::{OutPoint, TransactionId};
+    use fedimint_core::{OutPoint, ServerModule, TransactionId};
     use fedimint_ln_common::contracts::incoming::{
         FundedIncomingContract, IncomingContract, IncomingContractOffer, OfferId,
     };
@@ -911,7 +913,9 @@ mod fedimint_migration_tests {
     use threshold_crypto::G1Projective;
     use url::Url;
 
-    use crate::{ContractAccount, LightningGateway, LightningGen, LightningOutputOutcome};
+    use crate::{
+        ContractAccount, Lightning, LightningGateway, LightningGen, LightningOutputOutcome,
+    };
 
     const STRING_64: &str = "0123456789012345678901234567890101234567890123456789012345678901";
     const BYTE_8: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
@@ -1020,109 +1024,122 @@ mod fedimint_migration_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn prepare_migration_snapshots() {
-        prepare_snapshot("lightning-v0", |dbtx| {
-            Box::pin(async move {
-                create_db_with_v0_data(dbtx).await;
-            })
-        })
+        prepare_snapshot(
+            "lightning-v0",
+            |dbtx| {
+                Box::pin(async move {
+                    create_db_with_v0_data(dbtx).await;
+                })
+            },
+            ModuleDecoderRegistry::from_iter([(
+                LEGACY_HARDCODED_INSTANCE_ID_LN,
+                <Lightning as ServerModule>::decoder(),
+            )]),
+        )
         .await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_migrations() {
-        validate_migrations(|db| async move {
-            let module = DynServerModuleGen::from(LightningGen);
-            apply_migrations(
-                &db,
-                module.module_kind().to_string(),
-                module.database_version(),
-                module.get_database_migrations(),
-            )
-            .await
-            .expect("Error applying migrations to temp database");
+        validate_migrations(
+            |db| async move {
+                let module = DynServerModuleGen::from(LightningGen);
+                apply_migrations(
+                    &db,
+                    module.module_kind().to_string(),
+                    module.database_version(),
+                    module.get_database_migrations(),
+                )
+                .await
+                .expect("Error applying migrations to temp database");
 
-            // Verify that all of the data from the lightning namespace can be read. If a
-            // database migration failed or was not properly supplied,
-            // the struct will fail to be read.
-            let mut dbtx = db.begin_transaction().await;
+                // Verify that all of the data from the lightning namespace can be read. If a
+                // database migration failed or was not properly supplied,
+                // the struct will fail to be read.
+                let mut dbtx = db.begin_transaction().await;
 
-            for prefix in DbKeyPrefix::iter() {
-                match prefix {
-                    DbKeyPrefix::Contract => {
-                        let contracts = dbtx
-                            .find_by_prefix(&ContractKeyPrefix)
-                            .await
-                            .collect::<Vec<_>>()
-                            .await;
-                        let num_contracts = contracts.len();
-                        assert!(
-                            num_contracts > 0,
-                            "validate_migrations was not able to read any contracts"
-                        );
-                    }
-                    DbKeyPrefix::AgreedDecryptionShare => {
-                        let agreed_decryption_shares = dbtx
-                            .find_by_prefix(&AgreedDecryptionShareKeyPrefix)
-                            .await
-                            .collect::<Vec<_>>()
-                            .await;
-                        let num_shares = agreed_decryption_shares.len();
-                        assert!(
+                for prefix in DbKeyPrefix::iter() {
+                    match prefix {
+                        DbKeyPrefix::Contract => {
+                            let contracts = dbtx
+                                .find_by_prefix(&ContractKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_contracts = contracts.len();
+                            assert!(
+                                num_contracts > 0,
+                                "validate_migrations was not able to read any contracts"
+                            );
+                        }
+                        DbKeyPrefix::AgreedDecryptionShare => {
+                            let agreed_decryption_shares = dbtx
+                                .find_by_prefix(&AgreedDecryptionShareKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_shares = agreed_decryption_shares.len();
+                            assert!(
                             num_shares > 0,
                             "validate_migrations was not able to read any AgreedDecryptionShares"
                         );
-                    }
-                    DbKeyPrefix::ContractUpdate => {
-                        let contract_updates = dbtx
-                            .find_by_prefix(&ContractUpdateKeyPrefix)
-                            .await
-                            .collect::<Vec<_>>()
-                            .await;
-                        let num_updates = contract_updates.len();
-                        assert!(
-                            num_updates > 0,
-                            "validate_migrations was not able to read any ContractUpdates"
-                        );
-                    }
-                    DbKeyPrefix::LightningGateway => {
-                        let gateways = dbtx
-                            .find_by_prefix(&LightningGatewayKeyPrefix)
-                            .await
-                            .collect::<Vec<_>>()
-                            .await;
-                        let num_gateways = gateways.len();
-                        assert!(
-                            num_gateways > 0,
-                            "validate_migrations was not able to read any LightningGateways"
-                        );
-                    }
-                    DbKeyPrefix::Offer => {
-                        let offers = dbtx
-                            .find_by_prefix(&OfferKeyPrefix)
-                            .await
-                            .collect::<Vec<_>>()
-                            .await;
-                        let num_offers = offers.len();
-                        assert!(
-                            num_offers > 0,
-                            "validate_migrations was not able to read any Offers"
-                        );
-                    }
-                    DbKeyPrefix::ProposeDecryptionShare => {
-                        let proposed_decryption_shares = dbtx
-                            .find_by_prefix(&ProposeDecryptionShareKeyPrefix)
-                            .await
-                            .collect::<Vec<_>>()
-                            .await;
-                        let num_shares = proposed_decryption_shares.len();
-                        assert!(
+                        }
+                        DbKeyPrefix::ContractUpdate => {
+                            let contract_updates = dbtx
+                                .find_by_prefix(&ContractUpdateKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_updates = contract_updates.len();
+                            assert!(
+                                num_updates > 0,
+                                "validate_migrations was not able to read any ContractUpdates"
+                            );
+                        }
+                        DbKeyPrefix::LightningGateway => {
+                            let gateways = dbtx
+                                .find_by_prefix(&LightningGatewayKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_gateways = gateways.len();
+                            assert!(
+                                num_gateways > 0,
+                                "validate_migrations was not able to read any LightningGateways"
+                            );
+                        }
+                        DbKeyPrefix::Offer => {
+                            let offers = dbtx
+                                .find_by_prefix(&OfferKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_offers = offers.len();
+                            assert!(
+                                num_offers > 0,
+                                "validate_migrations was not able to read any Offers"
+                            );
+                        }
+                        DbKeyPrefix::ProposeDecryptionShare => {
+                            let proposed_decryption_shares = dbtx
+                                .find_by_prefix(&ProposeDecryptionShareKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_shares = proposed_decryption_shares.len();
+                            assert!(
                             num_shares > 0,
                             "validate_migrations was not able to read any ProposeDecryptionShares"
                         );
+                        }
                     }
                 }
-            }
-        })
+            },
+            ModuleDecoderRegistry::from_iter([(
+                LEGACY_HARDCODED_INSTANCE_ID_LN,
+                <Lightning as ServerModule>::decoder(),
+            )]),
+        )
         .await;
     }
 }
