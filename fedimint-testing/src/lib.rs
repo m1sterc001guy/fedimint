@@ -350,6 +350,8 @@ where
     first
 }
 
+/// Returns the decoders and their legacy module instance
+/// ids for the lightning, mint, and wallet module.
 fn legacy_module_decoders() -> ModuleDecoderRegistry {
     ModuleDecoderRegistry::from_iter([
         (
@@ -367,6 +369,11 @@ fn legacy_module_decoders() -> ModuleDecoderRegistry {
     ])
 }
 
+/// Creates the database backup directory by appending the `snapshot_name`
+/// to the `FM_TEST_DB_BACKUP_DIR`. Then this function will execute the provided
+/// `prepare_fn` which is expected to populate the database with the appropriate
+/// data for testing a migration. If `FM_TEST_DB_BACKUP_DIR` is not set, this
+/// function doesn't do anything.
 pub async fn prepare_snapshot<F>(snapshot_name: &str, prepare_fn: F)
 where
     F: for<'a> Fn(DatabaseTransaction<'a>) -> BoxFuture<'a, ()>,
@@ -382,6 +389,14 @@ where
     }
 }
 
+/// Iterates over all of the databases supplied in the database backup
+/// directory, which is specified by `FM_TEST_DB_BACKUP_DIR` environment
+/// variable. First, a temporary database will be created and the contents will
+/// be populate from the database backup directory. Next, this function will
+/// execute the provided `validate` closure. The `validate` closure is expected
+/// to do any validation necessary on the provide database, such as applying the
+/// appropriate database migrations and then reading all of the data to verify
+/// the migrations were successful.
 pub async fn validate_migrations<F, Fut>(validate: F)
 where
     F: Fn(Database) -> Fut,
@@ -401,9 +416,11 @@ where
     }
 }
 
+/// Open a temporary database named `temp_path` and copy the contents from
+/// the folder `src_dir` to the temporary database's path.
 fn open_temp_db_and_copy(temp_path: String, src_dir: &Path) -> Database {
     // First copy the contents from src_dir to the path where the database will be
-    // open
+    // opened
     let path = tempfile::Builder::new()
         .prefix(temp_path.as_str())
         .tempdir()
@@ -413,6 +430,8 @@ fn open_temp_db_and_copy(temp_path: String, src_dir: &Path) -> Database {
     Database::new(RocksDb::open(path).unwrap(), legacy_module_decoders())
 }
 
+/// Helper function that recursively copies all of the contents from
+/// `src` to `dst`.
 pub fn copy_directory(src: &Path, dst: &Path) -> io::Result<()> {
     // Create the destination directory if it doesn't exist
     fs::create_dir_all(dst)?;

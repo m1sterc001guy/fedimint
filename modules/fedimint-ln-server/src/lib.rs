@@ -942,8 +942,7 @@ mod fedimint_migration_tests {
             &ContractKey(contract_id),
             &ContractAccount { amount, contract },
         )
-        .await
-        .expect("Error inserting ContractAccount");
+        .await;
         // TODO: Need to insert OutgoingContract here too
 
         let offer = IncomingContractOffer {
@@ -952,35 +951,30 @@ mod fedimint_migration_tests {
             encrypted_preimage: EncryptedPreimage::new(Preimage(BYTE_32), &threshold_key),
             expiry_time: None,
         };
-        dbtx.insert_new_entry(&OfferKey(offer.hash), &offer)
-            .await
-            .expect("Error inserting Offer");
+        dbtx.insert_new_entry(&OfferKey(offer.hash), &offer).await;
 
         let contract_update_key = ContractUpdateKey(OutPoint {
-            txid: TransactionId::from_slice(&BYTE_8).unwrap(),
+            txid: TransactionId::from_slice(&BYTE_32).unwrap(),
             out_idx: 0,
         });
         let lightning_output_outcome = LightningOutputOutcome::Offer {
             id: OfferId::from_str(STRING_64).unwrap(),
         };
         dbtx.insert_new_entry(&contract_update_key, &lightning_output_outcome)
-            .await
-            .expect("Error inserting ContractUpdate");
+            .await;
 
         let preimage_decryption_share = PreimageDecryptionShare(Standard.sample(&mut OsRng));
         dbtx.insert_new_entry(
             &ProposeDecryptionShareKey(contract_id),
             &preimage_decryption_share,
         )
-        .await
-        .expect("Error insert ProposeDecryptionShare");
+        .await;
 
         dbtx.insert_new_entry(
             &AgreedDecryptionShareKey(contract_id, 0.into()),
             &preimage_decryption_share,
         )
-        .await
-        .expect("Error inserting AgreedDecryptionShareKey");
+        .await;
 
         let gateway = LightningGateway {
             mint_channel_id: 100,
@@ -992,12 +986,9 @@ mod fedimint_migration_tests {
             valid_until: SystemTime::now(),
         };
         dbtx.insert_new_entry(&LightningGatewayKey(pk), &gateway)
-            .await
-            .expect("Error inserting LightningGateway");
+            .await;
 
-        dbtx.commit_tx()
-            .await
-            .expect("Error committing to database");
+        dbtx.commit_tx().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1025,7 +1016,7 @@ mod fedimint_migration_tests {
 
             // Verify that all of the data from the lightning namespace can be read. If a
             // database migration failed or was not properly supplied,
-            // this will fail.
+            // the struct will fail to be read.
             let mut dbtx = db.begin_transaction().await;
 
             for prefix in DbKeyPrefix::iter() {
@@ -1041,9 +1032,6 @@ mod fedimint_migration_tests {
                             num_contracts > 0,
                             "validate_migrations was not able to read any contracts"
                         );
-                        for contract in contracts {
-                            contract.expect("Error reading contract");
-                        }
                     }
                     DbKeyPrefix::AgreedDecryptionShare => {
                         let agreed_decryption_shares = dbtx
@@ -1056,9 +1044,6 @@ mod fedimint_migration_tests {
                             num_shares > 0,
                             "validate_migrations was not able to read any AgreedDecryptionShares"
                         );
-                        for share in agreed_decryption_shares {
-                            share.expect("Error reading AgreedDecryptionShare");
-                        }
                     }
                     DbKeyPrefix::ContractUpdate => {
                         let contract_updates = dbtx
@@ -1071,9 +1056,6 @@ mod fedimint_migration_tests {
                             num_updates > 0,
                             "validate_migrations was not able to read any ContractUpdates"
                         );
-                        for update in contract_updates {
-                            update.expect("Error reading ContractUpdate");
-                        }
                     }
                     DbKeyPrefix::LightningGateway => {
                         let gateways = dbtx
@@ -1086,9 +1068,6 @@ mod fedimint_migration_tests {
                             num_gateways > 0,
                             "validate_migrations was not able to read any LightningGateways"
                         );
-                        for gateway in gateways {
-                            gateway.expect("Error reading LightningGateway");
-                        }
                     }
                     DbKeyPrefix::Offer => {
                         let offers = dbtx
@@ -1101,9 +1080,6 @@ mod fedimint_migration_tests {
                             num_offers > 0,
                             "validate_migrations was not able to read any Offers"
                         );
-                        for offer in offers {
-                            offer.expect("Error reading Offer");
-                        }
                     }
                     DbKeyPrefix::ProposeDecryptionShare => {
                         let proposed_decryption_shares = dbtx
@@ -1116,9 +1092,6 @@ mod fedimint_migration_tests {
                             num_shares > 0,
                             "validate_migrations was not able to read any ProposeDecryptionShares"
                         );
-                        for share in proposed_decryption_shares {
-                            share.expect("Error reading ProposeDecryptionShare");
-                        }
                     }
                 }
             }
