@@ -28,7 +28,7 @@ use fedimint_core::config::FederationId;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::{Amount, TransactionId};
-use lnrpc_client::ILnRpcClient;
+use lnrpc_client::{ILnRpcClient, NetworkLnRpcClient};
 use mint_client::ln::PayInvoicePayload;
 use mint_client::modules::ln::route_hints::RouteHint;
 use mint_client::{ClientError, GatewayClient};
@@ -81,6 +81,7 @@ pub struct Gateway {
     receiver: mpsc::Receiver<GatewayRequest>,
     task_group: TaskGroup,
     channel_id_generator: AtomicU64,
+    lnrpc2: NetworkLnRpcClient,
 }
 
 impl Gateway {
@@ -91,6 +92,7 @@ impl Gateway {
         decoders: ModuleDecoderRegistry,
         module_gens: ClientModuleGenRegistry,
         task_group: TaskGroup,
+        lnrpc2: NetworkLnRpcClient,
     ) -> Self {
         // Create message channels for the webserver
         let (sender, receiver) = mpsc::channel::<GatewayRequest>(100);
@@ -118,7 +120,7 @@ impl Gateway {
             tokio::time::sleep(ROUTE_HINT_RETRY_SLEEP).await;
         };
 
-        let gw = Self {
+        let mut gw = Self {
             lnrpc,
             actors: Mutex::new(HashMap::new()),
             sender,
@@ -128,6 +130,7 @@ impl Gateway {
             channel_id_generator: AtomicU64::new(0),
             decoders: decoders.clone(),
             module_gens: module_gens.clone(),
+            lnrpc2,
         };
 
         gw.load_federation_actors(decoders, module_gens, route_hints)
@@ -137,7 +140,7 @@ impl Gateway {
     }
 
     async fn load_federation_actors(
-        &self,
+        &mut self,
         decoders: ModuleDecoderRegistry,
         module_gens: ClientModuleGenRegistry,
         route_hints: Vec<RouteHint>,
@@ -183,14 +186,14 @@ impl Gateway {
     }
 
     pub async fn connect_federation(
-        &self,
+        &mut self,
         client: Arc<GatewayClient>,
         route_hints: Vec<RouteHint>,
     ) -> Result<Arc<GatewayActor>> {
         let actor = Arc::new(
             GatewayActor::new(
                 client.clone(),
-                self.lnrpc.clone(),
+                &mut self.lnrpc2,
                 route_hints,
                 self.task_group.clone(),
                 GatewayRpcSender::new(self.sender.clone()),
@@ -206,7 +209,7 @@ impl Gateway {
     }
 
     async fn handle_connect_federation(
-        &self,
+        &mut self,
         payload: ConnectFedPayload,
         route_hints: Vec<RouteHint>,
     ) -> Result<()> {
@@ -268,14 +271,14 @@ impl Gateway {
         })
     }
 
-    async fn handle_pay_invoice_msg(&self, payload: PayInvoicePayload) -> Result<()> {
+    async fn handle_pay_invoice_msg(&mut self, payload: PayInvoicePayload) -> Result<()> {
         let PayInvoicePayload {
             federation_id,
             contract_id,
         } = payload;
 
         let actor = self.select_actor(federation_id).await?;
-        let outpoint = actor.pay_invoice(contract_id).await?;
+        let outpoint = actor.pay_invoice(contract_id, &mut self.lnrpc2).await?;
         actor
             .await_outgoing_contract_claimed(contract_id, outpoint)
             .await?;
@@ -372,56 +375,67 @@ impl Gateway {
                 tracing::trace!("Gateway received message {:?}", msg);
                 match msg {
                     GatewayRequest::Info(inner) => {
-                        inner.handle(|payload| self.handle_get_info(payload)).await;
+                        inner
+                            .handle(&mut self, |gateway, payload| {
+                                gateway.handle_get_info(payload)
+                            })
+                            .await;
                     }
                     GatewayRequest::ConnectFederation(inner) => {
                         let route_hints: Vec<RouteHint> =
                             self.lnrpc.routehints().await?.try_into()?;
                         inner
-                            .handle(|payload| {
-                                self.handle_connect_federation(payload, route_hints.clone())
+                            .handle(&mut self, |gateway, payload| {
+                                gateway.handle_connect_federation(payload, route_hints.clone())
                             })
                             .await;
                     }
                     GatewayRequest::PayInvoice(inner) => {
-                        inner
-                            .handle(|payload| self.handle_pay_invoice_msg(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload|
+                        // self.handle_pay_invoice_msg(payload))
+                        //    .await;
                     }
                     GatewayRequest::Balance(inner) => {
-                        inner
-                            .handle(|payload| self.handle_balance_msg(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload|
+                        // self.handle_balance_msg(payload))
+                        //    .await;
                     }
                     GatewayRequest::DepositAddress(inner) => {
-                        inner
-                            .handle(|payload| self.handle_address_msg(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload|
+                        // self.handle_address_msg(payload))
+                        //    .await;
                     }
                     GatewayRequest::Deposit(inner) => {
-                        inner
-                            .handle(|payload| self.handle_deposit_msg(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload|
+                        // self.handle_deposit_msg(payload))
+                        //    .await;
                     }
                     GatewayRequest::Withdraw(inner) => {
-                        inner
-                            .handle(|payload| self.handle_withdraw_msg(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload|
+                        // self.handle_withdraw_msg(payload))
+                        //    .await;
                     }
                     GatewayRequest::Backup(inner) => {
-                        inner
-                            .handle(|payload| self.handle_backup_msg(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload| self.handle_backup_msg(payload))
+                        //    .await;
                     }
                     GatewayRequest::Restore(inner) => {
-                        inner
-                            .handle(|payload| self.handle_restore_msg(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload|
+                        // self.handle_restore_msg(payload))
+                        //    .await;
                     }
                     GatewayRequest::LightningReconnect(inner) => {
-                        inner
-                            .handle(|payload| self.handle_lightning_reconnect(payload))
-                            .await;
+                        //inner
+                        //    .handle(|payload|
+                        // self.handle_lightning_reconnect(payload))
+                        //    .await;
                     }
                 }
             }

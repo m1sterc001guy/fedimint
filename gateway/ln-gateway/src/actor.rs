@@ -18,7 +18,7 @@ use crate::gatewaylnrpc::{
     CompleteHtlcsRequest, PayInvoiceRequest, PayInvoiceResponse, SubscribeInterceptHtlcsRequest,
     SubscribeInterceptHtlcsResponse,
 };
-use crate::lnrpc_client::ILnRpcClient;
+use crate::lnrpc_client::{ILnRpcClient, NetworkLnRpcClient};
 use crate::rpc::{FederationInfo, GatewayRpcSender};
 use crate::utils::retry;
 use crate::{GatewayError, Result};
@@ -29,7 +29,6 @@ const GW_ANNOUNCEMENT_TTL: Duration = Duration::from_secs(600);
 #[derive(Clone)]
 pub struct GatewayActor {
     client: Arc<GatewayClient>,
-    lnrpc: Arc<dyn ILnRpcClient>,
     task_group: TaskGroup,
     gateway_rpc: GatewayRpcSender,
 }
@@ -43,7 +42,7 @@ pub enum BuyPreimage {
 impl GatewayActor {
     pub async fn new(
         client: Arc<GatewayClient>,
-        lnrpc: Arc<dyn ILnRpcClient>,
+        lnrpc: &mut NetworkLnRpcClient,
         route_hints: Vec<RouteHint>,
         task_group: TaskGroup,
         gateway_rpc: GatewayRpcSender,
@@ -82,29 +81,27 @@ impl GatewayActor {
 
         let actor = Self {
             client,
-            lnrpc,
             task_group,
             gateway_rpc,
         };
 
-        actor.subscribe_htlcs().await?;
+        actor.subscribe_htlcs(lnrpc).await?;
 
         Ok(actor)
     }
 
-    async fn subscribe_htlcs(&self) -> Result<()> {
+    async fn subscribe_htlcs(&self, lnrpc: &mut NetworkLnRpcClient) -> Result<()> {
         let short_channel_id = self.client.config().mint_channel_id;
         let mut tg = self.task_group.clone();
 
-        let mut stream = self
-            .lnrpc
-            .to_owned()
+        let mut stream = lnrpc
             .subscribe_htlcs(SubscribeInterceptHtlcsRequest { short_channel_id })
             .await?;
         info!("Subscribed to HTLCs with {:?}", short_channel_id);
 
         let actor = self.to_owned();
-        let lnrpc_copy = self.lnrpc.to_owned();
+        //let lnrpc_copy = self.lnrpc.to_owned();
+        /*
         tg.spawn(
             "Subscribe to intercepted HTLCs in stream",
             move |subscription| async move {
@@ -143,7 +140,7 @@ impl GatewayActor {
                             let fail = "Failed to parse payment hash";
 
                             error!("{}: {:?}", fail, e);
-                            let _ = lnrpc_copy
+                            let _ = lnrpc
                                 .complete_htlc(CompleteHtlcsRequest {
                                     intercepted_htlc_id,
                                     action: Some(Action::Cancel(Cancel {
@@ -170,7 +167,7 @@ impl GatewayActor {
                             // cancel HTCL after expiry period lapses.
                             // Result can be safely ignored.
                             // TODO: make sure this succeeded?
-                            let _ = lnrpc_copy
+                            let _ = lnrpc
                                 .complete_htlc(CompleteHtlcsRequest {
                                     intercepted_htlc_id,
                                     action: Some(Action::Cancel(Cancel {
@@ -191,7 +188,7 @@ impl GatewayActor {
                     {
                         Ok(preimage) => {
                             info!("Successfully processed intercepted HTLC");
-                            if let Err(e) = lnrpc_copy
+                            if let Err(e) = lnrpc
                                 .complete_htlc(CompleteHtlcsRequest {
                                     intercepted_htlc_id,
                                     action: Some(Action::Settle(Settle {
@@ -213,7 +210,7 @@ impl GatewayActor {
                             // If we fail to send the complete htlc message, or get an error result,
                             // lightning node will still cancel HTCL after expiry period lapses.
                             // Result can be safely ignored.
-                            let _ = lnrpc_copy
+                            let _ = lnrpc
                                 .complete_htlc(CompleteHtlcsRequest {
                                     intercepted_htlc_id,
                                     action: Some(Action::Cancel(Cancel {
@@ -227,6 +224,7 @@ impl GatewayActor {
             },
         )
         .await;
+        */
 
         Ok(())
     }
@@ -257,16 +255,24 @@ impl GatewayActor {
     }
 
     #[instrument(skip_all, fields(%contract_id))]
-    pub async fn pay_invoice(&self, contract_id: ContractId) -> Result<OutPoint> {
+    pub async fn pay_invoice(
+        &self,
+        contract_id: ContractId,
+        lnrpc: &mut NetworkLnRpcClient,
+    ) -> Result<OutPoint> {
         self.pay_invoice_buy_preimage_finalize_and_claim(
             contract_id,
-            self.pay_invoice_buy_preimage(contract_id).await?,
+            self.pay_invoice_buy_preimage(contract_id, lnrpc).await?,
         )
         .await
     }
 
     #[instrument(skip_all, fields(%contract_id), err)]
-    pub async fn pay_invoice_buy_preimage(&self, contract_id: ContractId) -> Result<BuyPreimage> {
+    pub async fn pay_invoice_buy_preimage(
+        &self,
+        contract_id: ContractId,
+        lnrpc: &mut NetworkLnRpcClient,
+    ) -> Result<BuyPreimage> {
         debug!("Fetching contract");
         let contract_account = self.client.fetch_outgoing_contract(contract_id).await?;
 
@@ -314,6 +320,7 @@ impl GatewayActor {
                 self.buy_preimage_over_lightning(
                     contract_account.contract.invoice,
                     &payment_params,
+                    lnrpc,
                 )
                 .await?,
             )
@@ -398,9 +405,9 @@ impl GatewayActor {
         &self,
         invoice: lightning_invoice::Invoice,
         payment_params: &PaymentParameters,
+        lnrpc: &mut NetworkLnRpcClient,
     ) -> Result<Preimage> {
-        match self
-            .lnrpc
+        match lnrpc
             .pay(PayInvoiceRequest {
                 invoice: invoice.to_string(),
                 max_delay: payment_params.max_delay,

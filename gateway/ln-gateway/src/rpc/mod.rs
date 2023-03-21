@@ -16,7 +16,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 
-use crate::{GatewayError, Result};
+use crate::{Gateway, GatewayError, Result};
 
 #[derive(Debug, Clone)]
 pub struct GatewayRpcSender {
@@ -184,11 +184,16 @@ where
     T: GatewayRequestTrait,
     T::Response: std::fmt::Debug,
 {
-    pub async fn handle<F: Fn(T) -> FF, FF: Future<Output = Result<T::Response>> + Send>(
+    pub async fn handle<
+        'gateway,
+        F: FnMut(&'gateway mut Gateway, T) -> FF,
+        FF: Future<Output = Result<T::Response>> + Send + 'gateway,
+    >(
         self,
-        handler: F,
+        gateway: &'gateway mut Gateway,
+        mut handler: F,
     ) {
-        let result = handler(self.request).await;
+        let result = handler(gateway, self.request).await;
         if self.sender.send(result).is_err() {
             // TODO: figure out how to log the result
             tracing::error!("Plugin hung up");

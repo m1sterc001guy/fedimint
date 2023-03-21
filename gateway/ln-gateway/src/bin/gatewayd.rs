@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -135,6 +136,8 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
+    let lnrpc2 = NetworkLnRpcClient::new(Url::from_str("localhost:8759").unwrap()).await?;
+
     // Create module decoder registry
     let decoders = ModuleDecoderRegistry::from_iter([
         (
@@ -165,6 +168,7 @@ async fn main() -> Result<(), anyhow::Error> {
         decoders,
         module_gens,
         task_group.make_subgroup().await,
+        lnrpc2,
     )
     .await;
 
