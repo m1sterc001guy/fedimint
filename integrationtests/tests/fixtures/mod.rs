@@ -64,7 +64,7 @@ use itertools::Itertools;
 use ln_gateway::actor::GatewayActor;
 use ln_gateway::client::{DynGatewayClientBuilder, MemDbFactory, StandardGatewayClientBuilder};
 use ln_gateway::lnd::GatewayLndClient;
-use ln_gateway::lnrpc_client::{DynLnRpcClient, NetworkLnRpcClient};
+use ln_gateway::lnrpc_client::{ILnRpcClient, NetworkLnRpcClient};
 use ln_gateway::Gateway;
 use mint_client::mint::SpendableNote;
 use mint_client::transaction::legacy::Transaction;
@@ -333,8 +333,8 @@ pub async fn fixtures(num_peers: u16, gateway_node: GatewayNode) -> anyhow::Resu
                 .expect("Invalid FM_GATEWAY_LIGHTNING_ADDR");
             let lnrpc_adapter = match gateway_node {
                 GatewayNode::Cln => {
-                    let lnrpc: DynLnRpcClient =
-                        NetworkLnRpcClient::new(lnrpc_addr).await.unwrap().into();
+                    let lnrpc: Arc<dyn ILnRpcClient> =
+                        Arc::new(NetworkLnRpcClient::new(lnrpc_addr).await.unwrap());
                     LnRpcAdapter::new(lnrpc)
                 }
                 GatewayNode::Lnd => {
@@ -346,7 +346,7 @@ pub async fn fixtures(num_peers: u16, gateway_node: GatewayNode) -> anyhow::Resu
                     )
                     .await
                     .unwrap();
-                    let lnrpc = DynLnRpcClient::new(Arc::new(gateway_lnd_client));
+                    let lnrpc = Arc::new(gateway_lnd_client);
                     LnRpcAdapter::new(lnrpc)
                 }
             };
@@ -383,7 +383,7 @@ pub async fn fixtures(num_peers: u16, gateway_node: GatewayNode) -> anyhow::Resu
             let bitcoin_rpc_2: DynBitcoindRpc = bitcoin.clone().into();
 
             let lightning = FakeLightningTest::new();
-            let lnrpc_adapter = LnRpcAdapter::new(lightning.clone().into());
+            let lnrpc_adapter = LnRpcAdapter::new(Arc::new(lightning.clone()));
 
             let net = MockNetwork::new();
             let net_ref = &net;
@@ -603,7 +603,7 @@ impl GatewayTest {
         .into();
 
         let gateway = Gateway::new(
-            adapter.clone().into(),
+            Arc::new(adapter.clone()),
             client_builder.clone(),
             decoders.clone(),
             module_gens.clone(),

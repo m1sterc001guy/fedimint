@@ -18,8 +18,8 @@ use crate::gatewaylnrpc::{
     CompleteHtlcsRequest, PayInvoiceRequest, PayInvoiceResponse, SubscribeInterceptHtlcsRequest,
     SubscribeInterceptHtlcsResponse,
 };
-use crate::lnrpc_client::DynLnRpcClient;
-use crate::rpc::FederationInfo;
+use crate::lnrpc_client::ILnRpcClient;
+use crate::rpc::{FederationInfo, GatewayRpcSender};
 use crate::utils::retry;
 use crate::{GatewayError, Result};
 
@@ -29,8 +29,9 @@ const GW_ANNOUNCEMENT_TTL: Duration = Duration::from_secs(600);
 #[derive(Clone)]
 pub struct GatewayActor {
     client: Arc<GatewayClient>,
-    lnrpc: DynLnRpcClient,
+    lnrpc: Arc<dyn ILnRpcClient>,
     task_group: TaskGroup,
+    gateway_rpc: GatewayRpcSender,
 }
 
 #[derive(Debug, Clone)]
@@ -42,9 +43,10 @@ pub enum BuyPreimage {
 impl GatewayActor {
     pub async fn new(
         client: Arc<GatewayClient>,
-        lnrpc: DynLnRpcClient,
+        lnrpc: Arc<dyn ILnRpcClient>,
         route_hints: Vec<RouteHint>,
         task_group: TaskGroup,
+        gateway_rpc: GatewayRpcSender,
     ) -> Result<Self> {
         let register_client = client.clone();
         tokio::spawn(async move {
@@ -82,6 +84,7 @@ impl GatewayActor {
             client,
             lnrpc,
             task_group,
+            gateway_rpc,
         };
 
         actor.subscribe_htlcs().await?;
@@ -114,7 +117,7 @@ impl GatewayActor {
                     Some(msg) => match msg {
                         Ok(msg) => Some(msg),
                         Err(e) => {
-                            warn!("Error sent over HTLC subscription: {}", e);
+                            warn!("Error sent over HTLC subscription: {}. Need to send RPC to gateway to reconnect.", e);
                             None
                         }
                     },

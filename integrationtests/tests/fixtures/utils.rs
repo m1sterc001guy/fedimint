@@ -7,7 +7,7 @@ use ln_gateway::gatewaylnrpc::{
     CompleteHtlcsRequest, CompleteHtlcsResponse, GetPubKeyResponse, GetRouteHintsResponse,
     PayInvoiceRequest, PayInvoiceResponse, SubscribeInterceptHtlcsRequest,
 };
-use ln_gateway::lnrpc_client::{DynLnRpcClient, HtlcStream, ILnRpcClient};
+use ln_gateway::lnrpc_client::{HtlcStream, ILnRpcClient};
 use ln_gateway::GatewayError;
 use tokio::sync::Mutex;
 
@@ -16,14 +16,14 @@ use tokio::sync::Mutex;
 #[derive(Debug, Clone)]
 pub struct LnRpcAdapter {
     /// The actual `ILnRpcClient` that we add behavior to.
-    client: DynLnRpcClient,
+    client: Arc<dyn ILnRpcClient>,
     /// A pair of <PayInvoiceRequest> and <Count> where client.pay() will fail
     /// <Count> times for each <String> (bolt11 invoice)
     fail_invoices: Arc<Mutex<HashMap<String, u8>>>,
 }
 
 impl LnRpcAdapter {
-    pub fn new(client: DynLnRpcClient) -> Self {
+    pub fn new(client: Arc<dyn ILnRpcClient>) -> Self {
         let fail_invoices = Arc::new(Mutex::new(HashMap::new()));
 
         LnRpcAdapter {
@@ -45,6 +45,10 @@ impl LnRpcAdapter {
 
 #[async_trait]
 impl ILnRpcClient for LnRpcAdapter {
+    async fn reconnect(&mut self) -> ln_gateway::Result<()> {
+        Ok(())
+    }
+
     async fn pubkey(&self) -> ln_gateway::Result<GetPubKeyResponse> {
         self.client.pubkey().await
     }

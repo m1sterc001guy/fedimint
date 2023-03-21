@@ -78,6 +78,10 @@ impl LightningTest for FakeLightningTest {
 
 #[async_trait]
 impl ILnRpcClient for FakeLightningTest {
+    async fn reconnect(&mut self) -> ln_gateway::Result<()> {
+        Ok(())
+    }
+
     async fn pubkey(&self) -> ln_gateway::Result<GetPubKeyResponse> {
         Ok(GetPubKeyResponse {
             pub_key: self.gateway_node_pub_key.serialize().to_vec(),

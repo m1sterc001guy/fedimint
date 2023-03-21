@@ -74,6 +74,10 @@ impl fmt::Debug for GatewayLndClient {
 
 #[async_trait]
 impl ILnRpcClient for GatewayLndClient {
+    async fn reconnect(&mut self) -> crate::Result<()> {
+        Ok(())
+    }
+
     async fn pubkey(&self) -> crate::Result<GetPubKeyResponse> {
         let mut client = self.client.clone();
 

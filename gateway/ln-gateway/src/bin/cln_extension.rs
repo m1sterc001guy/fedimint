@@ -13,7 +13,7 @@ use clap::Parser;
 use cln_plugin::{options, Builder, Plugin};
 use cln_rpc::model;
 use cln_rpc::primitives::ShortChannelId;
-use fedimint_core::task::TaskGroup;
+use fedimint_core::task::{sleep, TaskGroup};
 use fedimint_core::Amount;
 use ln_gateway::gatewaylnrpc::complete_htlcs_request::{Action, Cancel, Settle};
 use ln_gateway::gatewaylnrpc::gateway_lightning_server::{
@@ -57,6 +57,8 @@ async fn main() -> Result<(), anyhow::Error> {
         "Starting gateway-cln-extension with listen address : {}",
         listen
     );
+
+    sleep(Duration::from_secs(15)).await;
 
     Server::builder()
         .add_service(GatewayLightningServer::new(service))

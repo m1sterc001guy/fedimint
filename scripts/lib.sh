@@ -171,7 +171,7 @@ function start_lnd() {
 
 function start_gatewayd() {
   echo "starting gatewayd"
-  await_gateway_cln_extension
+  #await_gateway_cln_extension
   await_fedimint_block_sync
   $FM_BIN_DIR/fixtures gatewayd &
   gw_connect_fed

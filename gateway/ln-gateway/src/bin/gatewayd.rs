@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use fedimint_client::module::gen::{ClientModuleGenRegistry, DynClientModuleGen};
@@ -13,7 +14,7 @@ use fedimint_core::task::TaskGroup;
 use fedimint_logging::TracingSetup;
 use ln_gateway::client::{DynGatewayClientBuilder, RocksDbFactory, StandardGatewayClientBuilder};
 use ln_gateway::lnd::GatewayLndClient;
-use ln_gateway::lnrpc_client::{DynLnRpcClient, NetworkLnRpcClient};
+use ln_gateway::lnrpc_client::{ILnRpcClient, NetworkLnRpcClient};
 use ln_gateway::Gateway;
 use mint_client::modules::ln::{LightningClientGen, LightningModuleTypes};
 use mint_client::modules::mint::{MintClientGen, MintModuleTypes};
@@ -105,13 +106,13 @@ async fn main() -> Result<(), anyhow::Error> {
     // Create task group for controlled shutdown of the gateway
     let task_group = TaskGroup::new();
 
-    let lnrpc: DynLnRpcClient = match mode {
+    let lnrpc: Arc<dyn ILnRpcClient> = match mode {
         Mode::Cln { cln_extension_addr } => {
             info!(
                 "Gateway configured to connect to remote LnRpcClient at \n cln extension address: {:?} ",
                 cln_extension_addr
             );
-            NetworkLnRpcClient::new(cln_extension_addr).await?.into()
+            Arc::new(NetworkLnRpcClient::new(cln_extension_addr).await?)
         }
         Mode::Lnd {
             lnd_rpc_addr,
@@ -122,14 +123,15 @@ async fn main() -> Result<(), anyhow::Error> {
                 "Gateway configured to connect to LND LnRpcClient at \n address: {:?},\n tls cert path: {:?},\n macaroon path: {} ",
                 lnd_rpc_addr, lnd_tls_cert, lnd_macaroon
             );
-            GatewayLndClient::new(
-                lnd_rpc_addr,
-                lnd_tls_cert,
-                lnd_macaroon,
-                task_group.make_subgroup().await,
+            Arc::new(
+                GatewayLndClient::new(
+                    lnd_rpc_addr,
+                    lnd_tls_cert,
+                    lnd_macaroon,
+                    task_group.make_subgroup().await,
+                )
+                .await?,
             )
-            .await?
-            .into()
         }
     };
 

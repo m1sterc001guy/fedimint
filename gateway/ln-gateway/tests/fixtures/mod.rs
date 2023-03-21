@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use fedimint_client::module::gen::{ClientModuleGenRegistry, DynClientModuleGen};
 use fedimint_core::task::TaskGroup;
@@ -7,7 +9,7 @@ use fedimint_testing::btc::fixtures::FakeBitcoinTest;
 use fedimint_testing::btc::BitcoinTest;
 use fedimint_testing::ln::fixtures::FakeLightningTest;
 use ln_gateway::client::{DynGatewayClientBuilder, MemDbFactory};
-use ln_gateway::lnrpc_client::DynLnRpcClient;
+use ln_gateway::lnrpc_client::ILnRpcClient;
 use ln_gateway::Gateway;
 use mint_client::module_decode_stubs;
 use mint_client::modules::wallet::WalletClientGen;
@@ -24,7 +26,7 @@ pub struct Fixtures {
 
 pub async fn fixtures(api_addr: Url) -> Result<Fixtures> {
     // Create a lightning rpc client
-    let lnrpc: DynLnRpcClient = FakeLightningTest::new().into();
+    let lnrpc: Arc<dyn ILnRpcClient> = Arc::new(FakeLightningTest::new());
 
     // Create federation client builder
     let client_builder: DynGatewayClientBuilder =

@@ -28,9 +28,11 @@ use fedimint_core::config::FederationId;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::{Amount, TransactionId};
+use lnrpc_client::ILnRpcClient;
 use mint_client::ln::PayInvoicePayload;
 use mint_client::modules::ln::route_hints::RouteHint;
 use mint_client::{ClientError, GatewayClient};
+use rpc::LightningReconnectPayload;
 use secp256k1::PublicKey;
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
@@ -39,7 +41,6 @@ use tracing::{error, info, warn};
 use crate::actor::GatewayActor;
 use crate::client::DynGatewayClientBuilder;
 use crate::gatewaylnrpc::GetPubKeyResponse;
-use crate::lnrpc_client::DynLnRpcClient;
 use crate::rpc::rpc_server::run_webserver;
 use crate::rpc::{
     BackupPayload, BalancePayload, ConnectFedPayload, DepositAddressPayload, DepositPayload,
@@ -73,7 +74,7 @@ impl IntoResponse for GatewayError {
 pub struct Gateway {
     decoders: ModuleDecoderRegistry,
     module_gens: ClientModuleGenRegistry,
-    lnrpc: DynLnRpcClient,
+    lnrpc: Arc<dyn ILnRpcClient>,
     actors: Mutex<HashMap<String, Arc<GatewayActor>>>,
     client_builder: DynGatewayClientBuilder,
     sender: mpsc::Sender<GatewayRequest>,
@@ -85,7 +86,7 @@ pub struct Gateway {
 impl Gateway {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
-        lnrpc: DynLnRpcClient,
+        lnrpc: Arc<dyn ILnRpcClient>,
         client_builder: DynGatewayClientBuilder,
         decoders: ModuleDecoderRegistry,
         module_gens: ClientModuleGenRegistry,
@@ -192,6 +193,7 @@ impl Gateway {
                 self.lnrpc.clone(),
                 route_hints,
                 self.task_group.clone(),
+                GatewayRpcSender::new(self.sender.clone()),
             )
             .await?,
         );
@@ -334,6 +336,11 @@ impl Gateway {
         self.select_actor(federation_id).await?.restore().await
     }
 
+    async fn handle_lightning_reconnect(&self, _payload: LightningReconnectPayload) -> Result<()> {
+        //self.lnrpc.reconnect().await?;
+        Ok(())
+    }
+
     pub async fn run(mut self, listen: SocketAddr, password: String) -> Result<()> {
         let mut tg = self.task_group.clone();
 
@@ -409,6 +416,11 @@ impl Gateway {
                     GatewayRequest::Restore(inner) => {
                         inner
                             .handle(|payload| self.handle_restore_msg(payload))
+                            .await;
+                    }
+                    GatewayRequest::LightningReconnect(inner) => {
+                        inner
+                            .handle(|payload| self.handle_lightning_reconnect(payload))
                             .await;
                     }
                 }

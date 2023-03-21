@@ -115,6 +115,11 @@ pub struct GatewayInfo {
     pub federations: Vec<FederationInfo>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LightningReconnectPayload {
+    // TODO: Define data in here to connect to CLN or LND
+}
+
 #[derive(Debug)]
 pub enum GatewayRequest {
     Info(GatewayRequestInner<InfoPayload>),
@@ -126,6 +131,7 @@ pub enum GatewayRequest {
     Withdraw(GatewayRequestInner<WithdrawPayload>),
     Backup(GatewayRequestInner<BackupPayload>),
     Restore(GatewayRequestInner<RestorePayload>),
+    LightningReconnect(GatewayRequestInner<LightningReconnectPayload>),
 }
 
 #[derive(Debug)]
@@ -167,6 +173,11 @@ impl_gateway_request_trait!(DepositPayload, TransactionId, GatewayRequest::Depos
 impl_gateway_request_trait!(WithdrawPayload, TransactionId, GatewayRequest::Withdraw);
 impl_gateway_request_trait!(BackupPayload, (), GatewayRequest::Backup);
 impl_gateway_request_trait!(RestorePayload, (), GatewayRequest::Restore);
+impl_gateway_request_trait!(
+    LightningReconnectPayload,
+    (),
+    GatewayRequest::LightningReconnect
+);
 
 impl<T> GatewayRequestInner<T>
 where
