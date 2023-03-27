@@ -1,7 +1,8 @@
 spec:
   name: fedimint
   services:
+    name: fedimintd
     git:
       branch: digital_ocean_deploy2
       repo_clone_url: https://github.com/m1sterc001guy/fedimint.git
-    name: fedimintd
+    dockerfile_path: misc/Dockerfile
