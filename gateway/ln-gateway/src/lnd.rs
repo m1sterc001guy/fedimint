@@ -324,6 +324,7 @@ impl ILnRpcClient for GatewayLndClient {
                             action,
                             incoming_chan_id,
                             htlc_id,
+                            short_channel_id,
                         } = complete_request;
 
                         match action {
@@ -344,6 +345,9 @@ impl ILnRpcClient for GatewayLndClient {
                                 });
                             }
                         };
+
+                        // Remove the short_channel_id from the subscriptions map
+                        subs.lock().await.remove(&short_channel_id);
                     }
                     None => {
                         error!("No action was sent as part of RouteHtlcRequest");

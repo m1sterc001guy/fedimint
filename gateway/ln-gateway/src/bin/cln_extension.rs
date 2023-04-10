@@ -247,6 +247,7 @@ impl ClnRpcService {
             action,
             incoming_chan_id,
             htlc_id,
+            short_channel_id: _short_channel_id,
         } = complete_request;
         if let Some(outcome) = interceptors
             .outcomes
@@ -613,7 +614,7 @@ impl ClnHtlcInterceptor {
                     Err(_) => return serde_json::json!({ "result": "continue" }),
                 };
 
-            match subscription
+            let htlc_res = match subscription
                 .send(Ok(RouteHtlcResponse {
                     action: Some(route_htlc_response::Action::SubscribeResponse(
                         SubscribeInterceptHtlcsResponse {
@@ -639,7 +640,7 @@ impl ClnHtlcInterceptor {
 
                     // If the gateway does not respond within the HTLC expiry,
                     // Automatically respond with a failure message.
-                    return tokio::time::timeout(Duration::from_secs(30), async {
+                    tokio::time::timeout(Duration::from_secs(30), async {
                         receiver.await.unwrap_or_else(|e| {
                             error!("Failed to receive outcome of intercepted htlc: {:?}", e);
                             htlc_processing_failure()
@@ -649,19 +650,21 @@ impl ClnHtlcInterceptor {
                     .unwrap_or_else(|e| {
                         error!("await_htlc_processing error {:?}", e);
                         htlc_processing_failure()
-                    });
+                    })
                 }
                 Err(e) => {
                     error!("Failed to send htlc to subscription: {:?}", e);
-                    return htlc_processing_failure();
+                    htlc_processing_failure()
                 }
-            }
+            };
+
+            // Remove the short channel id from the subscriptions map
+            self.subscriptions.lock().await.remove(&short_channel_id);
+            return htlc_res;
         }
 
         // We have no subscription for this HTLC.
         // Ignore it by requesting the node to continue
         serde_json::json!({ "result": "continue" })
     }
-
-    // TODO: Add a method to remove a HTLC subscriber
 }

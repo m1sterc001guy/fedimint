@@ -84,6 +84,7 @@ impl LightningSenderStream {
         preimage: Preimage,
         incoming_chan_id: u64,
         htlc_id: u64,
+        short_channel_id: u64,
     ) -> Result<()> {
         info!("Successfully processed intercepted HTLC");
         self.ln_sender
@@ -95,6 +96,7 @@ impl LightningSenderStream {
                         })),
                         incoming_chan_id,
                         htlc_id,
+                        short_channel_id,
                     },
                 )),
             })
@@ -107,6 +109,7 @@ impl LightningSenderStream {
         error_message: &str,
         incoming_chan_id: u64,
         htlc_id: u64,
+        short_channel_id: u64,
     ) -> Result<()> {
         // Note: this specific complete htlc requires no further action.
         // If we fail to send the complete htlc message, or get an error
@@ -124,6 +127,7 @@ impl LightningSenderStream {
                         })),
                         incoming_chan_id,
                         htlc_id,
+                        short_channel_id,
                     },
                 )),
             })
@@ -239,6 +243,7 @@ impl GatewayActor {
         htlc: SubscribeInterceptHtlcsResponse,
         ln_sender: LightningSenderStream,
         actor: GatewayActor,
+        short_channel_id: u64,
     ) -> Result<()> {
         let SubscribeInterceptHtlcsResponse {
             payment_hash,
@@ -259,7 +264,12 @@ impl GatewayActor {
             Ok(hash) => hash,
             Err(_) => {
                 return ln_sender
-                    .cancel_htlc("Failed to parse payment hash", incoming_chan_id, htlc_id)
+                    .cancel_htlc(
+                        "Failed to parse payment hash",
+                        incoming_chan_id,
+                        htlc_id,
+                        short_channel_id,
+                    )
                     .await;
             }
         };
@@ -273,7 +283,12 @@ impl GatewayActor {
             Ok((outpoint, contract_id)) => (outpoint, contract_id),
             Err(_) => {
                 return ln_sender
-                    .cancel_htlc("Failed to buy preimage", incoming_chan_id, htlc_id)
+                    .cancel_htlc(
+                        "Failed to buy preimage",
+                        incoming_chan_id,
+                        htlc_id,
+                        short_channel_id,
+                    )
                     .await;
             }
         };
@@ -284,7 +299,7 @@ impl GatewayActor {
         {
             Ok(preimage) => {
                 return ln_sender
-                    .settle_htlc(preimage, incoming_chan_id, htlc_id)
+                    .settle_htlc(preimage, incoming_chan_id, htlc_id, short_channel_id)
                     .await;
             }
             Err(_) => {
@@ -293,6 +308,7 @@ impl GatewayActor {
                         "Failed to process intercepted HTLC",
                         incoming_chan_id,
                         htlc_id,
+                        short_channel_id,
                     )
                     .await;
             }
@@ -339,7 +355,7 @@ impl GatewayActor {
 
                         match action {
                             Some(route_htlc_response::Action::SubscribeResponse(htlc)) => {
-                                Self::handle_intercepted_htlc(htlc, ln_sender.clone(), actor.clone()).await.expect("Error occurred while handling intercepted HTLC");
+                                Self::handle_intercepted_htlc(htlc, ln_sender.clone(), actor.clone(), short_channel_id).await.expect("Error occurred while handling intercepted HTLC");
                             }
                             Some(route_htlc_response::Action::CompleteResponse(_complete_response)) => {
                                 // TODO: Might need to add some error handling here

@@ -144,6 +144,9 @@ message CompleteHtlcsRequest {
 
   // The index of the incoming htlc in the incoming channel
   uint64 htlc_id = 5;
+
+  // The short channel id of the htlc to complete
+  uint64 short_channel_id = 6;
 }
 
 message CompleteHtlcsResponse {}
