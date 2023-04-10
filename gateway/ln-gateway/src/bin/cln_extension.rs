@@ -1,5 +1,5 @@
 use std::array::TryFromSliceError;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use bitcoin_hashes::hex::ToHex;
-use bitcoin_hashes::{sha256, Hash};
 use clap::Parser;
 use cln_plugin::{options, Builder, Plugin};
 use cln_rpc::model;
@@ -101,6 +100,10 @@ pub struct Htlc {
     pub cltv_expiry: u32,
     pub cltv_expiry_relative: u32,
     pub payment_hash: bitcoin_hashes::sha256::Hash,
+    // The short channel id of the incoming channel
+    pub short_channel_id: String,
+    // The ID of the HTLC
+    pub id: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -242,20 +245,15 @@ impl ClnRpcService {
     ) -> Result<(), Status> {
         let CompleteHtlcsRequest {
             action,
-            intercepted_htlc_id,
-            key: _key,
+            incoming_chan_id,
+            htlc_id,
         } = complete_request;
-        let hash = match sha256::Hash::from_slice(&intercepted_htlc_id) {
-            Ok(hash) => hash,
-            Err(e) => {
-                error!("Invalid intercepted_htlc_id: {:?}", e);
-                return Err(Status::invalid_argument(e.to_string()));
-            }
-        };
-
-        info!(?hash, "Completing HTLC");
-
-        if let Some(outcome) = interceptors.outcomes.lock().await.remove(&hash) {
+        if let Some(outcome) = interceptors
+            .outcomes
+            .lock()
+            .await
+            .remove(&(incoming_chan_id, htlc_id))
+        {
             // Translate action request into a cln rpc response for
             // `htlc_accepted` event
             let htlca_res = match action {
@@ -274,7 +272,7 @@ impl ClnRpcService {
                     htlc_processing_failure()
                 }
                 None => {
-                    error!("No action specified for intercepted htlc id: {:?}", hash);
+                    error!("No action specified for intercepted htlc. incoming_chan_id: {:?} htlc_id: {:?}", incoming_chan_id, htlc_id);
                     return Err(Status::internal(
                         "No action specified on this intercepted htlc",
                     ));
@@ -309,8 +307,9 @@ impl ClnRpcService {
             };
         } else {
             error!(
-                "No interceptor reference found for this processed htlc with id: {:?}",
-                intercepted_htlc_id
+                "No interceptor reference found for this processed htlc. incoming_chanid: {:?} htlc_id: {:?}",
+                incoming_chan_id,
+                htlc_id,
             );
             return Err(Status::internal("No interceptor reference found for htlc"));
         }
@@ -564,14 +563,24 @@ type HtlcOutcomeSender = oneshot::Sender<serde_json::Value>;
 #[derive(Clone)]
 pub struct ClnHtlcInterceptor {
     subscriptions: Arc<Mutex<HashMap<u64, HtlcSubscriptionSender>>>,
-    pub outcomes: Arc<Mutex<HashMap<sha256::Hash, HtlcOutcomeSender>>>,
+    pub outcomes: Arc<Mutex<BTreeMap<(u64, u64), HtlcOutcomeSender>>>,
 }
 
 impl ClnHtlcInterceptor {
     fn new() -> Self {
         Self {
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
-            outcomes: Arc::new(Mutex::new(HashMap::new())),
+            outcomes: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    fn convert_short_channel_id(scid: &str) -> Result<u64, anyhow::Error> {
+        match ShortChannelId::from_str(scid) {
+            Ok(scid) => Ok(scid_to_u64(scid)),
+            Err(_) => Err(anyhow::anyhow!(
+                "Received invalid short channel id: {:?}",
+                scid
+            )),
         }
     }
 
@@ -580,19 +589,16 @@ impl ClnHtlcInterceptor {
 
         let htlc_expiry = payload.htlc.cltv_expiry;
 
-        let short_channel_id = match payload.onion.short_channel_id {
-            Some(scid) => match ShortChannelId::from_str(&scid) {
-                Ok(scid) => scid_to_u64(scid),
-                Err(_) => {
-                    // Ignore invalid SCID
-                    error!("Received invalid short channel id {:?}", scid);
-                    return serde_json::json!({ "result": "continue" });
-                }
-            },
-            None => {
-                // This is a HTLC terminating at the gateway node. DO NOT intercept
-                return serde_json::json!({ "result": "continue" });
-            }
+        if payload.onion.short_channel_id.is_none() {
+            // This is a HTLC terminating at the gateway node. DO NOT intercept
+            return serde_json::json!({ "result": "continue" });
+        }
+
+        let short_channel_id = match Self::convert_short_channel_id(
+            payload.onion.short_channel_id.unwrap().as_str(),
+        ) {
+            Ok(scid) => scid,
+            Err(_) => return serde_json::json!({ "result": "continue" }),
         };
 
         info!("Intercepted htlc with SCID: {:?}", short_channel_id);
@@ -600,14 +606,12 @@ impl ClnHtlcInterceptor {
         if let Some(subscription) = self.subscriptions.lock().await.get(&short_channel_id) {
             let payment_hash = payload.htlc.payment_hash.to_vec();
 
-            // This has a chance of collision since payment_hashes are not guaranteed to be
-            // unique TODO: generate unique id for each intercepted HTLC
-            let intercepted_htlc_id = sha256::Hash::hash(&payment_hash);
-
-            info!(
-                "Sending htlc to gatewayd for processing. Reference {:?}",
-                intercepted_htlc_id
-            );
+            let incoming_chan_id =
+                match Self::convert_short_channel_id(payload.htlc.short_channel_id.as_str()) {
+                    Ok(scid) => scid,
+                    // Failed to parse incoming_chan_id, just forward the HTLC
+                    Err(_) => return serde_json::json!({ "result": "continue" }),
+                };
 
             match subscription
                 .send(Ok(RouteHtlcResponse {
@@ -618,8 +622,8 @@ impl ClnHtlcInterceptor {
                             outgoing_amount_msat: payload.onion.forward_msat.msats,
                             incoming_expiry: htlc_expiry,
                             short_channel_id,
-                            intercepted_htlc_id: intercepted_htlc_id.into_inner().to_vec(),
-                            key: None,
+                            incoming_chan_id,
+                            htlc_id: payload.htlc.id,
                         },
                     )),
                 }))
@@ -631,7 +635,7 @@ impl ClnHtlcInterceptor {
                     self.outcomes
                         .lock()
                         .await
-                        .insert(intercepted_htlc_id, sender);
+                        .insert((incoming_chan_id, payload.htlc.id), sender);
 
                     // If the gateway does not respond within the HTLC expiry,
                     // Automatically respond with a failure message.
