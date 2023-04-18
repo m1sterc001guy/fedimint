@@ -26,6 +26,7 @@ use bitcoin_hashes::hex::ToHex;
 use clap::Subcommand;
 use fedimint_client::module::gen::ClientModuleGenRegistry;
 use fedimint_client_legacy::ln::PayInvoicePayload;
+use fedimint_client_legacy::modules::ln::contracts::Preimage;
 use fedimint_client_legacy::modules::ln::route_hints::RouteHint;
 use fedimint_client_legacy::{ClientError, GatewayClient};
 use fedimint_core::api::{FederationError, WsClientConnectInfo};
@@ -33,6 +34,8 @@ use fedimint_core::config::FederationId;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::task::{RwLock, TaskGroup};
 use fedimint_core::{Amount, TransactionId};
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use gatewaylnrpc::GetNodeInfoResponse;
 use lnrpc_client::ILnRpcClient;
 use rpc::{FederationInfo, LightningReconnectPayload};
@@ -40,11 +43,18 @@ use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tonic::Status;
 use tracing::{error, info, warn};
 use url::Url;
 
 use crate::actor::GatewayActor;
 use crate::client::DynGatewayClientBuilder;
+use crate::gatewaylnrpc::complete_htlcs_request::{Action, Cancel, Settle};
+use crate::gatewaylnrpc::{
+    route_htlc_request, route_htlc_response, CompleteHtlcsRequest, RouteHtlcRequest,
+    RouteHtlcResponse, SubscribeInterceptHtlcsRequest,
+};
 use crate::lnd::GatewayLndClient;
 use crate::lnrpc_client::NetworkLnRpcClient;
 use crate::rpc::rpc_server::run_webserver;
@@ -59,6 +69,8 @@ const ROUTE_HINT_RETRY_SLEEP: Duration = Duration::from_secs(2);
 const INITIAL_SCID: u64 = 1;
 
 pub type Result<T> = std::result::Result<T, GatewayError>;
+
+type RouteHTLCStream = BoxStream<'static, std::result::Result<RouteHtlcResponse, Status>>;
 
 #[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
 pub enum LightningMode {
@@ -97,6 +109,12 @@ pub enum GatewayError {
     FailedToFetchRouteHints,
 }
 
+#[derive(Clone)]
+pub struct LightningSenderStream {
+    ln_sender: Sender<RouteHtlcRequest>,
+    lnrpc: Arc<RwLock<dyn ILnRpcClient>>,
+}
+
 impl GatewayError {
     pub fn other(msg: String) -> Self {
         error!(msg);
@@ -117,11 +135,14 @@ pub struct Gateway {
     lnrpc: Arc<RwLock<dyn ILnRpcClient>>,
     lightning_mode: Option<LightningMode>,
     actors: Arc<RwLock<BTreeMap<String, GatewayActor>>>,
+    scid_to_fed_id: Arc<RwLock<BTreeMap<u64, String>>>,
     client_builder: DynGatewayClientBuilder,
     sender: mpsc::Sender<GatewayRequest>,
     receiver: mpsc::Receiver<GatewayRequest>,
     task_group: TaskGroup,
     channel_id_generator: AtomicU64,
+    shutdown_sender: mpsc::Sender<Arc<AtomicBool>>,
+    ln_stream_sender: LightningSenderStream,
 }
 
 impl Gateway {
@@ -140,9 +161,20 @@ impl Gateway {
             Self::create_lightning_client(lightning_mode.clone(), task_group.make_subgroup().await)
                 .await?;
 
+        // Create a channel that will be used to shutdown the HTLC thread
+        let (shutdown_sender, shutdown_receiver) = mpsc::channel::<Arc<AtomicBool>>(100);
+
+        // Create a stream used to communicate with the Lightning implementation
+        let (ln_sender, ln_receiver) = mpsc::channel::<RouteHtlcRequest>(100);
+        let ln_stream_sender = LightningSenderStream {
+            ln_sender,
+            lnrpc: lnrpc.clone(),
+        };
+
         let mut gw = Self {
             lnrpc,
             actors: Arc::new(RwLock::new(BTreeMap::new())),
+            scid_to_fed_id: Arc::new(RwLock::new(BTreeMap::new())),
             sender,
             receiver,
             client_builder,
@@ -151,8 +183,11 @@ impl Gateway {
             decoders: decoders.clone(),
             module_gens: module_gens.clone(),
             lightning_mode: Some(lightning_mode),
+            shutdown_sender,
+            ln_stream_sender,
         };
 
+        gw.route_htlcs(shutdown_receiver, ln_receiver).await?;
         gw.load_actors(decoders, module_gens).await?;
 
         Ok(gw)
@@ -169,9 +204,20 @@ impl Gateway {
         // Create message channels for the webserver
         let (sender, receiver) = mpsc::channel::<GatewayRequest>(100);
 
+        // Create a channel that will be used to shutdown the HTLC thread
+        let (shutdown_sender, shutdown_receiver) = mpsc::channel::<Arc<AtomicBool>>(100);
+
+        // Create a stream used to communicate with the Lightning implementation
+        let (ln_sender, ln_receiver) = mpsc::channel::<RouteHtlcRequest>(100);
+        let ln_stream_sender = LightningSenderStream {
+            ln_sender,
+            lnrpc: lnrpc.clone(),
+        };
+
         let mut gw = Self {
             lnrpc,
             actors: Arc::new(RwLock::new(BTreeMap::new())),
+            scid_to_fed_id: Arc::new(RwLock::new(BTreeMap::new())),
             sender,
             receiver,
             client_builder,
@@ -180,11 +226,131 @@ impl Gateway {
             decoders: decoders.clone(),
             module_gens: module_gens.clone(),
             lightning_mode: None,
+            shutdown_sender,
+            ln_stream_sender,
         };
 
+        gw.route_htlcs(shutdown_receiver, ln_receiver).await?;
         gw.load_actors(decoders, module_gens).await?;
 
         Ok(gw)
+    }
+
+    async fn stop_subscribing_htlcs(&mut self) -> Result<()> {
+        self.shutdown_sender
+            .send(Arc::new(AtomicBool::new(true)))
+            .await
+            .map_err(|e| {
+                GatewayError::Other(anyhow::anyhow!(
+                    "Couldn't send shutdown signal to HTLC thread: {:?}",
+                    e
+                ))
+            })
+    }
+
+    async fn wait_for_htlc_or_shutdown(
+        stream: &mut RouteHTLCStream,
+        receiver: &mut Receiver<Arc<AtomicBool>>,
+        gw_rpc_copy: GatewayRpcSender,
+    ) -> Option<RouteHtlcResponse> {
+        tokio::select! {
+            msg = stream.next() => match msg {
+                Some(Ok(msg)) => Some(msg),
+                Some(Err(e)) => {
+                    warn!("Error sent over HTLC subscription: {}. Sending reconnect RPC", e);
+                    // Sending a `LightningReconnectPayload` with `node_type` as None will use the existing
+                    // credentials to reconnect to the same node.
+                    let reconnect_req = LightningReconnectPayload { node_type: None };
+
+                    // We swallow the error here and simply return `None` to alert the subscription thread that
+                    // it should shutdown since we received an error from the lightning node.
+                    let _ = gw_rpc_copy.send(reconnect_req).await.map_err(|e| {
+                        warn!("Error sending reconnect RPC to gatewayd: {:?}", e);
+                    });
+                    None
+                }
+                None => {
+                    warn!("HTLC stream closed by service");
+                    None
+                }
+            },
+            _ = receiver.recv() => {
+                tracing::info!("Received signal to shutdown HTLC thread");
+                None
+            }
+        }
+    }
+
+    pub async fn route_htlcs(
+        &mut self,
+        mut shutdown_receiver: Receiver<Arc<AtomicBool>>,
+        ln_receiver: Receiver<RouteHtlcRequest>,
+    ) -> Result<()> {
+        let mut stream = self.ln_stream_sender.intercept_htlcs(ln_receiver).await?;
+
+        let gw_rpc_copy = GatewayRpcSender::new(self.sender.clone());
+        let scid_map = self.scid_to_fed_id.clone();
+        let actors_map = self.actors.clone();
+        let ln_sender_copy = self.ln_stream_sender.clone();
+        self.task_group
+            .spawn(
+                "Subscribe to intercepted HTLCs in stream",
+                move |handle| async move {
+                    while let Some(RouteHtlcResponse {
+                        action
+                    }) = Self::wait_for_htlc_or_shutdown(
+                        &mut stream,
+                        &mut shutdown_receiver,
+                        gw_rpc_copy.clone(),
+                    )
+                    .await
+                    {
+                        if handle.is_shutting_down() {
+                            info!("Shutting down HTLC subscription");
+                            break;
+                        }
+
+                        match action {
+                            Some(route_htlc_response::Action::SubscribeResponse(htlc)) => {
+                                // Lookup the corresponding actor based on the short channel id
+                                let scid = htlc.short_channel_id;
+                                let scids = scid_map.read().await;
+                                let fed_id = scids.get(&scid);
+
+                                if fed_id.is_none() {
+                                    error!(?scid, "Gatewayd intercepted an HTLC that is was not subscribed to.");
+                                    continue;
+                                }
+
+                                let fed_id = fed_id.unwrap();
+                                let actors = actors_map.read().await;
+                                let actor = actors.get(fed_id);
+
+                                if actor.is_none() {
+                                    error!(?fed_id, "Gatewayd did not have a federation for the corresponding federation id");
+                                    continue;
+                                }
+
+                                let actor_cpy = actor.unwrap().clone();
+                                let ln_sender2 = ln_sender_copy.clone();
+
+                                tokio::spawn(async move {
+                                    actor_cpy.handle_intercepted_htlc(htlc, ln_sender2).await.expect("Error occurred while handling intercepted HTLC");
+                                });
+                            }
+                            Some(route_htlc_response::Action::CompleteResponse(_complete_response)) => {
+                                // TODO: Might need to add some error handling here
+                                info!("Successfully handled HTLC");
+                            }
+                            None => {
+                                error!("Error: Action received from Lightning node was None. This should never happen");
+                            }
+                        }
+                    }
+                }
+            )
+            .await;
+        Ok(())
     }
 
     async fn create_lightning_client(
@@ -260,7 +426,14 @@ impl Gateway {
                     .await
                     .expect("Could not build federation client");
 
-                if let Err(e) = self.load_actor(Arc::new(client), route_hints.clone()).await {
+                if let Err(e) = self
+                    .load_actor(
+                        Arc::new(client),
+                        route_hints.clone(),
+                        config.mint_channel_id,
+                    )
+                    .await
+                {
                     error!("Failed to connect federation: {}", e);
                 }
 
@@ -280,13 +453,14 @@ impl Gateway {
         &mut self,
         client: Arc<GatewayClient>,
         route_hints: Vec<RouteHint>,
+        short_channel_id: u64,
     ) -> Result<GatewayActor> {
         let actor = GatewayActor::new(
             client.clone(),
             self.lnrpc.clone(),
             route_hints,
             self.task_group.clone(),
-            GatewayRpcSender::new(self.sender.clone()),
+            short_channel_id,
         )
         .await?;
 
@@ -294,6 +468,13 @@ impl Gateway {
             client.config().client_config.federation_id.to_string(),
             actor.clone(),
         );
+        self.scid_to_fed_id.write().await.insert(
+            short_channel_id,
+            client.config().client_config.federation_id.to_string(),
+        );
+        self.ln_stream_sender
+            .subscribe_to_htlcs(short_channel_id)
+            .await?;
         Ok(actor)
     }
 
@@ -344,7 +525,7 @@ impl Gateway {
         );
 
         let actor = self
-            .load_actor(client.clone(), route_hints)
+            .load_actor(client.clone(), route_hints, channel_id)
             .await
             .map_err(|e| {
                 GatewayError::Other(anyhow::anyhow!("Failed to connect federation {}", e))
@@ -456,13 +637,8 @@ impl Gateway {
     ) -> Result<()> {
         let LightningReconnectPayload { node_type } = payload;
 
-        let mut actors = self.actors.write().await;
-
         // Stop all threads that are listening for HTLCs
-        tracing::info!("Stopping all HTLC subscription threads.");
-        for actor in actors.values_mut() {
-            actor.stop_subscribing_htlcs().await?;
-        }
+        self.stop_subscribing_htlcs().await?;
 
         self.lnrpc = match node_type {
             Some(node_type) => {
@@ -484,13 +660,26 @@ impl Gateway {
         };
 
         // Restart the subscription of HTLCs for each actor
-        tracing::info!("Restarting HTLC subscription threads.");
+        tracing::info!("Restarting HTLC subscription thread");
 
         // Create a channel that will be used to shutdown the HTLC thread
-        for actor in actors.values_mut() {
-            let (sender, receiver) = mpsc::channel::<Arc<AtomicBool>>(100);
-            actor.route_htlcs(receiver).await?;
-            actor.sender = sender;
+        let (shutdown_sender, shutdown_receiver) = mpsc::channel::<Arc<AtomicBool>>(100);
+        self.shutdown_sender = shutdown_sender;
+
+        // Create a stream used to communicate with the Lightning implementation
+        let (ln_sender, ln_receiver) = mpsc::channel::<RouteHtlcRequest>(100);
+        let ln_stream_sender = LightningSenderStream {
+            ln_sender,
+            lnrpc: self.lnrpc.clone(),
+        };
+        self.ln_stream_sender = ln_stream_sender;
+
+        self.route_htlcs(shutdown_receiver, ln_receiver).await?;
+
+        let actors = self.actors.read().await;
+        for actor in actors.values() {
+            let scid = actor.short_channel_id;
+            self.ln_stream_sender.subscribe_to_htlcs(scid).await?;
         }
 
         Ok(())
@@ -619,5 +808,92 @@ impl Gateway {
 impl Drop for Gateway {
     fn drop(&mut self) {
         futures::executor::block_on(self.task_group.shutdown());
+    }
+}
+
+impl LightningSenderStream {
+    async fn intercept_htlcs(
+        &self,
+        ln_receiver: Receiver<RouteHtlcRequest>,
+    ) -> Result<RouteHTLCStream> {
+        let stream = self
+            .lnrpc
+            .write()
+            .await
+            .route_htlcs(ln_receiver.into())
+            .await?;
+
+        Ok(stream)
+    }
+
+    async fn subscribe_to_htlcs(&self, short_channel_id: u64) -> Result<()> {
+        let ret = self
+            .ln_sender
+            .send(RouteHtlcRequest {
+                action: Some(route_htlc_request::Action::SubscribeRequest(
+                    SubscribeInterceptHtlcsRequest { short_channel_id },
+                )),
+            })
+            .await
+            .map_err(|_| GatewayError::Other(anyhow::anyhow!("Failed to subscribe to HTLCs")));
+
+        info!(?short_channel_id, "Subscribed to HTLCs",);
+        ret
+    }
+
+    async fn settle_htlc(
+        &self,
+        preimage: Preimage,
+        incoming_chan_id: u64,
+        htlc_id: u64,
+    ) -> Result<()> {
+        info!(
+            ?incoming_chan_id,
+            ?htlc_id,
+            "Successfully processed intercepted HTLC"
+        );
+        self.ln_sender
+            .send(RouteHtlcRequest {
+                action: Some(route_htlc_request::Action::CompleteRequest(
+                    CompleteHtlcsRequest {
+                        action: Some(Action::Settle(Settle {
+                            preimage: preimage.0.to_vec(),
+                        })),
+                        incoming_chan_id,
+                        htlc_id,
+                    },
+                )),
+            })
+            .await
+            .map_err(|_| GatewayError::Other(anyhow::anyhow!("Failed to complete to HTLC")))
+    }
+
+    async fn cancel_htlc(
+        &self,
+        error_message: &str,
+        incoming_chan_id: u64,
+        htlc_id: u64,
+    ) -> Result<()> {
+        // Note: this specific complete htlc requires no further action.
+        // If we fail to send the complete htlc message, or get an error
+        // result, lightning node will still
+        // cancel HTCL after expiry period lapses.
+        // Result can be safely ignored.
+        // TODO: make sure this succeeded?
+        error!("{}", error_message);
+        self.ln_sender
+            .send(RouteHtlcRequest {
+                action: Some(route_htlc_request::Action::CompleteRequest(
+                    CompleteHtlcsRequest {
+                        action: Some(Action::Cancel(Cancel {
+                            reason: error_message.to_string(),
+                        })),
+                        incoming_chan_id,
+                        htlc_id,
+                    },
+                )),
+            })
+            .await
+            .map_err(|_| GatewayError::Other(anyhow::anyhow!("Failed to cancel to HTLC")))
     }
 }

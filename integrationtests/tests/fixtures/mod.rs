@@ -694,10 +694,10 @@ impl GatewayTest {
         );
 
         let actor = gateway
-            .load_actor(client.clone(), vec![])
+            .load_actor(client.clone(), vec![], mint_channel_id)
             .await
             .expect("Could not connect federation");
-        // Note: We don't run the gateway in test scenarios
+        // Note: We don't run the gateway webserver in test scenarios
 
         // Create a user test from gateway federation client
         let user = UserTest::new(client.clone());
