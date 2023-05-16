@@ -4,6 +4,7 @@ members = [
     "crypto/derive-secret",
     "crypto/hkdf",
     "crypto/tbs",
+    "gateway/gateway-client",
     "gateway/ln-gateway",
     "gateway/cli",
     "fedimintd",

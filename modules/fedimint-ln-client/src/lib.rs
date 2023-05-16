@@ -1,4 +1,3 @@
-mod api;
 mod db;
 pub mod pay;
 pub mod receive;
@@ -11,7 +10,6 @@ use anyhow::{bail, format_err};
 use api::LnFederationApi;
 use async_stream::stream;
 use bitcoin::{KeyPair, Network};
-use bitcoin_hashes::sha256::Hash as Sha256Hash;
 use bitcoin_hashes::Hash;
 use db::LightningGatewayKey;
 use fedimint_client::derivable_secret::DerivableSecret;
@@ -35,7 +33,9 @@ use fedimint_core::module::{
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, TransactionId};
 use fedimint_ln_common::config::LightningClientConfig;
 use fedimint_ln_common::contracts::incoming::IncomingContractOffer;
-use fedimint_ln_common::contracts::outgoing::OutgoingContract;
+use fedimint_ln_common::contracts::outgoing::{
+    OutgoingContract, OutgoingContractAccount, OutgoingContractData,
+};
 use fedimint_ln_common::contracts::{Contract, EncryptedPreimage, IdentifiableContract, Preimage};
 pub use fedimint_ln_common::*;
 use futures::StreamExt;

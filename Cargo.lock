@@ -2202,6 +2202,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gateway-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "bitcoin_hashes",
+ "fedimint-client",
+ "fedimint-core",
+ "fedimint-ln-common",
+ "secp256k1-zkp",
+ "serde",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
