@@ -1,11 +1,14 @@
+use std::sync::Arc;
+
 use bitcoin_hashes::{sha256, Hash};
 use fedimint_client::sm::{State, StateTransition};
 use fedimint_client::DynGlobalClientContext;
 use fedimint_core::encoding::{Decodable, Encodable};
+use fedimint_core::task::RwLock;
 use fedimint_core::Amount;
 use fedimint_ln_common::api::LnFederationApi;
 use fedimint_ln_common::contracts::outgoing::OutgoingContractAccount;
-use fedimint_ln_common::contracts::{ContractId, FundedContract};
+use fedimint_ln_common::contracts::{ContractId, FundedContract, Preimage};
 use fedimint_ln_common::ContractAccount;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -31,6 +34,7 @@ pub enum GatewayPayStates {
 
 #[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable)]
 pub struct GatewayPayCommon {
+    // TODO: Revisit if this should be here
     redeem_key: bitcoin::KeyPair,
 }
 
@@ -55,7 +59,7 @@ impl State for GatewayPayStateMachine {
                 gateway_pay_fetch_contract.transitions(global_context.clone(), self.common.clone())
             }
             GatewayPayStates::BuyPreimage(gateway_pay_buy_preimage) => {
-                vec![]
+                gateway_pay_buy_preimage.transitions()
             }
             _ => {
                 vec![]
@@ -89,6 +93,8 @@ pub enum GatewayPayError {
 #[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable)]
 pub struct GatewayPayFetchContract {
     contract_id: ContractId,
+    timelock_delta: u64,
+    node_pub_key: bitcoin::secp256k1::PublicKey,
 }
 
 impl GatewayPayFetchContract {
@@ -97,10 +103,18 @@ impl GatewayPayFetchContract {
         global_context: DynGlobalClientContext,
         common: GatewayPayCommon,
     ) -> Vec<StateTransition<GatewayPayStateMachine>> {
+        let timelock_delta = self.timelock_delta;
+        let node_pub_key = self.node_pub_key;
         vec![StateTransition::new(
-            Self::await_fetch_contract(global_context, self.contract_id),
+            Self::await_fetch_contract(global_context.clone(), self.contract_id),
             move |_dbtx, result, _old_state| {
-                Box::pin(Self::transition_fetch_contract(result, common.clone()))
+                Box::pin(Self::transition_fetch_contract(
+                    global_context.clone(),
+                    result,
+                    common.clone(),
+                    timelock_delta,
+                    node_pub_key,
+                ))
             },
         )]
     }
@@ -110,7 +124,7 @@ impl GatewayPayFetchContract {
         contract_id: ContractId,
     ) -> Result<OutgoingContractAccount, GatewayPayError> {
         let account = global_context
-            .api()
+            .module_api()
             .fetch_contract(contract_id)
             .await
             .map_err(|_| GatewayPayError::OutgoingContractDoesNotExist { contract_id })?;
@@ -125,13 +139,22 @@ impl GatewayPayFetchContract {
     }
 
     async fn transition_fetch_contract(
+        global_context: DynGlobalClientContext,
         result: Result<OutgoingContractAccount, GatewayPayError>,
         common: GatewayPayCommon,
+        timelock_delta: u64,
+        node_pub_key: bitcoin::secp256k1::PublicKey,
     ) -> GatewayPayStateMachine {
         match result {
             Ok(contract) => {
-                if let Ok(buy_preimage) =
-                    Self::validate_outgoing_account(&contract, common.redeem_key).await
+                if let Ok(buy_preimage) = Self::validate_outgoing_account(
+                    global_context,
+                    &contract,
+                    common.redeem_key,
+                    timelock_delta,
+                    node_pub_key,
+                )
+                .await
                 {
                     return GatewayPayStateMachine {
                         common,
@@ -152,8 +175,11 @@ impl GatewayPayFetchContract {
     }
 
     async fn validate_outgoing_account(
+        global_context: DynGlobalClientContext,
         account: &OutgoingContractAccount,
         redeem_key: bitcoin::KeyPair,
+        timelock_delta: u64,
+        node_pub_key: bitcoin::secp256k1::PublicKey,
     ) -> Result<GatewayPayBuyPreimage, GatewayPayError> {
         let our_pub_key = secp256k1_zkp::XOnlyPublicKey::from_keypair(&redeem_key).0;
 
@@ -176,9 +202,37 @@ impl GatewayPayFetchContract {
             return Err(GatewayPayError::Underfunded(invoice_amount, account.amount));
         }
 
-        // TODO: Need to get block height here
+        let consensus_block_height = global_context
+            .module_api()
+            .fetch_consensus_block_height()
+            .await
+            .map_err(|_| GatewayPayError::TimeoutTooClose)?;
 
-        todo!()
+        if consensus_block_height.is_none() {
+            return Err(GatewayPayError::TimeoutTooClose);
+        }
+
+        let max_delay = (account.contract.timelock as u64)
+            .checked_sub(consensus_block_height.unwrap())
+            .and_then(|delta| delta.checked_sub(timelock_delta));
+        if max_delay.is_none() {
+            return Err(GatewayPayError::TimeoutTooClose);
+        }
+
+        let route_hint_first_id = invoice
+            .route_hints()
+            .first()
+            .and_then(|rh| rh.0.last())
+            .map(|hop| hop.src_node_id);
+        let is_internal = Some(node_pub_key) == route_hint_first_id;
+
+        Ok(GatewayPayBuyPreimage {
+            max_delay: max_delay.unwrap(),
+            invoice_amount,
+            max_send_amount: account.amount,
+            payment_hash: *invoice.payment_hash(),
+            is_internal,
+        })
     }
 }
 
@@ -191,4 +245,14 @@ pub struct GatewayPayBuyPreimage {
     is_internal: bool,
 }
 
-impl GatewayPayBuyPreimage {}
+impl GatewayPayBuyPreimage {
+    fn transitions(&self) -> Vec<StateTransition<GatewayPayStateMachine>> {
+        vec![]
+    }
+
+    async fn await_buy_preimage_over_lightning(
+        invoice: lightning_invoice::Invoice,
+    ) -> Result<Preimage, GatewayPayError> {
+        todo!()
+    }
+}

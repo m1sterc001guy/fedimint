@@ -44,9 +44,7 @@ use lightning::ln::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 use lightning_invoice::{Currency, Invoice, InvoiceBuilder, DEFAULT_EXPIRY_TIME};
-use pay::{
-    GatewayPayError, LightningPayStateMachine, OutgoingContractAccount, OutgoingContractData,
-};
+use pay::{GatewayPayError, LightningPayStateMachine};
 use rand::{CryptoRng, Rng, RngCore};
 use receive::{LightningReceiveError, LightningReceiveStateMachine};
 use secp256k1_zkp::{All, Secp256k1};

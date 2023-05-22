@@ -1,3 +1,4 @@
+use bitcoin_hashes::sha256::Hash as Sha256Hash;
 use fedimint_core::api::{FederationApiExt, FederationResult, IModuleFederationApi};
 use fedimint_core::module::ApiRequestErased;
 use fedimint_core::query::{CurrentConsensus, UnionResponses};

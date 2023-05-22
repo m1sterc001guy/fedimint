@@ -2212,6 +2212,7 @@ dependencies = [
  "fedimint-client",
  "fedimint-core",
  "fedimint-ln-common",
+ "lightning-invoice",
  "secp256k1-zkp",
  "serde",
  "thiserror",
