@@ -5,19 +5,65 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use fedimint_client::module::gen::ClientModuleGenRegistry;
-use fedimint_client_legacy::{module_decode_stubs, Client, GatewayClientConfig};
 use fedimint_core::api::{DynGlobalApi, GlobalFederationApi, WsClientConnectInfo, WsFederationApi};
-use fedimint_core::config::{load_from_file, FederationId};
+use fedimint_core::config::{load_from_file, ClientConfig, FederationId};
 use fedimint_core::db::mem_impl::MemDatabase;
 use fedimint_core::db::Database;
 use fedimint_core::dyn_newtype_define;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use lightning::routing::gossip::RoutingFees;
 use secp256k1::{KeyPair, PublicKey};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use url::Url;
 
 use crate::{GatewayError, Result};
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct GatewayClientConfig {
+    pub client_config: ClientConfig,
+    #[serde(with = "serde_keypair")]
+    pub redeem_key: bitcoin::KeyPair,
+    pub timelock_delta: u64,
+    pub api: Url,
+    pub node_pub_key: bitcoin::secp256k1::PublicKey,
+    /// Channel identifier assigned to the mint by the gateway.
+    /// All clients in this federation should use this value as
+    /// `short_channel_id` when creating invoices to be settled by this
+    /// gateway.
+    pub mint_channel_id: u64,
+    // Gateway configured routing fees
+    #[serde(with = "serde_routing_fees")]
+    pub fees: RoutingFees,
+}
+
+// FIXME: move this elsewhere. maybe into "core".
+pub mod serde_keypair {
+    use bitcoin::KeyPair;
+    use secp256k1_zkp::SecretKey;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[allow(missing_docs)]
+    pub fn serialize<S>(key: &KeyPair, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        SecretKey::from_keypair(key).serialize(serializer)
+    }
+
+    #[allow(missing_docs)]
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<KeyPair, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secret_key = SecretKey::deserialize(deserializer)?;
+
+        Ok(KeyPair::from_secret_key(
+            secp256k1_zkp::SECP256K1,
+            &secret_key,
+        ))
+    }
+}
 
 pub trait IDbFactory: Debug {
     fn create_database(

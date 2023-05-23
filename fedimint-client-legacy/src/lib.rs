@@ -123,6 +123,7 @@ pub struct PaymentParameters {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserClientConfig(pub ClientConfig);
 
+// Deprecated
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct GatewayClientConfig {
     pub client_config: ClientConfig,

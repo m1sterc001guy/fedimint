@@ -2,6 +2,7 @@ pub mod actor;
 pub mod client;
 pub mod lnd;
 pub mod lnrpc_client;
+pub mod pay;
 pub mod rpc;
 pub mod types;
 pub mod utils;
@@ -24,19 +25,30 @@ use axum::response::{IntoResponse, Response};
 use bitcoin::Address;
 use bitcoin_hashes::hex::ToHex;
 use clap::Subcommand;
-use fedimint_client::module::gen::ClientModuleGenRegistry;
+use fedimint_client::derivable_secret::DerivableSecret;
+use fedimint_client::module::gen::{ClientModuleGen, ClientModuleGenRegistry};
+use fedimint_client::module::ClientModule;
+use fedimint_client::sm::{Context, DynState, ModuleNotifier, State};
+use fedimint_client::{sm_enum_variant_translation, DynGlobalClientContext};
 use fedimint_client_legacy::ln::PayInvoicePayload;
 use fedimint_client_legacy::modules::ln::route_hints::RouteHint;
 use fedimint_client_legacy::{ClientError, GatewayClient};
 use fedimint_core::api::{FederationError, WsClientConnectInfo};
 use fedimint_core::config::FederationId;
+use fedimint_core::core::{IntoDynInstance, ModuleInstanceId};
+use fedimint_core::db::Database;
+use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
+use fedimint_core::module::ExtendsCommonModuleGen;
 use fedimint_core::task::{RwLock, TaskGroup, TaskHandle};
-use fedimint_core::{Amount, TransactionId};
+use fedimint_core::{apply, async_trait_maybe_send, Amount, TransactionId};
 use fedimint_ln_client::contracts::Preimage;
+use fedimint_ln_common::config::LightningClientConfig;
+use fedimint_ln_common::{LightningCommonGen, LightningModuleTypes};
 use gatewaylnrpc::GetNodeInfoResponse;
 use lightning::routing::gossip::RoutingFees;
 use lnrpc_client::ILnRpcClient;
+use pay::GatewayPayStateMachine;
 use rpc::{FederationInfo, LightningReconnectPayload};
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
@@ -645,5 +657,103 @@ impl Gateway {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayClientGen;
+
+impl ExtendsCommonModuleGen for GatewayClientGen {
+    type Common = LightningCommonGen;
+}
+
+#[apply(async_trait_maybe_send!)]
+impl ClientModuleGen for GatewayClientGen {
+    type Module = GatewayClientModule;
+    type Config = LightningClientConfig;
+
+    async fn init(
+        &self,
+        cfg: Self::Config,
+        _db: Database,
+        _module_root_secret: DerivableSecret,
+        _notifier: ModuleNotifier<DynGlobalClientContext, <Self::Module as ClientModule>::States>,
+    ) -> anyhow::Result<Self::Module> {
+        Ok(GatewayClientModule { cfg })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GatewayClientContext {
+    lnrpc: Arc<RwLock<dyn ILnRpcClient>>,
+}
+
+impl Context for GatewayClientContext {}
+
+#[derive(Debug)]
+pub struct GatewayClientModule {
+    cfg: LightningClientConfig,
+}
+
+impl ClientModule for GatewayClientModule {
+    type Common = LightningModuleTypes;
+    type ModuleStateMachineContext = GatewayClientContext;
+    type States = GatewayClientStateMachines;
+
+    fn context(&self) -> Self::ModuleStateMachineContext {
+        todo!()
+    }
+
+    fn input_amount(
+        &self,
+        input: &<Self::Common as fedimint_core::module::ModuleCommon>::Input,
+    ) -> fedimint_core::module::TransactionItemAmount {
+        todo!()
+    }
+
+    fn output_amount(
+        &self,
+        output: &<Self::Common as fedimint_core::module::ModuleCommon>::Output,
+    ) -> fedimint_core::module::TransactionItemAmount {
+        todo!()
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable)]
+pub enum GatewayClientStateMachines {
+    Pay(GatewayPayStateMachine),
+}
+
+impl IntoDynInstance for GatewayClientStateMachines {
+    type DynType = DynState<DynGlobalClientContext>;
+
+    fn into_dyn(self, instance_id: ModuleInstanceId) -> Self::DynType {
+        DynState::from_typed(instance_id, self)
+    }
+}
+
+impl State for GatewayClientStateMachines {
+    type ModuleContext = GatewayClientContext;
+    type GlobalContext = DynGlobalClientContext;
+
+    fn transitions(
+        &self,
+        context: &Self::ModuleContext,
+        global_context: &Self::GlobalContext,
+    ) -> Vec<fedimint_client::sm::StateTransition<Self>> {
+        match self {
+            GatewayClientStateMachines::Pay(pay_state) => {
+                sm_enum_variant_translation!(
+                    pay_state.transitions(context, global_context),
+                    GatewayClientStateMachines::Pay
+                )
+            }
+        }
+    }
+
+    fn operation_id(&self) -> fedimint_client::sm::OperationId {
+        match self {
+            GatewayClientStateMachines::Pay(pay_state) => pay_state.operation_id(),
+        }
     }
 }
