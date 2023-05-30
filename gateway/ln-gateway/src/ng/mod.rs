@@ -19,20 +19,18 @@ use fedimint_core::core::{Decoder, IntoDynInstance, ModuleInstanceId};
 use fedimint_core::db::{AutocommitError, Database};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::{ExtendsCommonModuleGen, TransactionItemAmount};
-use fedimint_core::task::timeout;
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, TransactionId};
 use fedimint_ln_client::api::LnFederationApi;
-use fedimint_ln_client::contracts::{ContractId, IdentifiableContract};
+use fedimint_ln_client::contracts::ContractId;
 use fedimint_ln_common::config::LightningClientConfig;
-use fedimint_ln_common::contracts::incoming::{IncomingContract, IncomingContractOffer};
-use fedimint_ln_common::contracts::{Contract, DecryptedPreimage, Preimage};
+use fedimint_ln_common::contracts::Preimage;
 use fedimint_ln_common::pay::{
-    FundingOfferState, InternalPayCommon, InternalPayError, InternalPayStateMachine,
-    InternalPayStates,
+    create_incoming_contract_output, FundingOfferState, InternalPayCommon, InternalPayError,
+    InternalPayStateMachine, InternalPayStates,
 };
 use fedimint_ln_common::route_hints::RouteHint;
 use fedimint_ln_common::{
-    ln_operation, ContractOutput, LightningClientContext, LightningCommonGen, LightningGateway,
+    ln_operation, LightningClientContext, LightningCommonGen, LightningGateway,
     LightningModuleTypes, LightningOutput, KIND,
 };
 use futures::StreamExt;
@@ -317,6 +315,7 @@ impl From<&GatewayClientContext> for LightningClientContext {
     fn from(ctx: &GatewayClientContext) -> Self {
         LightningClientContext {
             ln_decoder: ctx.ln_decoder.clone(),
+            redeem_key: ctx.redeem_key,
         }
     }
 }
@@ -430,27 +429,6 @@ impl GatewayClientModule {
         }
     }
 
-    async fn fetch_and_validate_incoming_contract(
-        &self,
-        htlc: Htlc,
-    ) -> anyhow::Result<IncomingContractOffer, InternalPayError> {
-        let offer = timeout(
-            Duration::from_secs(5),
-            self.module_api.fetch_offer(htlc.payment_hash),
-        )
-        .await
-        .map_err(|_| InternalPayError::Timeout)?
-        .map_err(|_| InternalPayError::FetchContractError)?;
-
-        if offer.amount > htlc.outgoing_amount_msat {
-            return Err(InternalPayError::ViolatedFeePolicy);
-        }
-        if offer.hash != htlc.payment_hash {
-            return Err(InternalPayError::InvalidOffer);
-        }
-        Ok(offer)
-    }
-
     async fn create_funding_incoming_contract_output(
         &self,
         htlc: Htlc,
@@ -462,21 +440,14 @@ impl GatewayClientModule {
         InternalPayError,
     > {
         let operation_id = OperationId(htlc.payment_hash.into_inner());
-        let offer = self
-            .fetch_and_validate_incoming_contract(htlc.clone())
-            .await?;
-        let our_pub_key = secp256k1_zkp::XOnlyPublicKey::from_keypair(&self.redeem_key).0;
-        let contract = IncomingContract {
-            hash: offer.hash,
-            encrypted_preimage: offer.encrypted_preimage.clone(),
-            decrypted_preimage: DecryptedPreimage::Pending,
-            gateway_key: our_pub_key,
-        };
-        let contract_id = contract.contract_id();
-        let incoming_output = LightningOutput::Contract(ContractOutput {
-            amount: offer.amount,
-            contract: Contract::Incoming(contract),
-        });
+        let (incoming_output, contract_id) = create_incoming_contract_output(
+            &self.module_api,
+            htlc.payment_hash,
+            htlc.outgoing_amount_msat,
+            self.redeem_key,
+        )
+        .await?;
+
         let client_output = ClientOutput::<LightningOutput, GatewayClientStateMachines> {
             output: incoming_output,
             state_machines: Arc::new(move |txid, _| {

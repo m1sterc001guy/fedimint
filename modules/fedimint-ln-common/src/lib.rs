@@ -233,7 +233,7 @@ plugin_types_trait_impl_common!(
 pub struct LightningClientContext {
     pub ln_decoder: Decoder,
     // --- for claiming refunds
-    // pub redeem_key: bitcoin::KeyPair,
+    pub redeem_key: bitcoin::KeyPair,
 }
 
 impl Context for LightningClientContext {}

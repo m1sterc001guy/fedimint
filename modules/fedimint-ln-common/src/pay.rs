@@ -7,22 +7,29 @@
 //!   - `fedimint-ln-client` for internal payments without involving the gateway
 //!   - `gateway` for receiving payments into the federation
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use bitcoin_hashes::sha256;
 use fedimint_client::sm::{ClientSMDatabaseTransaction, OperationId, State, StateTransition};
+use fedimint_client::transaction::ClientInput;
 use fedimint_client::DynGlobalClientContext;
-use fedimint_core::api::GlobalFederationApi;
+use fedimint_core::api::{DynModuleApi, GlobalFederationApi};
 use fedimint_core::encoding::{Decodable, Encodable};
-use fedimint_core::task::sleep;
-use fedimint_core::{OutPoint, TransactionId};
+use fedimint_core::task::{sleep, timeout};
+use fedimint_core::{Amount, OutPoint, TransactionId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::error;
 
 use crate::api::LnFederationApi;
-use crate::contracts::incoming::IncomingContractAccount;
-use crate::contracts::{ContractId, DecryptedPreimage, Preimage};
-use crate::{LightningClientContext, LightningOutputOutcome};
+use crate::contracts::incoming::{
+    IncomingContract, IncomingContractAccount, IncomingContractOffer,
+};
+use crate::contracts::{Contract, ContractId, DecryptedPreimage, IdentifiableContract, Preimage};
+use crate::{
+    ContractOutput, LightningClientContext, LightningInput, LightningOutput, LightningOutputOutcome,
+};
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
 /// State machine that executes internal payment between two users
@@ -103,6 +110,8 @@ pub enum InternalPayError {
     OutputOutcomeError,
     #[error("Incoming contract not found")]
     IncomingContractNotFound,
+    #[error("Amount error")]
+    AmountError,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable)]
@@ -260,29 +269,25 @@ impl DecryptingPreimageState {
     }
 
     async fn refund_incoming_contract(
-        _dbtx: &mut ClientSMDatabaseTransaction<'_, '_>,
-        _global_context: DynGlobalClientContext,
-        _context: LightningClientContext,
-        _old_state: InternalPayStateMachine,
-        _contract: Box<IncomingContractAccount>,
+        dbtx: &mut ClientSMDatabaseTransaction<'_, '_>,
+        global_context: DynGlobalClientContext,
+        context: LightningClientContext,
+        old_state: InternalPayStateMachine,
+        contract: Box<IncomingContractAccount>,
     ) -> InternalPayStateMachine {
-        // TODO: Create a generic client input based on context of sm application
-        unimplemented!()
+        let claim_input = contract.claim();
+        let client_input = ClientInput::<LightningInput, InternalPayStateMachine> {
+            input: claim_input,
+            state_machines: Arc::new(|_, _| vec![]),
+            keys: vec![context.redeem_key],
+        };
 
-        // let claim_input = contract.claim();
-        // let client_input = ClientInput::<LightningInput,
-        // GatewayClientStateMachines> {     input: claim_input,
-        //     state_machines: Arc::new(|_, _| vec![]),
-        //     keys: vec![context.redeem_key],
-        // };
+        let (refund_txid, _) = global_context.claim_input(dbtx, client_input).await;
 
-        // let (refund_txid, _) = global_context.claim_input(dbtx,
-        // client_input).await;
-
-        // InternalPayStateMachine {
-        //     common: old_state.common,
-        //     state: InternalPayStates::RefundSubmitted(refund_txid),
-        // }
+        InternalPayStateMachine {
+            common: old_state.common,
+            state: InternalPayStates::RefundSubmitted(refund_txid),
+        }
     }
 }
 
@@ -299,4 +304,46 @@ pub struct PreimageState {
 #[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable)]
 pub struct RefundSuccessState {
     refund_txid: TransactionId,
+}
+
+async fn fetch_and_validate_offer(
+    module_api: &DynModuleApi,
+    payment_hash: sha256::Hash,
+    amount_msat: Amount,
+) -> anyhow::Result<IncomingContractOffer, InternalPayError> {
+    let offer = timeout(Duration::from_secs(5), module_api.fetch_offer(payment_hash))
+        .await
+        .map_err(|_| InternalPayError::Timeout)?
+        .map_err(|_| InternalPayError::FetchContractError)?;
+
+    if offer.amount > amount_msat {
+        return Err(InternalPayError::ViolatedFeePolicy);
+    }
+    if offer.hash != payment_hash {
+        return Err(InternalPayError::InvalidOffer);
+    }
+    Ok(offer)
+}
+
+pub async fn create_incoming_contract_output(
+    module_api: &DynModuleApi,
+    payment_hash: sha256::Hash,
+    amount_msat: Amount,
+    redeem_key: secp256k1::KeyPair,
+) -> Result<(LightningOutput, ContractId), InternalPayError> {
+    let offer = fetch_and_validate_offer(module_api, payment_hash, amount_msat).await?;
+    let our_pub_key = secp256k1::XOnlyPublicKey::from_keypair(&redeem_key).0;
+    let contract = IncomingContract {
+        hash: offer.hash,
+        encrypted_preimage: offer.encrypted_preimage.clone(),
+        decrypted_preimage: DecryptedPreimage::Pending,
+        gateway_key: our_pub_key,
+    };
+    let contract_id = contract.contract_id();
+    let incoming_output = LightningOutput::Contract(ContractOutput {
+        amount: offer.amount,
+        contract: Contract::Incoming(contract),
+    });
+
+    Ok((incoming_output, contract_id))
 }
