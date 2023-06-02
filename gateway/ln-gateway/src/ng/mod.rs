@@ -22,14 +22,18 @@ use fedimint_core::module::{ExtendsCommonModuleGen, TransactionItemAmount};
 use fedimint_core::task::timeout;
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, TransactionId};
 use fedimint_ln_client::api::LnFederationApi;
-use fedimint_ln_client::contracts::ContractId;
+use fedimint_ln_client::contracts::{ContractId, IdentifiableContract};
 use fedimint_ln_common::config::LightningClientConfig;
 use fedimint_ln_common::contracts::incoming::{IncomingContract, IncomingContractOffer};
 use fedimint_ln_common::contracts::{Contract, DecryptedPreimage, Preimage};
+use fedimint_ln_common::pay::{
+    FundingOfferState, InternalPayCommon, InternalPayError, InternalPayStateMachine,
+    InternalPayStates,
+};
 use fedimint_ln_common::route_hints::RouteHint;
 use fedimint_ln_common::{
-    ln_operation, ContractOutput, LightningCommonGen, LightningGateway, LightningModuleTypes,
-    LightningOutput, KIND,
+    ln_operation, ContractOutput, LightningClientContext, LightningCommonGen, LightningGateway,
+    LightningModuleTypes, LightningOutput, KIND,
 };
 use futures::StreamExt;
 use lightning::routing::gossip::RoutingFees;
@@ -39,10 +43,7 @@ use thiserror::Error;
 use url::Url;
 
 use self::pay::{GatewayPayCommon, GatewayPayInvoice, GatewayPayStateMachine, GatewayPayStates};
-use self::receive::{
-    FundingOfferState, GatewayReceiveCommon, GatewayReceiveStateMachine, GatewayReceiveStates,
-    Htlc, ReceiveError,
-};
+use self::receive::Htlc;
 use crate::gatewaylnrpc::GetNodeInfoResponse;
 use crate::lnrpc_client::ILnRpcClient;
 
@@ -237,15 +238,15 @@ impl GatewayClientExt for Client {
                 let state = loop {
                     if let Some(GatewayClientStateMachines::Receive(state)) = stream.next().await {
                         match state.state {
-                            GatewayReceiveStates::Preimage(preimage) => break GatewayExtReceiveStates::Preimage(preimage),
-                            GatewayReceiveStates::RefundSubmitted(txid) => {
+                            InternalPayStates::Preimage(preimage) => break GatewayExtReceiveStates::Preimage(preimage),
+                            InternalPayStates::RefundSubmitted(txid) => {
                                 let out_point = OutPoint { txid, out_idx: 0};
                                 match self.await_primary_module_output(operation_id, out_point).await {
                                     Ok(_) => break GatewayExtReceiveStates::RefundSuccess(out_point),
                                     Err(e) => break GatewayExtReceiveStates::RefundError(e.to_string()),
                                 }
                             },
-                            GatewayReceiveStates::FundingFailed(e) => break GatewayExtReceiveStates::FundingFailed(e),
+                            InternalPayStates::FundingFailed(e) => break GatewayExtReceiveStates::FundingFailed(e),
                             _ => {}
                         }
                     }
@@ -311,6 +312,14 @@ pub struct GatewayClientContext {
 }
 
 impl Context for GatewayClientContext {}
+
+impl From<&GatewayClientContext> for LightningClientContext {
+    fn from(ctx: &GatewayClientContext) -> Self {
+        LightningClientContext {
+            ln_decoder: ctx.ln_decoder.clone(),
+        }
+    }
+}
 
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum GatewayError {
@@ -424,20 +433,20 @@ impl GatewayClientModule {
     async fn fetch_and_validate_incoming_contract(
         &self,
         htlc: Htlc,
-    ) -> anyhow::Result<IncomingContractOffer, ReceiveError> {
+    ) -> anyhow::Result<IncomingContractOffer, InternalPayError> {
         let offer = timeout(
             Duration::from_secs(5),
             self.module_api.fetch_offer(htlc.payment_hash),
         )
         .await
-        .map_err(|_| ReceiveError::Timeout)?
-        .map_err(|_| ReceiveError::FetchContractError)?;
+        .map_err(|_| InternalPayError::Timeout)?
+        .map_err(|_| InternalPayError::FetchContractError)?;
 
         if offer.amount > htlc.outgoing_amount_msat {
-            return Err(ReceiveError::ViolatedFeePolicy);
+            return Err(InternalPayError::ViolatedFeePolicy);
         }
         if offer.hash != htlc.payment_hash {
-            return Err(ReceiveError::InvalidOffer);
+            return Err(InternalPayError::InvalidOffer);
         }
         Ok(offer)
     }
@@ -450,33 +459,34 @@ impl GatewayClientModule {
             OperationId,
             ClientOutput<LightningOutput, GatewayClientStateMachines>,
         ),
-        ReceiveError,
+        InternalPayError,
     > {
         let operation_id = OperationId(htlc.payment_hash.into_inner());
         let offer = self
             .fetch_and_validate_incoming_contract(htlc.clone())
             .await?;
         let our_pub_key = secp256k1_zkp::XOnlyPublicKey::from_keypair(&self.redeem_key).0;
-        let contract = Contract::Incoming(IncomingContract {
+        let contract = IncomingContract {
             hash: offer.hash,
             encrypted_preimage: offer.encrypted_preimage.clone(),
             decrypted_preimage: DecryptedPreimage::Pending,
             gateway_key: our_pub_key,
-        });
+        };
+        let contract_id = contract.contract_id();
         let incoming_output = LightningOutput::Contract(ContractOutput {
             amount: offer.amount,
-            contract,
+            contract: Contract::Incoming(contract),
         });
         let client_output = ClientOutput::<LightningOutput, GatewayClientStateMachines> {
             output: incoming_output,
             state_machines: Arc::new(move |txid, _| {
                 vec![GatewayClientStateMachines::Receive(
-                    GatewayReceiveStateMachine {
-                        common: GatewayReceiveCommon {
+                    InternalPayStateMachine {
+                        common: InternalPayCommon {
                             operation_id,
-                            htlc: htlc.clone(),
+                            contract_id,
                         },
-                        state: GatewayReceiveStates::FundingOffer(FundingOfferState { txid }),
+                        state: InternalPayStates::FundingOffer(FundingOfferState { txid }),
                     },
                 )]
             }),
@@ -488,7 +498,7 @@ impl GatewayClientModule {
 #[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable)]
 pub enum GatewayClientStateMachines {
     Pay(GatewayPayStateMachine),
-    Receive(GatewayReceiveStateMachine),
+    Receive(InternalPayStateMachine),
 }
 
 impl IntoDynInstance for GatewayClientStateMachines {
@@ -517,7 +527,7 @@ impl State for GatewayClientStateMachines {
             }
             GatewayClientStateMachines::Receive(receive_state) => {
                 sm_enum_variant_translation!(
-                    receive_state.transitions(context, global_context),
+                    receive_state.transitions(&context.into(), global_context),
                     GatewayClientStateMachines::Receive
                 )
             }

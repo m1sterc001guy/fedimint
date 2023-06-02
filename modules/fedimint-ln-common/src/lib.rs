@@ -13,11 +13,13 @@ pub mod api;
 pub mod config;
 pub mod contracts;
 pub mod db;
+pub mod pay;
+
 use std::time::SystemTime;
 
 use anyhow::bail;
 use fedimint_client::oplog::OperationLogEntry;
-use fedimint_client::sm::OperationId;
+use fedimint_client::sm::{Context, OperationId};
 use fedimint_client::Client;
 use fedimint_core::core::{Decoder, ModuleInstanceId, ModuleKind};
 use fedimint_core::encoding::{Decodable, Encodable};
@@ -226,6 +228,15 @@ plugin_types_trait_impl_common!(
     LightningOutputOutcome,
     LightningConsensusItem
 );
+
+#[derive(Debug, Clone)]
+pub struct LightningClientContext {
+    pub ln_decoder: Decoder,
+    // --- for claiming refunds
+    // pub redeem_key: bitcoin::KeyPair,
+}
+
+impl Context for LightningClientContext {}
 
 // TODO: upstream serde support to LDK
 /// Hack to get a route hint that implements `serde` traits.
