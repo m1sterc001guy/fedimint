@@ -9,7 +9,7 @@ use fedimint_core::{Amount, OutPoint, TransactionId};
 use fedimint_ln_client::contracts::IdentifiableContract;
 use fedimint_ln_common::api::LnFederationApi;
 use fedimint_ln_common::contracts::outgoing::OutgoingContractAccount;
-use fedimint_ln_common::contracts::{ContractId, FundedContract, Preimage};
+use fedimint_ln_common::contracts::{ContractId, Preimage};
 use fedimint_ln_common::{LightningInput, LightningOutput};
 use futures::future;
 use serde::{Deserialize, Serialize};
@@ -168,50 +168,42 @@ impl GatewayPayInvoice {
         contract_id: ContractId,
         context: GatewayClientContext,
     ) -> Result<(OutgoingContractAccount, PaymentParameters), OutgoingPaymentError> {
-        let account = global_context
+        //fedimint_core::task::sleep(std::time::Duration::from_secs(10)).await;
+        let outgoing_contract_account = global_context
             .module_api()
-            .fetch_contract(contract_id)
+            .get_outgoing_contract(contract_id)
             .await
             .map_err(|_| OutgoingPaymentError::OutgoingContractDoesNotExist { contract_id })?;
 
-        if let FundedContract::Outgoing(contract) = account.contract {
-            let outgoing_contract_account = OutgoingContractAccount {
-                amount: account.amount,
-                contract,
-            };
-
-            let consensus_block_count = global_context
-                .module_api()
-                .fetch_consensus_block_count()
-                .await
-                .map_err(|_| OutgoingPaymentError::InvalidOutgoingContract {
-                    error: OutgoingContractError::TimeoutTooClose,
-                    contract: outgoing_contract_account.clone(),
-                })?;
-
-            if consensus_block_count.is_none() {
-                return Err(OutgoingPaymentError::InvalidOutgoingContract {
-                    error: OutgoingContractError::MissingContractData,
-                    contract: outgoing_contract_account.clone(),
-                });
-            }
-
-            let payment_parameters = Self::validate_outgoing_account(
-                &outgoing_contract_account,
-                context.redeem_key,
-                context.timelock_delta,
-                consensus_block_count.unwrap(),
-            )
+        let consensus_block_height = global_context
+            .module_api()
+            .fetch_consensus_block_height()
             .await
-            .map_err(|e| OutgoingPaymentError::InvalidOutgoingContract {
-                error: e,
+            .map_err(|_| OutgoingPaymentError::InvalidOutgoingContract {
+                error: OutgoingContractError::TimeoutTooClose,
                 contract: outgoing_contract_account.clone(),
             })?;
 
-            return Ok((outgoing_contract_account, payment_parameters));
+        if consensus_block_height.is_none() {
+            return Err(OutgoingPaymentError::InvalidOutgoingContract {
+                error: OutgoingContractError::MissingContractData,
+                contract: outgoing_contract_account.clone(),
+            });
         }
 
-        Err(OutgoingPaymentError::OutgoingContractDoesNotExist { contract_id })
+        let payment_parameters = Self::validate_outgoing_account(
+            &outgoing_contract_account,
+            context.redeem_key,
+            context.timelock_delta,
+            consensus_block_height.unwrap(),
+        )
+        .await
+        .map_err(|e| OutgoingPaymentError::InvalidOutgoingContract {
+            error: e,
+            contract: outgoing_contract_account.clone(),
+        })?;
+
+        Ok((outgoing_contract_account, payment_parameters))
     }
 
     async fn buy_preimage_over_lightning(

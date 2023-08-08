@@ -19,7 +19,9 @@ use fedimint_client::sm::util::MapStateTransitions;
 use fedimint_client::sm::{DynState, ModuleNotifier, OperationId, State, StateTransition};
 use fedimint_client::transaction::{ClientOutput, TransactionBuilder};
 use fedimint_client::{sm_enum_variant_translation, Client, DynGlobalClientContext};
-use fedimint_core::api::{DynGlobalApi, DynModuleApi};
+use fedimint_core::api::{
+    DynGlobalApi, DynModuleApi, FederationError, GlobalFederationApi, OutputOutcomeError,
+};
 use fedimint_core::config::FederationId;
 use fedimint_core::core::{IntoDynInstance, ModuleInstanceId};
 use fedimint_core::db::Database;
@@ -28,6 +30,7 @@ use fedimint_core::module::{
     ApiVersion, CommonModuleGen, ExtendsCommonModuleGen, ModuleCommon, MultiApiVersion,
     TransactionItemAmount,
 };
+use fedimint_core::outcome::TransactionStatus;
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, TransactionId};
 use fedimint_ln_common::api::LnFederationApi;
 use fedimint_ln_common::config::LightningClientConfig;
@@ -418,23 +421,21 @@ impl LightningClientExt for Client {
             _ => bail!("Operation is not a lightning payment"),
         };
 
-        let tx_accepted_future = self
-            .transaction_updates(operation_id)
-            .await
-            .await_tx_accepted(out_point.txid);
+        let tx_funded_future = lightning.await_outgoing_contract_funded(out_point.txid);
         let payment_success = lightning.await_lightning_payment_success(operation_id);
 
         let refund_success = lightning.await_refund(operation_id);
 
         Ok(operation.outcome_or_updates(self.db(), operation_id, || {
             stream! {
-                    yield LnPayState::Created;
+                yield LnPayState::Created;
 
-                    if tx_accepted_future.await.is_err() {
+                if tx_funded_future.await.is_err() {
                     yield LnPayState::Canceled;
-                        return;
+                    return;
                 }
-                            yield LnPayState::Funded;
+
+                yield LnPayState::Funded;
 
                 match payment_success.await {
                     Ok(preimage) => {
@@ -543,7 +544,7 @@ impl ClientModuleGen for LightningClientGen {
         _api_version: ApiVersion,
         module_root_secret: DerivableSecret,
         notifier: ModuleNotifier<DynGlobalClientContext, <Self::Module as ClientModule>::States>,
-        _api: DynGlobalApi,
+        api: DynGlobalApi,
         module_api: DynModuleApi,
     ) -> anyhow::Result<Self::Module> {
         let secp = Secp256k1::new();
@@ -553,6 +554,7 @@ impl ClientModuleGen for LightningClientGen {
             redeem_key: module_root_secret.child_key(ChildId(0)).to_secp_key(&secp),
             secp,
             module_api,
+            global_api: api,
         })
     }
 }
@@ -564,6 +566,7 @@ pub struct LightningClientModule {
     redeem_key: KeyPair,
     secp: Secp256k1<All>,
     module_api: DynModuleApi,
+    global_api: DynGlobalApi,
 }
 
 impl ClientModule for LightningClientModule {
@@ -761,6 +764,18 @@ impl LightningClientModule {
         };
 
         Ok((client_output, contract_id))
+    }
+
+    async fn await_outgoing_contract_funded(
+        &self,
+        txid: TransactionId,
+    ) -> Result<TransactionStatus, FederationError> {
+        //self.global_api.await_output_outcome::<LightningOutputOutcome>(
+        //    outpoint,
+        //    Duration::from_millis(i32::MAX as u64),
+        //    &self.decoder())
+        //    .await
+        self.global_api.await_tx_outcome(&txid).await
     }
 
     async fn await_receive_success(
