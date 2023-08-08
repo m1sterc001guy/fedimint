@@ -48,8 +48,8 @@ use crate::epoch::{SerdeEpochHistory, SignedEpochOutcome};
 use crate::module::{ApiRequestErased, ApiVersion, SupportedApiVersionsSummary};
 use crate::outcome::TransactionStatus;
 use crate::query::{
-    CurrentConsensus, DiscoverApiVersionSet, EventuallyConsistent, QueryStep, QueryStrategy,
-    UnionResponsesSingle, VerifiableResponse,
+    AllOrDeadline, CurrentConsensus, DiscoverApiVersionSet, EventuallyConsistent, QueryStep,
+    QueryStrategy, UnionResponsesSingle, VerifiableResponse,
 };
 use crate::task;
 use crate::transaction::{SerdeTransaction, Transaction};
@@ -318,6 +318,25 @@ pub trait FederationApiExt: IFederationApi {
         .await
     }
 
+    async fn request_all<Ret>(
+        &self,
+        method: String,
+        params: ApiRequestErased,
+    ) -> FederationResult<BTreeMap<PeerId, Ret>>
+    where
+        Ret: serde::de::DeserializeOwned + Eq + Debug + Clone + MaybeSend,
+    {
+        self.request_with_strategy(
+            AllOrDeadline::new(
+                self.all_members().len(),
+                SystemTime::now() + Duration::from_secs(120),
+            ),
+            method,
+            params,
+        )
+        .await
+    }
+
     async fn request_eventually_consistent<Ret>(
         &self,
         method: String,
@@ -369,6 +388,10 @@ pub trait GlobalFederationApi {
         txid: &TransactionId,
     ) -> FederationResult<Option<TransactionStatus>>;
     async fn await_tx_outcome(&self, txid: &TransactionId) -> FederationResult<TransactionStatus>;
+    async fn await_tx_outcome2(
+        &self,
+        txid: &TransactionId,
+    ) -> FederationResult<BTreeMap<PeerId, TransactionStatus>>;
 
     async fn fetch_epoch_history(
         &self,
@@ -478,6 +501,15 @@ where
     /// Await the outcome of an entire transaction
     async fn await_tx_outcome(&self, tx: &TransactionId) -> FederationResult<TransactionStatus> {
         self.request_current_consensus("wait_transaction".to_owned(), ApiRequestErased::new(tx))
+            .await
+    }
+
+    /// Await the outcome of an entire transaction
+    async fn await_tx_outcome2(
+        &self,
+        tx: &TransactionId,
+    ) -> FederationResult<BTreeMap<PeerId, TransactionStatus>> {
+        self.request_all("wait_transaction".to_owned(), ApiRequestErased::new(tx))
             .await
     }
 

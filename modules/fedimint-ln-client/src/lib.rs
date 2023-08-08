@@ -2,6 +2,7 @@ pub mod db;
 pub mod pay;
 pub mod receive;
 
+use std::collections::BTreeMap;
 use std::iter::once;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -31,7 +32,7 @@ use fedimint_core::module::{
     TransactionItemAmount,
 };
 use fedimint_core::outcome::TransactionStatus;
-use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, TransactionId};
+use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, PeerId, TransactionId};
 use fedimint_ln_common::api::LnFederationApi;
 use fedimint_ln_common::config::LightningClientConfig;
 use fedimint_ln_common::contracts::incoming::IncomingContractOffer;
@@ -769,13 +770,10 @@ impl LightningClientModule {
     async fn await_outgoing_contract_funded(
         &self,
         txid: TransactionId,
-    ) -> Result<TransactionStatus, FederationError> {
-        //self.global_api.await_output_outcome::<LightningOutputOutcome>(
-        //    outpoint,
-        //    Duration::from_millis(i32::MAX as u64),
-        //    &self.decoder())
-        //    .await
-        self.global_api.await_tx_outcome(&txid).await
+    ) -> Result<BTreeMap<PeerId, TransactionStatus>, FederationError> {
+        //) -> Result<TransactionStatus, FederationError> {
+        //self.global_api.await_tx_outcome(&txid).await
+        self.global_api.await_tx_outcome2(&txid).await
     }
 
     async fn await_receive_success(

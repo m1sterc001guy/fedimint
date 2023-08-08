@@ -168,23 +168,22 @@ impl GatewayPayInvoice {
         contract_id: ContractId,
         context: GatewayClientContext,
     ) -> Result<(OutgoingContractAccount, PaymentParameters), OutgoingPaymentError> {
-        //fedimint_core::task::sleep(std::time::Duration::from_secs(10)).await;
         let outgoing_contract_account = global_context
             .module_api()
             .get_outgoing_contract(contract_id)
             .await
             .map_err(|_| OutgoingPaymentError::OutgoingContractDoesNotExist { contract_id })?;
 
-        let consensus_block_height = global_context
+        let consensus_block_count = global_context
             .module_api()
-            .fetch_consensus_block_height()
+            .fetch_consensus_block_count()
             .await
             .map_err(|_| OutgoingPaymentError::InvalidOutgoingContract {
                 error: OutgoingContractError::TimeoutTooClose,
                 contract: outgoing_contract_account.clone(),
             })?;
 
-        if consensus_block_height.is_none() {
+        if consensus_block_count.is_none() {
             return Err(OutgoingPaymentError::InvalidOutgoingContract {
                 error: OutgoingContractError::MissingContractData,
                 contract: outgoing_contract_account.clone(),
@@ -195,7 +194,7 @@ impl GatewayPayInvoice {
             &outgoing_contract_account,
             context.redeem_key,
             context.timelock_delta,
-            consensus_block_height.unwrap(),
+            consensus_block_count.unwrap(),
         )
         .await
         .map_err(|e| OutgoingPaymentError::InvalidOutgoingContract {
