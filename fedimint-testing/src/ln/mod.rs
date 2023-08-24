@@ -12,6 +12,7 @@ use rand::rngs::OsRng;
 use secp256k1_zkp::SecretKey;
 
 use self::mock::INVALID_INVOICE_DESCRIPTION;
+use crate::gateway::LightningNodeName;
 
 pub mod mock;
 pub mod real;
@@ -59,4 +60,6 @@ pub trait LightningTest: ILnRpcClient {
     fn is_shared(&self) -> bool;
 
     fn listening_address(&self) -> String;
+
+    fn lightning_node_type(&self) -> LightningNodeName;
 }

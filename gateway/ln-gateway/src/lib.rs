@@ -719,7 +719,7 @@ impl Gateway {
             lightning_alias: alias,
             fees: self.fees,
             route_hints,
-            gatewayd_id,
+            gatewayd_id: gatewayd_id.to_hex(),
         })
     }
 

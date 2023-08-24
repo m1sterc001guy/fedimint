@@ -29,6 +29,7 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use crate::btc::BitcoinTest;
+use crate::gateway::LightningNodeName;
 use crate::ln::LightningTest;
 
 const DEFAULT_ESPLORA_SERVER: &str = "http://127.0.0.1:50002";
@@ -102,6 +103,10 @@ impl LightningTest for ClnLightningTest {
 
     fn listening_address(&self) -> String {
         "127.0.0.1:9000".to_string()
+    }
+
+    fn lightning_node_type(&self) -> LightningNodeName {
+        LightningNodeName::Cln
     }
 }
 
@@ -242,6 +247,10 @@ impl LightningTest for LndLightningTest {
 
     fn listening_address(&self) -> String {
         "127.0.0.1:9734".to_string()
+    }
+
+    fn lightning_node_type(&self) -> LightningNodeName {
+        LightningNodeName::Lnd
     }
 }
 
@@ -744,5 +753,9 @@ impl LightningTest for LdkLightningTest {
 
     fn listening_address(&self) -> String {
         self.listening_address.clone()
+    }
+
+    fn lightning_node_type(&self) -> LightningNodeName {
+        LightningNodeName::Ldk
     }
 }

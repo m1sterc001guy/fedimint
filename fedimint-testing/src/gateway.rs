@@ -1,17 +1,16 @@
-use std::collections::BTreeMap;
+use std::env;
+use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use fedimint_client::module::gen::ClientModuleGenRegistry;
 use fedimint_client::Client;
-use fedimint_client_legacy::modules::ln::config::GatewayFee;
 use fedimint_core::config::FederationId;
 use fedimint_core::db::mem_impl::MemDatabase;
 use fedimint_core::db::Database;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::task::TaskGroup;
-use lightning::routing::gossip::RoutingFees;
 use ln_gateway::client::{LightningBuilder, StandardGatewayClientBuilder};
 use ln_gateway::gateway_lnrpc::{
     EmptyResponse, GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse,
@@ -21,30 +20,40 @@ use ln_gateway::lnrpc_client::{ILnRpcClient, LightningRpcError, RouteHtlcStream}
 use ln_gateway::rpc::rpc_client::GatewayRpcClient;
 use ln_gateway::rpc::rpc_server::run_webserver;
 use ln_gateway::rpc::{ConnectFedPayload, FederationInfo};
-use ln_gateway::{Gateway, GatewayError, GatewayState, Gatewayd, DEFAULT_FEES};
+use ln_gateway::{GatewayError, GatewayState, Gatewayd, DEFAULT_FEES};
 use rand::rngs::OsRng;
 use secp256k1::PublicKey;
-use tempfile::TempDir;
 use tokio::sync::RwLock;
 use tracing::info;
 use url::Url;
 
 use crate::federation::FederationTest;
 use crate::fixtures::{test_dir, Fixtures};
+use crate::ln::mock::FakeLightningTest;
+use crate::ln::real::{ClnLightningTest, LndLightningTest};
 use crate::ln::LightningTest;
 
 pub struct TestLightningBuilder {
-    lightning_test: Box<dyn LightningTest>,
+    node_type: LightningNodeName,
 }
 
 #[async_trait]
 impl LightningBuilder for TestLightningBuilder {
     async fn build(&self) -> Box<dyn ILnRpcClient> {
-        if Fixtures::is_real_test() {
-        } else {
+        if !Fixtures::is_real_test() {
+            return Box::new(FakeLightningTest::new());
         }
 
-        todo!()
+        match &self.node_type {
+            LightningNodeName::Cln => {
+                let dir = env::var("FM_TEST_DIR").expect("Real tests require FM_TEST_DIR");
+                Box::new(ClnLightningTest::new(dir.as_str()).await)
+            }
+            LightningNodeName::Lnd => Box::new(LndLightningTest::new().await),
+            _ => {
+                unimplemented!("Unsupported Lightning implementation");
+            }
+        }
     }
 }
 
@@ -158,7 +167,7 @@ impl GatewayTest {
         let gatewayd = Gatewayd {
             registry,
             lightning_builder: Arc::new(TestLightningBuilder {
-                lightning_test: lightning,
+                node_type: lightning.lightning_node_type(),
             }),
             state: Arc::new(RwLock::new(GatewayState::Initializing)),
             gatewayd_id: public,
@@ -185,6 +194,23 @@ impl GatewayTest {
             gatewayd,
             node_pub_key: PublicKey::from_slice(info.pub_key.as_slice()).unwrap(),
             listening_addr,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum LightningNodeName {
+    Cln,
+    Lnd,
+    Ldk,
+}
+
+impl Display for LightningNodeName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        match self {
+            LightningNodeName::Cln => write!(f, "cln"),
+            LightningNodeName::Lnd => write!(f, "lnd"),
+            LightningNodeName::Ldk => write!(f, "ldk"),
         }
     }
 }

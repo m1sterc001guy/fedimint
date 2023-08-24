@@ -72,7 +72,7 @@ pub struct GatewayInfo {
     #[serde(with = "serde_routing_fees")]
     pub fees: RoutingFees,
     pub route_hints: Vec<route_hints::RouteHint>,
-    pub gatewayd_id: secp256k1::PublicKey,
+    pub gatewayd_id: String,
 }
 
 #[derive(Debug)]

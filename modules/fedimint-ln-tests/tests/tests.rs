@@ -38,11 +38,11 @@ async fn can_switch_active_gateway() -> anyhow::Result<()> {
 
     // Client selects a gateway by default
     gateway1.connect_fed(&fed).await;
-    let key1 = gateway1.get_gateway_id();
+    let key1 = gateway1.get_gatewayd_id();
     assert_eq!(client.select_active_gateway().await?.gateway_id, key1);
 
     gateway2.connect_fed(&fed).await;
-    let key2 = gateway1.get_gateway_id();
+    let key2 = gateway1.get_gatewayd_id();
     let gateways = client.fetch_registered_gateways().await.unwrap();
     assert_eq!(gateways.len(), 2);
 

@@ -22,6 +22,7 @@ use ln_gateway::lnrpc_client::{ILnRpcClient, LightningRpcError, RouteHtlcStream}
 use rand::rngs::OsRng;
 
 use super::LightningTest;
+use crate::gateway::LightningNodeName;
 
 pub const INVALID_INVOICE_DESCRIPTION: &str = "INVALID";
 
@@ -83,6 +84,10 @@ impl LightningTest for FakeLightningTest {
 
     fn listening_address(&self) -> String {
         "FakeListeningAddress".to_string()
+    }
+
+    fn lightning_node_type(&self) -> LightningNodeName {
+        unimplemented!("FakeLightningTest does not have a node type");
     }
 }
 
