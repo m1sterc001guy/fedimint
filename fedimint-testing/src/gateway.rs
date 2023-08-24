@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use fedimint_client::module::gen::ClientModuleGenRegistry;
 use fedimint_client::Client;
 use fedimint_client_legacy::modules::ln::config::GatewayFee;
@@ -11,19 +12,76 @@ use fedimint_core::db::Database;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::task::TaskGroup;
 use lightning::routing::gossip::RoutingFees;
-use ln_gateway::client::StandardGatewayClientBuilder;
+use ln_gateway::client::{LightningBuilder, StandardGatewayClientBuilder};
+use ln_gateway::gateway_lnrpc::{
+    EmptyResponse, GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse,
+    PayInvoiceRequest, PayInvoiceResponse,
+};
+use ln_gateway::lnrpc_client::{ILnRpcClient, LightningRpcError, RouteHtlcStream};
 use ln_gateway::rpc::rpc_client::GatewayRpcClient;
 use ln_gateway::rpc::rpc_server::run_webserver;
 use ln_gateway::rpc::{ConnectFedPayload, FederationInfo};
-use ln_gateway::Gateway;
+use ln_gateway::{Gateway, GatewayError, GatewayState, Gatewayd, DEFAULT_FEES};
+use rand::rngs::OsRng;
 use secp256k1::PublicKey;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
+use tracing::info;
 use url::Url;
 
 use crate::federation::FederationTest;
-use crate::fixtures::test_dir;
+use crate::fixtures::{test_dir, Fixtures};
 use crate::ln::LightningTest;
+
+pub struct TestLightningBuilder {
+    lightning_test: Box<dyn LightningTest>,
+}
+
+#[async_trait]
+impl LightningBuilder for TestLightningBuilder {
+    async fn build(&self) -> Box<dyn ILnRpcClient> {
+        if Fixtures::is_real_test() {
+        } else {
+        }
+
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+struct LightningTestWrapper(Box<dyn LightningTest>);
+
+#[async_trait]
+impl ILnRpcClient for LightningTestWrapper {
+    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError> {
+        self.0.info().await
+    }
+
+    async fn routehints(&self) -> Result<GetRouteHintsResponse, LightningRpcError> {
+        self.0.routehints().await
+    }
+
+    async fn pay(
+        &self,
+        invoice: PayInvoiceRequest,
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        self.0.pay(invoice).await
+    }
+
+    async fn route_htlcs<'a>(
+        self: Box<Self>,
+        task_group: &mut TaskGroup,
+    ) -> Result<(RouteHtlcStream<'a>, Arc<dyn ILnRpcClient>), LightningRpcError> {
+        self.0.route_htlcs(task_group).await
+    }
+
+    async fn complete_htlc(
+        &self,
+        htlc: InterceptHtlcResponse,
+    ) -> Result<EmptyResponse, LightningRpcError> {
+        self.0.complete_htlc(htlc).await
+    }
+}
 
 /// Fixture for creating a gateway
 pub struct GatewayTest {
@@ -31,10 +89,8 @@ pub struct GatewayTest {
     pub password: String,
     /// URL for the RPC
     api: Url,
-    /// Handle of the running gateway
-    gateway: Gateway,
-    /// Temporary dir that stores the gateway config
-    _config_dir: Option<TempDir>,
+    /// Handle of the running gatewayd
+    gatewayd: Gatewayd,
     // Public key of the lightning node
     pub node_pub_key: PublicKey,
     // Listening address of the lightning node
@@ -48,12 +104,20 @@ impl GatewayTest {
     }
 
     /// Removes a client from the gateway
-    pub async fn remove_client(&self, fed: &FederationTest) -> Client {
-        self.gateway.remove_client(fed.id()).await.unwrap()
+    pub async fn remove_client(&self, fed: &FederationTest) -> Result<Client, GatewayError> {
+        if let GatewayState::Running(gateway) = self.gatewayd.state.read().await.clone() {
+            return Ok(gateway.remove_client(fed.id()).await.unwrap());
+        }
+
+        Err(GatewayError::Disconnected)
     }
 
-    pub async fn select_client(&self, federation_id: FederationId) -> Client {
-        self.gateway.select_client(federation_id).await.unwrap()
+    pub async fn select_client(&self, federation_id: FederationId) -> Result<Client, GatewayError> {
+        if let GatewayState::Running(gateway) = self.gatewayd.state.read().await.clone() {
+            return Ok(gateway.select_client(federation_id).await.unwrap());
+        }
+
+        Err(GatewayError::Disconnected)
     }
 
     /// Connects to a new federation and stores the info
@@ -65,8 +129,8 @@ impl GatewayTest {
             .unwrap()
     }
 
-    pub fn get_gateway_id(&self) -> secp256k1::PublicKey {
-        self.gateway.gateway_id
+    pub fn get_gatewayd_id(&self) -> secp256k1::PublicKey {
+        self.gatewayd.gatewayd_id
     }
 
     pub(crate) async fn new(
@@ -82,54 +146,43 @@ impl GatewayTest {
 
         // Create federation client builder for the gateway
         let client_builder: StandardGatewayClientBuilder =
-            StandardGatewayClientBuilder::new(path.clone(), registry, 0);
+            StandardGatewayClientBuilder::new(path.clone(), registry.clone(), 0);
 
         let listening_addr = lightning.listening_address();
         let info = lightning.info().await.unwrap();
 
+        // Generate new gatewayd id
+        let context = secp256k1::Secp256k1::new();
+        let (_, public) = context.generate_keypair(&mut OsRng);
+
+        let gatewayd = Gatewayd {
+            registry,
+            lightning_builder: Arc::new(TestLightningBuilder {
+                lightning_test: lightning,
+            }),
+            state: Arc::new(RwLock::new(GatewayState::Initializing)),
+            gatewayd_id: public,
+            gatewayd_db: Database::new(MemDatabase::new(), decoders.clone()),
+        };
+
         let mut tg = TaskGroup::new();
-        // Create the stream to route HTLCs. We cannot create the Gateway until the
-        // stream to the lightning node has been setup.
-        let (stream, ln_client) = lightning.route_htlcs(&mut tg).await.unwrap();
+        run_webserver(password.clone(), listen, gatewayd.clone(), &mut tg)
+            .await
+            .expect("Failed to start webserver");
+        info!("Successfully started test webserver");
 
-        let clients = Arc::new(RwLock::new(BTreeMap::new()));
-        let scid_to_federation = Arc::new(RwLock::new(BTreeMap::new()));
+        gatewayd
+            .clone()
+            .start_gateway(&mut tg, client_builder, DEFAULT_FEES, address.clone())
+            .await
+            .expect("Failed to start gateway");
 
-        // Create gateway with the client created from `route_htlcs`
-        let gateway = Gateway::new(
-            ln_client.clone(),
-            client_builder.clone(),
-            GatewayFee(RoutingFees {
-                base_msat: 0,
-                proportional_millionths: 0,
-            })
-            .0,
-            Database::new(MemDatabase::new(), decoders.clone()),
-            address.clone(),
-            clients.clone(),
-            scid_to_federation.clone(),
-            tg.clone(),
-        )
-        .await
-        .unwrap();
-
-        // TODO: Webserver is now tied to gatewayd
-        //run_webserver(password.clone(), listen, gateway.clone())
-        //    .await
-        //    .expect("Failed to start webserver");
-
-        // Spawn new thread to listen for HTLCs
-        tg.spawn("Subscribe to intercepted HTLCs", move |handle| async move {
-            Gateway::handle_htlc_stream(stream, ln_client, handle, scid_to_federation, clients)
-                .await;
-        })
-        .await;
+        // TODO: Wait for gatewayd to be `Running`
 
         Self {
             password,
             api: address,
-            _config_dir,
-            gateway,
+            gatewayd,
             node_pub_key: PublicKey::from_slice(info.pub_key.as_slice()).unwrap(),
             listening_addr,
         }

@@ -133,7 +133,10 @@ async fn test_gateway_can_pay_ldk_node() -> anyhow::Result<()> {
         )
         .await?;
 
-        let gateway = gateway.remove_client(&fed).await;
+        let gateway = gateway
+            .remove_client(&fed)
+            .await
+            .expect("Failed to remove client");
         // Print money for user_client
         let (_, outpoint) = user_client.print_money(sats(1000)).await?;
         user_client.receive_money(outpoint).await?;
@@ -155,7 +158,10 @@ async fn test_gateway_can_pay_ldk_node() -> anyhow::Result<()> {
 async fn test_gateway_client_pay_valid_invoice() -> anyhow::Result<()> {
     gateway_test(
         |gateway, other_lightning_client, fed, user_client, _| async move {
-            let gateway = gateway.remove_client(&fed).await;
+            let gateway = gateway
+                .remove_client(&fed)
+                .await
+                .expect("Failed to remove client");
             // Print money for user_client
             let (_, outpoint) = user_client.print_money(sats(1000)).await?;
             user_client.receive_money(outpoint).await?;
@@ -179,7 +185,10 @@ async fn test_gateway_client_pay_valid_invoice() -> anyhow::Result<()> {
 async fn test_gateway_cannot_claim_invalid_preimage() -> anyhow::Result<()> {
     gateway_test(
         |gateway, other_lightning_client, fed, user_client, _| async move {
-            let gateway = gateway.remove_client(&fed).await;
+            let gateway = gateway
+                .remove_client(&fed)
+                .await
+                .expect("Failed to remove client");
             // Print money for user_client
             let (_, outpoint) = user_client.print_money(sats(1000)).await?;
             user_client.receive_money(outpoint).await?;
@@ -241,7 +250,10 @@ async fn test_gateway_cannot_claim_invalid_preimage() -> anyhow::Result<()> {
 async fn test_gateway_client_pay_unpayable_invoice() -> anyhow::Result<()> {
     gateway_test(
         |gateway, other_lightning_client, fed, user_client, _| async move {
-            let gateway = gateway.remove_client(&fed).await;
+            let gateway = gateway
+                .remove_client(&fed)
+                .await
+                .expect("Failed to remove client");
             // Print money for user client
             let (_, outpoint) = user_client.print_money(sats(1000)).await?;
             user_client.receive_money(outpoint).await?;
@@ -285,7 +297,10 @@ async fn test_gateway_client_pay_unpayable_invoice() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_gateway_client_intercept_valid_htlc() -> anyhow::Result<()> {
     gateway_test(|gateway, _, fed, user_client, _| async move {
-        let gateway = gateway.remove_client(&fed).await;
+        let gateway = gateway
+            .remove_client(&fed)
+            .await
+            .expect("Failed to remove client");
         // Print money for gateway client
         let initial_gateway_balance = sats(1000);
         let (_, outpoint) = gateway.print_money(initial_gateway_balance).await?;
@@ -331,7 +346,10 @@ async fn test_gateway_client_intercept_valid_htlc() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_gateway_client_intercept_offer_does_not_exist() -> anyhow::Result<()> {
     gateway_test(|gateway, _, fed, _, _| async move {
-        let gateway = gateway.remove_client(&fed).await;
+        let gateway = gateway
+            .remove_client(&fed)
+            .await
+            .expect("Failed to remove client");
         // Print money for gateway client
         let initial_gateway_balance = sats(1000);
         let (_, outpoint) = gateway.print_money(initial_gateway_balance).await?;
@@ -364,7 +382,10 @@ async fn test_gateway_client_intercept_offer_does_not_exist() -> anyhow::Result<
 #[tokio::test(flavor = "multi_thread")]
 async fn test_gateway_client_intercept_htlc_no_funds() -> anyhow::Result<()> {
     gateway_test(|gateway, _, fed, user_client, _| async move {
-        let gateway = gateway.remove_client(&fed).await;
+        let gateway = gateway
+            .remove_client(&fed)
+            .await
+            .expect("Failed to remove client");
         // User client creates invoice in federation
         let (_invoice_op, invoice) = user_client
             .create_bolt11_invoice(sats(100), "description".into(), None)
@@ -396,7 +417,10 @@ async fn test_gateway_client_intercept_htlc_no_funds() -> anyhow::Result<()> {
 async fn test_gateway_client_intercept_htlc_invalid_offer() -> anyhow::Result<()> {
     gateway_test(
         |gateway, other_lightning_client, fed, user_client, _| async move {
-            let gateway = gateway.remove_client(&fed).await;
+            let gateway = gateway
+                .remove_client(&fed)
+                .await
+                .expect("Failed to remove client");
             // Print money for gateway client
             let initial_gateway_balance = sats(1000);
             let (_, outpoint) = gateway.print_money(initial_gateway_balance).await?;
@@ -498,7 +522,10 @@ async fn test_gateway_register_with_federation() -> anyhow::Result<()> {
     let user_client = fed.new_client().await;
     let mut gateway_test = fixtures.new_gateway(node).await;
     gateway_test.connect_fed(&fed).await;
-    let gateway = gateway_test.remove_client(&fed).await;
+    let gateway = gateway_test
+        .remove_client(&fed)
+        .await
+        .expect("Failed to remove client");
 
     let mut fake_api = Url::from_str("http://127.0.0.1:8175").unwrap();
     let fake_route_hints = Vec::new();
@@ -508,7 +535,7 @@ async fn test_gateway_register_with_federation() -> anyhow::Result<()> {
             fake_api.clone(),
             fake_route_hints.clone(),
             GW_ANNOUNCEMENT_TTL,
-            gateway_test.get_gateway_id(),
+            gateway_test.get_gatewayd_id(),
         )
         .await?;
     let gateways = user_client.fetch_registered_gateways().await?;
@@ -522,7 +549,7 @@ async fn test_gateway_register_with_federation() -> anyhow::Result<()> {
             fake_api.clone(),
             fake_route_hints,
             GW_ANNOUNCEMENT_TTL,
-            gateway_test.get_gateway_id(),
+            gateway_test.get_gatewayd_id(),
         )
         .await?;
     let gateways = user_client.fetch_registered_gateways().await?;
@@ -535,7 +562,10 @@ async fn test_gateway_register_with_federation() -> anyhow::Result<()> {
 async fn test_gateway_cannot_pay_expired_invoice() -> anyhow::Result<()> {
     gateway_test(
         |gateway, other_lightning_client, fed, user_client, _| async move {
-            let gateway = gateway.remove_client(&fed).await;
+            let gateway = gateway
+                .remove_client(&fed)
+                .await
+                .expect("Failed to remove client");
             let invoice = other_lightning_client
                 .invoice(sats(1000), 1.into())
                 .await

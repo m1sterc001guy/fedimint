@@ -70,7 +70,9 @@ async fn info(
     Json(payload): Json<InfoPayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
     if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
-        let info = gateway.handle_get_info(payload).await?;
+        let info = gateway
+            .handle_get_info(payload, gatewayd.gatewayd_id)
+            .await?;
         return Ok(Json(json!(info)));
     }
 
@@ -142,7 +144,9 @@ async fn connect_fed(
     Json(payload): Json<ConnectFedPayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
     if let GatewayState::Running(mut gateway) = gatewayd.state.read().await.clone() {
-        let fed = gateway.handle_connect_federation(payload).await?;
+        let fed = gateway
+            .handle_connect_federation(payload, gatewayd.gatewayd_id)
+            .await?;
         return Ok(Json(json!(fed)));
     }
 

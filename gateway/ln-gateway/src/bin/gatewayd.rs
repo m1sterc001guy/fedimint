@@ -16,8 +16,8 @@ async fn main() -> Result<(), anyhow::Error> {
     let lightning_builder = Arc::new(GatewayLightningBuilder {
         lightning_mode: gateway_opts.mode.clone(),
     });
-    Gatewayd::new(lightning_builder, gateway_opts)?
-        .with_default_modules()
-        .run()
+    Gatewayd::new_with_default_modules(lightning_builder, gateway_opts.data_dir.clone())
+        .await?
+        .run(gateway_opts)
         .await
 }

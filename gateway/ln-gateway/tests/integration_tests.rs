@@ -172,7 +172,10 @@ async fn get_balances(
 }
 
 async fn send_msats_to_gateway(gateway: &GatewayTest, id: FederationId, msats: u64) {
-    let client = gateway.select_client(id).await;
+    let client = gateway
+        .select_client(id)
+        .await
+        .expect("Failed to select client");
     let (_, outpoint) = client.print_money(Amount::from_msats(msats)).await.unwrap();
     client.receive_money(outpoint).await.unwrap();
 }

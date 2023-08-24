@@ -28,7 +28,7 @@ use bitcoin_hashes::hex::ToHex;
 use clap::{Parser, Subcommand};
 use client::StandardGatewayClientBuilder;
 use db::{FederationRegistrationKey, GatewayPublicKey};
-use fedimint_client::module::gen::{ClientModuleGen, ClientModuleGenRegistry};
+use fedimint_client::module::gen::ClientModuleGenRegistry;
 use fedimint_core::api::{FederationError, InviteCode};
 use fedimint_core::config::FederationId;
 use fedimint_core::core::{
@@ -128,7 +128,7 @@ pub struct GatewayOpts {
 
 // TODO: Add Mermaid diagram
 #[derive(Clone)]
-enum GatewayState {
+pub enum GatewayState {
     Initializing,
     Running(Gateway),
     Disconnected,
@@ -136,20 +136,17 @@ enum GatewayState {
 
 #[derive(Clone)]
 pub struct Gatewayd {
-    registry: ClientModuleGenRegistry,
-    lightning_builder: Arc<dyn LightningBuilder + Send + Sync>,
-    data_dir: PathBuf,
-    listen: SocketAddr,
-    api_addr: Url,
-    password: String,
-    fees: Option<GatewayFee>,
-    state: Arc<RwLock<GatewayState>>,
+    pub registry: ClientModuleGenRegistry,
+    pub lightning_builder: Arc<dyn LightningBuilder + Send + Sync>,
+    pub state: Arc<RwLock<GatewayState>>,
+    pub gatewayd_id: secp256k1::PublicKey,
+    pub gatewayd_db: Database,
 }
 
 impl Gatewayd {
-    pub fn new(
+    pub async fn new_with_default_modules(
         lightning_builder: Arc<dyn LightningBuilder + Send + Sync>,
-        opts: GatewayOpts,
+        data_dir: PathBuf,
     ) -> anyhow::Result<Gatewayd> {
         let mut args = std::env::args();
 
@@ -165,58 +162,64 @@ impl Gatewayd {
             env!("FEDIMINT_BUILD_CODE_VERSION")
         );
 
+        // Gateway module will be attached when the federation clients are created
+        // because the LN RPC will be injected with `GatewayClientGen`.
+        let mut registry = ClientModuleGenRegistry::new();
+        registry.attach(MintClientGen);
+        registry.attach(WalletClientGen::default());
+
+        let decoders = registry.available_decoders(DEFAULT_MODULE_KINDS.iter().cloned())?;
+
+        let gatewayd_db = Database::new(
+            fedimint_rocksdb::RocksDb::open(data_dir.join(DB_FILE))?,
+            decoders.clone(),
+        );
+
         Ok(Self {
-            registry: ClientModuleGenRegistry::new(),
+            registry,
             lightning_builder,
-            data_dir: opts.data_dir,
-            listen: opts.listen,
-            api_addr: opts.api_addr,
-            password: opts.password,
-            fees: opts.fees,
             state: Arc::new(RwLock::new(GatewayState::Initializing)),
+            gatewayd_id: Self::get_gatewayd_id(gatewayd_db.clone()).await,
+            gatewayd_db,
         })
     }
 
-    pub fn with_module<T>(mut self, gen: T) -> Self
-    where
-        T: ClientModuleGen + 'static + Send + Sync,
-    {
-        self.registry.attach(gen);
-        self
+    async fn get_gatewayd_id(gatewayd_db: Database) -> secp256k1::PublicKey {
+        let mut dbtx = gatewayd_db.begin_transaction().await;
+        if let Some(key_pair) = dbtx.get_value(&GatewayPublicKey {}).await {
+            key_pair.public_key()
+        } else {
+            let context = secp256k1::Secp256k1::new();
+            let (secret, public) = context.generate_keypair(&mut OsRng);
+            let key_pair = secp256k1::KeyPair::from_secret_key(&context, &secret);
+            dbtx.insert_new_entry(&GatewayPublicKey, &key_pair).await;
+            dbtx.commit_tx().await;
+            public
+        }
     }
 
-    pub fn with_default_modules(self) -> Self {
-        // Gateway module will be attached when the federation clients are created
-        // because the LN RPC will be injected with `GatewayClientGen`.
-        self.with_module(MintClientGen)
-            .with_module(WalletClientGen::default())
-    }
-
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, opts: GatewayOpts) -> anyhow::Result<()> {
         TracingSetup::default().init()?;
 
-        let decoders = self
-            .registry
-            .available_decoders(DEFAULT_MODULE_KINDS.iter().cloned())?;
-
         let client_builder = StandardGatewayClientBuilder::new(
-            self.data_dir.clone(),
+            opts.data_dir.clone(),
             self.registry.clone(),
             LEGACY_HARDCODED_INSTANCE_ID_MINT,
         );
 
-        let db = Database::new(
-            fedimint_rocksdb::RocksDb::open(self.data_dir.join(DB_FILE))?,
-            decoders.clone(),
-        );
-
         let mut tg = TaskGroup::new();
-        run_webserver(self.password.clone(), self.listen, self.clone(), &mut tg)
+        run_webserver(opts.password.clone(), opts.listen, self.clone(), &mut tg)
             .await
             .expect("Failed to start webserver");
         info!("Successfully started webserver");
 
-        self.start_gateway(&mut tg, client_builder, db).await?;
+        self.start_gateway(
+            &mut tg,
+            client_builder,
+            opts.fees.unwrap_or(GatewayFee(DEFAULT_FEES)).0,
+            opts.api_addr,
+        )
+        .await?;
         let handle = tg.make_handle();
         let shutdown_receiver = handle.make_shutdown_rx().await;
         shutdown_receiver.await;
@@ -224,11 +227,12 @@ impl Gatewayd {
         Ok(())
     }
 
-    async fn start_gateway(
+    pub async fn start_gateway(
         mut self,
         task_group: &mut TaskGroup,
         client_builder: StandardGatewayClientBuilder,
-        database: Database,
+        fees: RoutingFees,
+        api_addr: Url,
     ) -> Result<()> {
         let mut tg = task_group.make_subgroup().await;
         task_group
@@ -258,12 +262,13 @@ impl Gatewayd {
                                 let gateway = Gateway::new(
                                     ln_client.clone(),
                                     client_builder.clone(),
-                                    self.fees.clone().unwrap_or(GatewayFee(DEFAULT_FEES)).0,
-                                    database.clone(),
-                                    self.api_addr.clone(),
+                                    fees,
+                                    self.gatewayd_db.clone(),
+                                    api_addr.clone(),
                                     clients.clone(),
                                     scid_to_federation.clone(),
                                     tg.clone(),
+                                    self.gatewayd_id,
                                 )
                                 .await.expect("Failed to created Gateway");
 
@@ -373,7 +378,6 @@ pub struct Gateway {
     gatewayd_db: Database,
     api: Url,
     task_group: TaskGroup,
-    pub gateway_id: secp256k1::PublicKey,
 }
 
 impl Gateway {
@@ -387,6 +391,7 @@ impl Gateway {
         clients: Arc<RwLock<BTreeMap<FederationId, fedimint_client::Client>>>,
         scid_to_federation: Arc<RwLock<BTreeMap<u64, FederationId>>>,
         task_group: TaskGroup,
+        gatewayd_id: PublicKey,
     ) -> Result<Self> {
         let mut gw = Self {
             lnrpc,
@@ -398,26 +403,11 @@ impl Gateway {
             gatewayd_db: gatewayd_db.clone(),
             api,
             task_group,
-            gateway_id: Self::get_gateway_id(gatewayd_db).await,
         };
 
-        gw.register_clients_timer().await;
+        gw.register_clients_timer(gatewayd_id).await;
         gw.load_clients().await?;
         Ok(gw)
-    }
-
-    async fn get_gateway_id(gatewayd_db: Database) -> secp256k1::PublicKey {
-        let mut dbtx = gatewayd_db.begin_transaction().await;
-        if let Some(key_pair) = dbtx.get_value(&GatewayPublicKey {}).await {
-            key_pair.public_key()
-        } else {
-            let context = secp256k1::Secp256k1::new();
-            let (secret, public) = context.generate_keypair(&mut OsRng);
-            let key_pair = secp256k1::KeyPair::from_secret_key(&context, &secret);
-            dbtx.insert_new_entry(&GatewayPublicKey, &key_pair).await;
-            dbtx.commit_tx().await;
-            public
-        }
     }
 
     pub async fn handle_htlc_stream(
@@ -510,11 +500,10 @@ impl Gateway {
         unreachable!();
     }
 
-    async fn register_clients_timer(&mut self) {
+    async fn register_clients_timer(&mut self, gatewayd_id: PublicKey) {
         let clients = self.clients.clone();
         let api = self.api.clone();
         let lnrpc = self.lnrpc.clone();
-        let gateway_id = self.gateway_id;
         self.task_group
             .spawn("register clients", move |handle| async move {
                 while !handle.is_shutting_down() {
@@ -526,7 +515,7 @@ impl Gateway {
                                         api.clone(),
                                         route_hints.clone(),
                                         GW_ANNOUNCEMENT_TTL,
-                                        gateway_id,
+                                        gatewayd_id,
                                     )
                                     .await
                                     .is_err()
@@ -591,13 +580,14 @@ impl Gateway {
         federation_id: FederationId,
         scid: u64,
         route_hints: Vec<RouteHint>,
+        gatewayd_id: PublicKey,
     ) -> Result<()> {
         client
             .register_with_federation(
                 self.api.clone(),
                 route_hints,
                 GW_ANNOUNCEMENT_TTL,
-                self.gateway_id,
+                gatewayd_id,
             )
             .await?;
         self.clients.write().await.insert(federation_id, client);
@@ -639,6 +629,7 @@ impl Gateway {
     async fn handle_connect_federation(
         &mut self,
         payload: ConnectFedPayload,
+        gatewayd_id: PublicKey,
     ) -> Result<FederationInfo> {
         let invite_code = InviteCode::from_str(&payload.invite_code).map_err(|e| {
             GatewayError::InvalidMetadata(format!("Invalid federation member string {e}"))
@@ -689,7 +680,7 @@ impl Gateway {
 
         let balance_msat = client.get_balance().await;
 
-        self.register_client(client, federation_id, channel_id, route_hints)
+        self.register_client(client, federation_id, channel_id, route_hints, gatewayd_id)
             .await?;
 
         let dbtx = self.gatewayd_db.begin_transaction().await;
@@ -703,7 +694,11 @@ impl Gateway {
         })
     }
 
-    pub async fn handle_get_info(&self, _payload: InfoPayload) -> Result<GatewayInfo> {
+    pub async fn handle_get_info(
+        &self,
+        _payload: InfoPayload,
+        gatewayd_id: PublicKey,
+    ) -> Result<GatewayInfo> {
         let mut federations = Vec::new();
         let federation_clients = self.clients.read().await.clone().into_iter();
         let (route_hints, node_pub_key, alias) =
@@ -724,7 +719,7 @@ impl Gateway {
             lightning_alias: alias,
             fees: self.fees,
             route_hints,
-            gateway_id: self.gateway_id,
+            gatewayd_id,
         })
     }
 

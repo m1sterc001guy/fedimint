@@ -351,7 +351,7 @@ impl LndLightningTest {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LdkLightningTest {
     node_pub_key: PublicKey,
     alias: String,
