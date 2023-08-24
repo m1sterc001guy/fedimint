@@ -113,9 +113,10 @@ impl GatewayTest {
         .await
         .unwrap();
 
-        run_webserver(password.clone(), listen, gateway.clone())
-            .await
-            .expect("Failed to start webserver");
+        // TODO: Webserver is now tied to gatewayd
+        //run_webserver(password.clone(), listen, gateway.clone())
+        //    .await
+        //    .expect("Failed to start webserver");
 
         // Spawn new thread to listen for HTLCs
         tg.spawn("Subscribe to intercepted HTLCs", move |handle| async move {

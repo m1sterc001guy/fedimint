@@ -1,4 +1,8 @@
-use ln_gateway::Gatewayd;
+use std::sync::Arc;
+
+use clap::Parser;
+use ln_gateway::client::GatewayLightningBuilder;
+use ln_gateway::{GatewayOpts, Gatewayd};
 
 /// Fedimint Gateway Binary
 ///
@@ -8,5 +12,12 @@ use ln_gateway::Gatewayd;
 /// remote Lightning node accessible through a `GatewayLightningServer`.
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    Gatewayd::new()?.with_default_modules().run().await
+    let gateway_opts = GatewayOpts::parse();
+    let lightning_builder = Arc::new(GatewayLightningBuilder {
+        lightning_mode: gateway_opts.mode.clone(),
+    });
+    Gatewayd::new(lightning_builder, gateway_opts)?
+        .with_default_modules()
+        .run()
+        .await
 }

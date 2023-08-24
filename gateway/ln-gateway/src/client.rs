@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use fedimint_client::module::gen::ClientModuleGenRegistry;
 use fedimint_client::secret::PlainRootSecretStrategy;
 use fedimint_client::ClientBuilder;
@@ -13,9 +14,37 @@ use futures::StreamExt;
 use lightning::routing::gossip::RoutingFees;
 
 use crate::db::{FederationConfig, FederationIdKey, FederationIdKeyPrefix};
-use crate::lnrpc_client::ILnRpcClient;
+use crate::lnd::GatewayLndClient;
+use crate::lnrpc_client::{ILnRpcClient, NetworkLnRpcClient};
 use crate::ng::GatewayClientGen;
-use crate::{GatewayError, Result};
+use crate::{GatewayError, LightningMode, Result};
+
+#[async_trait]
+pub trait LightningBuilder {
+    async fn build(&self) -> Box<dyn ILnRpcClient>;
+}
+
+pub struct GatewayLightningBuilder {
+    pub lightning_mode: LightningMode,
+}
+
+#[async_trait]
+impl LightningBuilder for GatewayLightningBuilder {
+    async fn build(&self) -> Box<dyn ILnRpcClient> {
+        match self.lightning_mode.clone() {
+            LightningMode::Cln { cln_extension_addr } => {
+                Box::new(NetworkLnRpcClient::new(cln_extension_addr).await)
+            }
+            LightningMode::Lnd {
+                lnd_rpc_addr,
+                lnd_tls_cert,
+                lnd_macaroon,
+            } => Box::new(
+                GatewayLndClient::new(lnd_rpc_addr, lnd_tls_cert, lnd_macaroon, None).await,
+            ),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct StandardGatewayClientBuilder {

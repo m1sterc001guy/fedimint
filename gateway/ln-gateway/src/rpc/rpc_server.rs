@@ -16,13 +16,14 @@ use super::{
     BackupPayload, BalancePayload, ConnectFedPayload, DepositAddressPayload, InfoPayload,
     RestorePayload, WithdrawPayload,
 };
-use crate::{Gateway, GatewayError};
+use crate::{GatewayError, GatewayState, Gatewayd};
 
 pub async fn run_webserver(
     authkey: String,
     bind_addr: SocketAddr,
-    mut gateway: Gateway,
-) -> axum::response::Result<TaskGroup> {
+    gatewayd: Gatewayd,
+    task_group: &mut TaskGroup,
+) -> axum::response::Result<()> {
     // Public routes on gateway webserver
     let routes = Router::new().route("/pay_invoice", post(pay_invoice));
 
@@ -40,15 +41,13 @@ pub async fn run_webserver(
     let app = Router::new()
         .merge(routes)
         .merge(admin_routes)
-        .layer(Extension(gateway.clone()))
+        .layer(Extension(gatewayd.clone()))
         .layer(CorsLayer::permissive());
 
-    let task_group = gateway.task_group.make_subgroup().await;
     let handle = task_group.make_handle();
     let shutdown_rx = handle.make_shutdown_rx().await;
     let server = axum::Server::bind(&bind_addr).serve(app.into_make_service());
-    gateway
-        .task_group
+    task_group
         .spawn("Gateway Webserver", move |_| async move {
             let graceful = server.with_graceful_shutdown(async {
                 shutdown_rx.await;
@@ -60,88 +59,120 @@ pub async fn run_webserver(
         })
         .await;
 
-    Ok(task_group)
+    Ok(())
 }
 
 /// Display high-level information about the Gateway
 #[debug_handler]
 #[instrument(skip_all, err)]
 async fn info(
-    Extension(gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<InfoPayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let info = gateway.handle_get_info(payload).await?;
-    Ok(Json(json!(info)))
+    if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
+        let info = gateway.handle_get_info(payload).await?;
+        return Ok(Json(json!(info)));
+    }
+
+    Err(GatewayError::Disconnected)
 }
 
 /// Display gateway ecash note balance
 #[debug_handler]
 #[instrument(skip_all, err)]
 async fn balance(
-    Extension(gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<BalancePayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let amount = gateway.handle_balance_msg(payload).await?;
-    Ok(Json(json!(amount)))
+    if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
+        let amount = gateway.handle_balance_msg(payload).await?;
+        return Ok(Json(json!(amount)));
+    }
+
+    Err(GatewayError::Disconnected)
 }
 
 /// Generate deposit address
 #[debug_handler]
 #[instrument(skip_all, err)]
 async fn address(
-    Extension(gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<DepositAddressPayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let address = gateway.handle_address_msg(payload).await?;
-    Ok(Json(json!(address)))
+    if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
+        let address = gateway.handle_address_msg(payload).await?;
+        return Ok(Json(json!(address)));
+    }
+
+    Err(GatewayError::Disconnected)
 }
 
 /// Withdraw from a gateway federation.
 #[debug_handler]
 #[instrument(skip_all, err)]
 async fn withdraw(
-    Extension(gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<WithdrawPayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let txid = gateway.handle_withdraw_msg(payload).await?;
-    Ok(Json(json!(txid)))
+    if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
+        let txid = gateway.handle_withdraw_msg(payload).await?;
+        return Ok(Json(json!(txid)));
+    }
+
+    Err(GatewayError::Disconnected)
 }
 
 #[instrument(skip_all, err)]
 async fn pay_invoice(
-    Extension(gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<PayInvoicePayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let preimage = gateway.handle_pay_invoice_msg(payload).await?;
-    Ok(Json(json!(preimage.0.to_hex())))
+    if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
+        let preimage = gateway.handle_pay_invoice_msg(payload).await?;
+        return Ok(Json(json!(preimage.0.to_hex())));
+    }
+
+    Err(GatewayError::Disconnected)
 }
 
 /// Connect a new federation
 #[instrument(skip_all, err)]
 async fn connect_fed(
-    Extension(mut gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<ConnectFedPayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    let fed = gateway.handle_connect_federation(payload).await?;
-    Ok(Json(json!(fed)))
+    if let GatewayState::Running(mut gateway) = gatewayd.state.read().await.clone() {
+        let fed = gateway.handle_connect_federation(payload).await?;
+        return Ok(Json(json!(fed)));
+    }
+
+    Err(GatewayError::Disconnected)
 }
 
 /// Backup a gateway actor state
 #[instrument(skip_all, err)]
 async fn backup(
-    Extension(gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<BackupPayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    gateway.handle_backup_msg(payload).await?;
-    Ok(())
+    if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
+        gateway.handle_backup_msg(payload).await?;
+        return Ok(());
+    }
+
+    Err(GatewayError::Disconnected)
 }
 
 // Restore a gateway actor state
 #[instrument(skip_all, err)]
 async fn restore(
-    Extension(gateway): Extension<Gateway>,
+    Extension(gatewayd): Extension<Gatewayd>,
     Json(payload): Json<RestorePayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
-    gateway.handle_restore_msg(payload).await?;
-    Ok(())
+    if let GatewayState::Running(gateway) = gatewayd.state.read().await.clone() {
+        gateway.handle_restore_msg(payload).await?;
+        return Ok(());
+    }
+
+    Err(GatewayError::Disconnected)
 }

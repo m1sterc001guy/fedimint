@@ -37,7 +37,7 @@ use fedimint_core::core::{
 };
 use fedimint_core::db::Database;
 use fedimint_core::module::CommonModuleGen;
-use fedimint_core::task::{sleep, RwLock, TaskGroup, TaskHandle, TaskShutdownToken};
+use fedimint_core::task::{sleep, RwLock, TaskGroup, TaskHandle};
 use fedimint_core::time::now;
 use fedimint_core::Amount;
 use fedimint_ln_client::contracts::Preimage;
@@ -64,9 +64,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
+use crate::client::LightningBuilder;
 use crate::gateway_lnrpc::intercept_htlc_response::Forward;
-use crate::lnd::GatewayLndClient;
-use crate::lnrpc_client::NetworkLnRpcClient;
 use crate::ng::GatewayExtPayStates;
 use crate::rpc::rpc_server::run_webserver;
 use crate::rpc::{
@@ -103,7 +102,7 @@ const DEFAULT_MODULE_KINDS: [(ModuleInstanceId, &ModuleKind); 2] = [
 #[derive(Parser)]
 pub struct GatewayOpts {
     #[clap(subcommand)]
-    mode: LightningMode,
+    pub mode: LightningMode,
 
     /// Path to folder containing gateway config and data files
     #[arg(long = "data-dir", env = "FM_GATEWAY_DATA_DIR")]
@@ -127,18 +126,31 @@ pub struct GatewayOpts {
     pub fees: Option<GatewayFee>,
 }
 
+// TODO: Add Mermaid diagram
+#[derive(Clone)]
+enum GatewayState {
+    Initializing,
+    Running(Gateway),
+    Disconnected,
+}
+
+#[derive(Clone)]
 pub struct Gatewayd {
     registry: ClientModuleGenRegistry,
-    lightning_mode: LightningMode,
+    lightning_builder: Arc<dyn LightningBuilder + Send + Sync>,
     data_dir: PathBuf,
     listen: SocketAddr,
     api_addr: Url,
     password: String,
     fees: Option<GatewayFee>,
+    state: Arc<RwLock<GatewayState>>,
 }
 
 impl Gatewayd {
-    pub fn new() -> anyhow::Result<Gatewayd> {
+    pub fn new(
+        lightning_builder: Arc<dyn LightningBuilder + Send + Sync>,
+        opts: GatewayOpts,
+    ) -> anyhow::Result<Gatewayd> {
         let mut args = std::env::args();
 
         if let Some(ref arg) = args.nth(1) {
@@ -148,16 +160,6 @@ impl Gatewayd {
             }
         }
 
-        // Read configurations
-        let GatewayOpts {
-            mode,
-            data_dir,
-            listen,
-            api_addr,
-            password,
-            fees,
-        } = GatewayOpts::parse();
-
         info!(
             "Starting gatewayd (version: {})",
             env!("FEDIMINT_BUILD_CODE_VERSION")
@@ -165,12 +167,13 @@ impl Gatewayd {
 
         Ok(Self {
             registry: ClientModuleGenRegistry::new(),
-            lightning_mode: mode,
-            data_dir,
-            listen,
-            api_addr,
-            password,
-            fees,
+            lightning_builder,
+            data_dir: opts.data_dir,
+            listen: opts.listen,
+            api_addr: opts.api_addr,
+            password: opts.password,
+            fees: opts.fees,
+            state: Arc::new(RwLock::new(GatewayState::Initializing)),
         })
     }
 
@@ -208,18 +211,25 @@ impl Gatewayd {
         );
 
         let mut tg = TaskGroup::new();
-        let rx = self.start_gateway(&mut tg, client_builder, db).await?;
-        rx.await;
+        run_webserver(self.password.clone(), self.listen, self.clone(), &mut tg)
+            .await
+            .expect("Failed to start webserver");
+        info!("Successfully started webserver");
+
+        self.start_gateway(&mut tg, client_builder, db).await?;
+        let handle = tg.make_handle();
+        let shutdown_receiver = handle.make_shutdown_rx().await;
+        shutdown_receiver.await;
         info!("Gatewayd exiting...");
         Ok(())
     }
 
     async fn start_gateway(
-        self,
+        mut self,
         task_group: &mut TaskGroup,
         client_builder: StandardGatewayClientBuilder,
         database: Database,
-    ) -> Result<TaskShutdownToken> {
+    ) -> Result<()> {
         let mut tg = task_group.make_subgroup().await;
         task_group
             .spawn(
@@ -233,7 +243,7 @@ impl Gatewayd {
                             break;
                         }
 
-                        let lnrpc_route = Self::create_boxed_lightning_client(self.lightning_mode.clone()).await;
+                        let lnrpc_route = self.lightning_builder.build().await;
 
                         // Re-create the HTLC stream if the connection breaks
                         match lnrpc_route
@@ -257,16 +267,12 @@ impl Gatewayd {
                                 )
                                 .await.expect("Failed to created Gateway");
 
-                                info!("Successfully created Gateway");
-
-                                let task_group = run_webserver(self.password.clone(), self.listen, gateway)
-                                    .await
-                                    .expect("Failed to start webserver");
-                                info!("Successfully started webserver");
+                                info!("Successfully created Gateway"); 
+                                self.set_gateway_state(GatewayState::Running(gateway)).await;
 
                                 Gateway::handle_htlc_stream(stream, ln_client, handle.clone(), scid_to_federation.clone(), clients.clone()).await;
-                                warn!("HTLC Stream Lightning connection broken. Stopping webserver...");
-                                task_group.shutdown();
+                                self.set_gateway_state(GatewayState::Disconnected).await;
+                                warn!("HTLC Stream Lightning connection broken. Gateway is disconnected");
                             }
                             Err(e) => {
                                 error!("Failed to open HTLC stream. Waiting 5 seconds and trying again");
@@ -278,25 +284,12 @@ impl Gatewayd {
                 },
             )
             .await;
-
-        let handle = task_group.make_handle();
-        let shutdown_receiver = handle.make_shutdown_rx().await;
-        Ok(shutdown_receiver)
+        Ok(())
     }
 
-    async fn create_boxed_lightning_client(mode: LightningMode) -> Box<dyn ILnRpcClient> {
-        match mode {
-            LightningMode::Cln { cln_extension_addr } => {
-                Box::new(NetworkLnRpcClient::new(cln_extension_addr).await)
-            }
-            LightningMode::Lnd {
-                lnd_rpc_addr,
-                lnd_tls_cert,
-                lnd_macaroon,
-            } => Box::new(
-                GatewayLndClient::new(lnd_rpc_addr, lnd_tls_cert, lnd_macaroon, None).await,
-            ),
-        }
+    async fn set_gateway_state(&mut self, state: GatewayState) {
+        let mut lock = self.state.write().await;
+        *lock = state;
     }
 }
 
@@ -339,6 +332,8 @@ pub enum GatewayError {
     InvalidMetadata(String),
     #[error("Unexpected state: {0}")]
     UnexpectedState(String),
+    #[error("Gateway is not connected")]
+    Disconnected,
 }
 
 impl IntoResponse for GatewayError {
@@ -351,6 +346,10 @@ impl IntoResponse for GatewayError {
                 "Error while paying lightning invoice. Outgoing contract will be refunded."
                     .to_string(),
                 StatusCode::BAD_REQUEST,
+            ),
+            GatewayError::Disconnected => (
+                "Gateway is not connected to the Lightning node".to_string(),
+                StatusCode::NOT_FOUND,
             ),
             _ => (
                 "An internal gateway error occurred".to_string(),
