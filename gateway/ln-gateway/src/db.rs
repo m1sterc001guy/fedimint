@@ -10,6 +10,7 @@ pub enum DbKeyPrefix {
     FederationConfig = 0x04,
     FederationRegistration = 0x05,
     GatewayPublicKey = 0x06,
+    GatewayPassword = 0x07,
 }
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -54,4 +55,13 @@ impl_db_record!(
     key = GatewayPublicKey,
     value = secp256k1::KeyPair,
     db_prefix = DbKeyPrefix::GatewayPublicKey,
+);
+
+#[derive(Debug, Clone, Eq, PartialEq, Encodable, Decodable)]
+pub struct GatewayPassword;
+
+impl_db_record!(
+    key = GatewayPassword,
+    value = String,
+    db_prefix = DbKeyPrefix::GatewayPassword,
 );

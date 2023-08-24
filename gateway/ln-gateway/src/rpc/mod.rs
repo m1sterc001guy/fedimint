@@ -55,6 +55,11 @@ pub struct WithdrawPayload {
     pub address: Address,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetPasswordPayload {
+    pub password: String,
+}
+
 /// Information about one of the feds we are connected to
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationInfo {
@@ -86,6 +91,7 @@ pub enum GatewayRequest {
     Backup(GatewayRequestInner<BackupPayload>),
     Restore(GatewayRequestInner<RestorePayload>),
     Shutdown,
+    SetPassword(GatewayRequestInner<SetPasswordPayload>),
 }
 
 #[derive(Debug)]
@@ -130,6 +136,7 @@ impl_gateway_request_trait!(
 impl_gateway_request_trait!(WithdrawPayload, Txid, GatewayRequest::Withdraw);
 impl_gateway_request_trait!(BackupPayload, (), GatewayRequest::Backup);
 impl_gateway_request_trait!(RestorePayload, (), GatewayRequest::Restore);
+impl_gateway_request_trait!(SetPasswordPayload, (), GatewayRequest::SetPassword);
 
 impl<T> GatewayRequestInner<T>
 where

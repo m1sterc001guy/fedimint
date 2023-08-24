@@ -56,7 +56,7 @@ use ng::pay::OutgoingPaymentError;
 use ng::GatewayClientExt;
 use rand::rngs::OsRng;
 use rand::Rng;
-use rpc::FederationInfo;
+use rpc::{FederationInfo, SetPasswordPayload};
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -64,6 +64,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
+use crate::db::GatewayPassword;
 use crate::gateway_lnrpc::intercept_htlc_response::Forward;
 use crate::lnd::GatewayLndClient;
 use crate::lnrpc_client::NetworkLnRpcClient;
@@ -119,7 +120,7 @@ pub struct GatewayOpts {
 
     /// Gateway webserver authentication password
     #[arg(long = "password", env = "FM_GATEWAY_PASSWORD")]
-    pub password: String,
+    pub password: Option<String>,
 
     /// Configured gateway routing fees
     /// Format: <base_msat>,<proportional_millionths>
@@ -129,12 +130,12 @@ pub struct GatewayOpts {
 
 pub struct Gatewayd {
     registry: ClientModuleGenRegistry,
-    lightning_mode: LightningMode,
-    data_dir: PathBuf,
-    listen: SocketAddr,
-    api_addr: Url,
-    password: String,
-    fees: Option<GatewayFee>,
+    //lightning_mode: LightningMode,
+    //data_dir: PathBuf,
+    //listen: SocketAddr,
+    //api_addr: Url,
+    //password: Option<String>,
+    //fees: Option<GatewayFee>,
 }
 
 impl Gatewayd {
@@ -148,16 +149,6 @@ impl Gatewayd {
             }
         }
 
-        // Read configurations
-        let GatewayOpts {
-            mode,
-            data_dir,
-            listen,
-            api_addr,
-            password,
-            fees,
-        } = GatewayOpts::parse();
-
         info!(
             "Starting gatewayd (version: {})",
             env!("FEDIMINT_BUILD_CODE_VERSION")
@@ -165,12 +156,6 @@ impl Gatewayd {
 
         Ok(Self {
             registry: ClientModuleGenRegistry::new(),
-            lightning_mode: mode,
-            data_dir,
-            listen,
-            api_addr,
-            password,
-            fees,
         })
     }
 
@@ -189,7 +174,7 @@ impl Gatewayd {
             .with_module(WalletClientGen::default())
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, gateway_opts: GatewayOpts) -> anyhow::Result<()> {
         TracingSetup::default().init()?;
 
         let decoders = self
@@ -197,21 +182,64 @@ impl Gatewayd {
             .available_decoders(DEFAULT_MODULE_KINDS.iter().cloned())?;
 
         let client_builder = StandardGatewayClientBuilder::new(
-            self.data_dir.clone(),
+            gateway_opts.data_dir.clone(),
             self.registry.clone(),
             LEGACY_HARDCODED_INSTANCE_ID_MINT,
         );
 
         let db = Database::new(
-            fedimint_rocksdb::RocksDb::open(self.data_dir.join(DB_FILE))?,
+            fedimint_rocksdb::RocksDb::open(gateway_opts.data_dir.join(DB_FILE))?,
             decoders.clone(),
         );
 
+        let password = Self::set_password(db.clone(), gateway_opts.password.clone(), false).await?;
+
         let mut tg = TaskGroup::new();
-        let rx = self.start_gateway(&mut tg, client_builder, db).await?;
+        let rx = self
+            .start_gateway(&mut tg, client_builder, db, password, gateway_opts)
+            .await?;
         rx.await;
         info!("Gatewayd exiting...");
         Ok(())
+    }
+
+    async fn set_password(
+        gatewayd_db: Database,
+        password: Option<String>,
+        allow_overwrite: bool,
+    ) -> anyhow::Result<String> {
+        let mut dbtx = gatewayd_db.begin_transaction().await;
+        let old_password = dbtx.get_value(&GatewayPassword).await;
+        match password {
+            Some(new_password) => match old_password {
+                Some(_) if allow_overwrite => {
+                    warn!("Gateway password already exists, overwriting...");
+                    dbtx.insert_entry(&GatewayPassword, &new_password).await;
+                    dbtx.commit_tx().await;
+                    return Ok(new_password);
+                }
+                Some(old_password) => {
+                    if old_password != new_password {
+                        return Err(anyhow::anyhow!("Incorrect password"));
+                    }
+
+                    return Ok(old_password);
+                }
+                None => {
+                    dbtx.insert_new_entry(&GatewayPassword, &new_password).await;
+                    dbtx.commit_tx().await;
+                    return Ok(new_password);
+                }
+            },
+            None => match old_password {
+                Some(old_password) => {
+                    return Ok(old_password);
+                }
+                None => {
+                    return Err(anyhow::anyhow!("Password has not been set."));
+                }
+            },
+        }
     }
 
     async fn start_gateway(
@@ -219,6 +247,8 @@ impl Gatewayd {
         task_group: &mut TaskGroup,
         client_builder: StandardGatewayClientBuilder,
         database: Database,
+        password: String,
+        gateway_opts: GatewayOpts,
     ) -> Result<TaskShutdownToken> {
         let mut tg = task_group.make_subgroup().await;
         task_group
@@ -233,7 +263,7 @@ impl Gatewayd {
                             break;
                         }
 
-                        let lnrpc_route = Self::create_boxed_lightning_client(self.lightning_mode.clone()).await;
+                        let lnrpc_route = Self::create_boxed_lightning_client(gateway_opts.mode.clone()).await;
 
                         // Re-create the HTLC stream if the connection breaks
                         match lnrpc_route
@@ -248,9 +278,9 @@ impl Gatewayd {
                                 let gateway = Gateway::new(
                                     ln_client.clone(),
                                     client_builder.clone(),
-                                    self.fees.clone().unwrap_or(GatewayFee(DEFAULT_FEES)).0,
+                                    gateway_opts.fees.clone().unwrap_or(GatewayFee(DEFAULT_FEES)).0,
                                     database.clone(),
-                                    self.api_addr.clone(),
+                                    gateway_opts.api_addr.clone(),
                                     clients.clone(),
                                     scid_to_federation.clone(),
                                     tg.clone(),
@@ -259,7 +289,7 @@ impl Gatewayd {
 
                                 info!("Successfully created Gateway");
 
-                                let task_group = run_webserver(self.password.clone(), self.listen, gateway)
+                                let task_group = run_webserver(password.clone(), gateway_opts.listen, gateway)
                                     .await
                                     .expect("Failed to start webserver");
                                 info!("Successfully started webserver");
@@ -834,5 +864,13 @@ impl Gateway {
         RestorePayload { federation_id: _ }: RestorePayload,
     ) -> Result<()> {
         unimplemented!("Restore is not currently supported");
+    }
+
+    pub async fn handle_set_password_msg(
+        &self,
+        SetPasswordPayload { password }: SetPasswordPayload,
+    ) -> anyhow::Result<()> {
+        Gatewayd::set_password(self.gatewayd_db.clone(), Some(password), true).await?;
+        Ok(())
     }
 }

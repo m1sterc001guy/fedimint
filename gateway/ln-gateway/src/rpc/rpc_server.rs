@@ -14,7 +14,7 @@ use tracing::{error, instrument};
 
 use super::{
     BackupPayload, BalancePayload, ConnectFedPayload, DepositAddressPayload, InfoPayload,
-    RestorePayload, WithdrawPayload,
+    RestorePayload, SetPasswordPayload, WithdrawPayload,
 };
 use crate::{Gateway, GatewayError};
 
@@ -35,6 +35,7 @@ pub async fn run_webserver(
         .route("/connect-fed", post(connect_fed))
         .route("/backup", post(backup))
         .route("/restore", post(restore))
+        .route("/set_password", post(set_password))
         .layer(ValidateRequestHeaderLayer::bearer(&authkey));
 
     let app = Router::new()
@@ -143,5 +144,14 @@ async fn restore(
     Json(payload): Json<RestorePayload>,
 ) -> Result<impl IntoResponse, GatewayError> {
     gateway.handle_restore_msg(payload).await?;
+    Ok(())
+}
+
+#[instrument(skip_all, err)]
+async fn set_password(
+    Extension(gateway): Extension<Gateway>,
+    Json(payload): Json<SetPasswordPayload>,
+) -> Result<impl IntoResponse, GatewayError> {
+    gateway.handle_set_password_msg(payload).await?;
     Ok(())
 }

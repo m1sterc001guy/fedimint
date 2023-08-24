@@ -1,4 +1,5 @@
-use ln_gateway::Gatewayd;
+use clap::Parser;
+use ln_gateway::{GatewayOpts, Gatewayd};
 
 /// Fedimint Gateway Binary
 ///
@@ -8,5 +9,8 @@ use ln_gateway::Gatewayd;
 /// remote Lightning node accessible through a `GatewayLightningServer`.
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    Gatewayd::new()?.with_default_modules().run().await
+    Gatewayd::new()?
+        .with_default_modules()
+        .run(GatewayOpts::parse())
+        .await
 }
