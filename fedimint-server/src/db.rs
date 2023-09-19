@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
 use std::fmt::Debug;
 
 use fedimint_core::api::ClientConfigDownloadToken;
+use fedimint_core::block::SignedBlock;
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::db::{DatabaseVersion, MigrationMap, MODULE_GLOBAL_PREFIX};
 use fedimint_core::encoding::{Decodable, Encodable};
-use fedimint_core::epoch::{SerdeSignature, SerdeSignatureShare, SignedEpochOutcome};
+use fedimint_core::epoch::{SerdeSignature, SerdeSignatureShare};
 use fedimint_core::{impl_db_lookup, impl_db_record, PeerId, TransactionId};
 use serde::Serialize;
 use strum_macros::EnumIter;
@@ -15,12 +15,13 @@ pub const GLOBAL_DATABASE_VERSION: DatabaseVersion = DatabaseVersion(0);
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]
 pub enum DbKeyPrefix {
+    SessionIndex = 0x00,
+    AcceptedIndex = 0x01,
     AcceptedTransaction = 0x02,
-    EpochHistory = 0x05,
-    LastEpoch = 0x06,
+    SignedBlock = 0x04,
+    AlephUnits = 0x05,
     ClientConfigSignature = 0x07,
     ClientConfigSignatureShare = 0x3,
-    ConsensusUpgrade = 0x08,
     ClientConfigDownload = 0x09,
     Module = MODULE_GLOBAL_PREFIX,
 }
@@ -30,6 +31,29 @@ impl std::fmt::Display for DbKeyPrefix {
         write!(f, "{self:?}")
     }
 }
+
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct SessionIndexKey;
+
+impl_db_record!(
+    key = SessionIndexKey,
+    value = u64,
+    db_prefix = DbKeyPrefix::SessionIndex,
+);
+
+#[derive(Clone, Debug, Eq, PartialEq, Encodable, Decodable, Serialize, Ord, PartialOrd)]
+pub struct AcceptedIndex(pub u64);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct AcceptedIndexPrefix;
+
+impl_db_record!(
+    key = AcceptedIndex,
+    value = (),
+    db_prefix = DbKeyPrefix::AcceptedIndex,
+);
+
+impl_db_lookup!(key = AcceptedIndex, query_prefix = AcceptedIndexPrefix);
 
 #[derive(Debug, Encodable, Decodable, Serialize)]
 pub struct AcceptedTransactionKey(pub TransactionId);
@@ -48,27 +72,33 @@ impl_db_lookup!(
     query_prefix = AcceptedTransactionKeyPrefix
 );
 
-#[derive(Debug, Copy, Clone, Encodable, Decodable, Serialize)]
-pub struct EpochHistoryKey(pub u64);
+#[derive(Debug, Encodable, Decodable)]
+pub struct SignedBlockKey(pub u64);
 
 #[derive(Debug, Encodable, Decodable)]
-pub struct EpochHistoryKeyPrefix;
+pub struct SignedBlockPrefix;
 
 impl_db_record!(
-    key = EpochHistoryKey,
-    value = SignedEpochOutcome,
-    db_prefix = DbKeyPrefix::EpochHistory,
+    key = SignedBlockKey,
+    value = SignedBlock,
+    db_prefix = DbKeyPrefix::SignedBlock,
+    notify_on_modify = false,
 );
-impl_db_lookup!(key = EpochHistoryKey, query_prefix = EpochHistoryKeyPrefix);
+impl_db_lookup!(key = SignedBlockKey, query_prefix = SignedBlockPrefix);
 
-#[derive(Debug, Encodable, Decodable, Serialize)]
-pub struct LastEpochKey;
+#[derive(Debug, Encodable, Decodable)]
+pub struct AlephUnitsKey(pub u64, pub u64);
+
+#[derive(Debug, Encodable, Decodable)]
+pub struct AlephUnitsPrefix;
 
 impl_db_record!(
-    key = LastEpochKey,
-    value = EpochHistoryKey,
-    db_prefix = DbKeyPrefix::LastEpoch
+    key = AlephUnitsKey,
+    value = Vec<u8>,
+    db_prefix = DbKeyPrefix::AlephUnits,
+    notify_on_modify = false,
 );
+impl_db_lookup!(key = AlephUnitsKey, query_prefix = AlephUnitsPrefix);
 
 #[derive(Debug, Encodable, Decodable, Serialize)]
 pub struct ClientConfigSignatureKey;
@@ -98,15 +128,6 @@ impl_db_lookup!(
 );
 
 #[derive(Debug, Encodable, Decodable, Serialize)]
-pub struct ConsensusUpgradeKey;
-
-impl_db_record!(
-    key = ConsensusUpgradeKey,
-    value = BTreeSet<PeerId>,
-    db_prefix = DbKeyPrefix::ConsensusUpgrade,
-);
-
-#[derive(Debug, Encodable, Decodable, Serialize)]
 pub struct ClientConfigDownloadKeyPrefix;
 
 #[derive(Debug, Encodable, Decodable, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -128,27 +149,23 @@ pub fn get_global_database_migrations<'a>() -> MigrationMap<'a> {
 
 #[cfg(test)]
 mod fedimint_migration_tests {
-    use std::collections::BTreeSet;
+    use std::collections::BTreeMap;
 
     use anyhow::{ensure, Context};
     use bitcoin::{secp256k1, KeyPair};
     use bitcoin_hashes::Hash;
     use fedimint_core::api::ClientConfigDownloadToken;
+    use fedimint_core::block::{Block, SignedBlock};
     use fedimint_core::core::DynInput;
     use fedimint_core::db::{apply_migrations, DatabaseTransaction};
-    use fedimint_core::epoch::{
-        ConsensusItem, ConsensusUpgrade, EpochOutcome, SerdeSignature, SerdeSignatureShare,
-        SignedEpochOutcome,
-    };
+    use fedimint_core::epoch::{ConsensusItem, SerdeSignature, SerdeSignatureShare};
     use fedimint_core::module::registry::ModuleDecoderRegistry;
     use fedimint_core::module::CommonModuleInit;
     use fedimint_core::transaction::Transaction;
     use fedimint_core::{Amount, PeerId, ServerModule, TransactionId};
     use fedimint_dummy_common::{DummyCommonGen, DummyInput, DummyOutput};
     use fedimint_dummy_server::Dummy;
-    use fedimint_testing::db::{
-        prepare_db_migration_snapshot, validate_migrations, BYTE_32, BYTE_8,
-    };
+    use fedimint_testing::db::{prepare_db_migration_snapshot, validate_migrations, BYTE_32};
     use futures::StreamExt;
     use rand::distributions::{Distribution, Standard};
     use rand::rngs::OsRng;
@@ -158,14 +175,14 @@ mod fedimint_migration_tests {
     use threshold_crypto::SignatureShare;
 
     use super::{
-        AcceptedTransactionKey, ClientConfigSignatureKey, ClientConfigSignatureSharePrefix,
-        ConsensusUpgradeKey, EpochHistoryKey, LastEpochKey,
+        AcceptedTransactionKey, AlephUnitsKey, ClientConfigSignatureKey,
+        ClientConfigSignatureSharePrefix, SignedBlockKey,
     };
     use crate::core::DynOutput;
     use crate::db::{
-        get_global_database_migrations, AcceptedTransactionKeyPrefix, ClientConfigDownloadKey,
-        ClientConfigDownloadKeyPrefix, ClientConfigSignatureShareKey, DbKeyPrefix,
-        EpochHistoryKeyPrefix, GLOBAL_DATABASE_VERSION,
+        get_global_database_migrations, AcceptedTransactionKeyPrefix, AlephUnitsPrefix,
+        ClientConfigDownloadKey, ClientConfigDownloadKeyPrefix, ClientConfigSignatureShareKey,
+        DbKeyPrefix, SignedBlockPrefix, GLOBAL_DATABASE_VERSION,
     };
 
     /// Create a database with version 0 data. The database produced is not
@@ -207,35 +224,12 @@ mod fedimint_migration_tests {
 
         dbtx.insert_new_entry(&accepted_tx_id, &module_ids).await;
 
-        let epoch_history_key = EpochHistoryKey(6);
-
         let sig_share = SignatureShare(Standard.sample(&mut OsRng));
 
-        let consensus_items = vec![
-            ConsensusItem::ConsensusUpgrade(ConsensusUpgrade),
+        let _consensus_items = vec![
             ConsensusItem::ClientConfigSignatureShare(SerdeSignatureShare(sig_share.clone())),
-            ConsensusItem::EpochOutcomeSignatureShare(SerdeSignatureShare(sig_share)),
             ConsensusItem::Transaction(transaction),
         ];
-
-        let epoch_outcome = EpochOutcome {
-            epoch: 6,
-            last_hash: Some(secp256k1::hashes::sha256::Hash::hash(&BYTE_8)),
-            items: vec![(0.into(), consensus_items)],
-            rejected_txs: BTreeSet::new(),
-        };
-
-        let signed_epoch_outcome = SignedEpochOutcome {
-            outcome: epoch_outcome,
-            hash: secp256k1::hashes::sha256::Hash::hash(&BYTE_8),
-            signature: Some(SerdeSignature(Standard.sample(&mut OsRng))),
-        };
-
-        dbtx.insert_new_entry(&epoch_history_key, &signed_epoch_outcome)
-            .await;
-
-        dbtx.insert_new_entry(&LastEpochKey, &epoch_history_key)
-            .await;
 
         let serde_sig = SerdeSignature(Standard.sample(&mut OsRng));
         dbtx.insert_new_entry(&ClientConfigSignatureKey, &serde_sig)
@@ -254,11 +248,6 @@ mod fedimint_migration_tests {
         )
         .await;
 
-        let mut peers: BTreeSet<PeerId> = BTreeSet::new();
-        peers.insert(0.into());
-        peers.insert(1.into());
-        peers.insert(2.into());
-        dbtx.insert_new_entry(&ConsensusUpgradeKey, &peers).await;
         dbtx.commit_tx().await;
     }
 
@@ -301,6 +290,8 @@ mod fedimint_migration_tests {
 
                 for prefix in DbKeyPrefix::iter() {
                     match prefix {
+                        DbKeyPrefix::SessionIndex => {},
+                        DbKeyPrefix::AcceptedIndex => {},
                         DbKeyPrefix::AcceptedTransaction => {
                                 let accepted_transactions = dbtx
                                     .find_by_prefix(&AcceptedTransactionKeyPrefix)
@@ -313,21 +304,8 @@ mod fedimint_migration_tests {
                                     "validate_migrations was not able to read any AcceptedTransactions"
                                 );
                             }
-                            DbKeyPrefix::EpochHistory => {
-                                let epoch_history = dbtx
-                                    .find_by_prefix(&EpochHistoryKeyPrefix)
-                                    .await
-                                    .collect::<Vec<_>>()
-                                    .await;
-                                let num_epochs = epoch_history.len();
-                                ensure!(
-                                    num_epochs > 0,
-                                    "validate_migrations was not able to read any EpochHistory"
-                                );
-                            }
-                            DbKeyPrefix::LastEpoch => {
-                                ensure!(dbtx.get_value(&LastEpochKey).await.is_some());
-                            }
+                        DbKeyPrefix::SignedBlock => {}
+                        DbKeyPrefix::AlephUnits => {}
                             DbKeyPrefix::ClientConfigSignature => {
                                 dbtx
                                     .get_value(&ClientConfigSignatureKey)
@@ -345,9 +323,6 @@ mod fedimint_migration_tests {
                                     num_signature_shares > 0,
                                     "validate_migrations was not able to read any ClientConfigSignatureShares"
                                 );
-                            }
-                            DbKeyPrefix::ConsensusUpgrade => {
-                                ensure!(dbtx.get_value(&ConsensusUpgradeKey).await.is_some());
                             }
                             DbKeyPrefix::ClientConfigDownload => {
                                 let downloads = dbtx

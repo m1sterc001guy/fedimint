@@ -18,7 +18,6 @@ use fedimint_core::config::{ClientConfig, ClientConfigResponse, FederationId};
 use fedimint_core::core::{DynOutputOutcome, ModuleInstanceId};
 use fedimint_core::encoding::Encodable;
 use fedimint_core::fmt_utils::AbbreviateDebug;
-use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::module::SerdeModuleEncoding;
 use fedimint_core::task::{MaybeSend, MaybeSync, RwLock, RwLockWriteGuard};
 use fedimint_core::time::now;
@@ -42,6 +41,7 @@ use threshold_crypto::{PublicKey, PK_SIZE};
 use tracing::{debug, error, instrument, trace, warn};
 
 use crate::backup::ClientBackupSnapshot;
+use crate::block::SignedBlock;
 use crate::core::backup::SignedBackupRequest;
 use crate::core::{Decoder, OutputOutcome};
 use crate::endpoint_constants::{
@@ -49,7 +49,6 @@ use crate::endpoint_constants::{
     FETCH_EPOCH_COUNT_ENDPOINT, FETCH_EPOCH_HISTORY_ENDPOINT, RECOVER_ENDPOINT,
     TRANSACTION_ENDPOINT, VERSION_ENDPOINT, WAIT_TRANSACTION_ENDPOINT,
 };
-use crate::epoch::{SerdeEpochHistory, SignedEpochOutcome};
 use crate::module::{ApiRequestErased, ApiVersion, SupportedApiVersionsSummary};
 use crate::query::{
     DiscoverApiVersionSet, QueryStep, QueryStrategy, ThresholdConsensus, UnionResponsesSingle,
@@ -338,14 +337,9 @@ impl AsRef<dyn IGlobalFederationApi + 'static> for DynGlobalApi {
 pub trait GlobalFederationApi {
     async fn submit_transaction(&self, tx: Transaction) -> FederationResult<TransactionId>;
 
-    async fn fetch_epoch_history(
-        &self,
-        epoch: u64,
-        epoch_pk: PublicKey,
-        decoders: &ModuleDecoderRegistry,
-    ) -> FederationResult<SignedEpochOutcome>;
+    async fn get_block(&self, block_index: u64) -> FederationResult<Option<SignedBlock>>;
 
-    async fn fetch_epoch_count(&self) -> FederationResult<u64>;
+    async fn get_block_count(&self) -> FederationResult<u64>;
 
     async fn await_transaction(&self, txid: TransactionId) -> FederationResult<TransactionId>;
 
@@ -413,62 +407,14 @@ where
         .await
     }
 
-    async fn fetch_epoch_history(
-        &self,
-        epoch: u64,
-        epoch_pk: PublicKey,
-        decoders: &ModuleDecoderRegistry,
-    ) -> FederationResult<SignedEpochOutcome> {
-        // TODO: make this function avoid clone
-        let decoders = decoders.clone();
-
-        struct ValidHistoryWrapper {
-            decoders: ModuleDecoderRegistry,
-            strategy: VerifiableResponse<SignedEpochOutcome>,
-        }
-
-        impl QueryStrategy<SerdeEpochHistory, SignedEpochOutcome> for ValidHistoryWrapper {
-            fn process(
-                &mut self,
-                peer: PeerId,
-                result: PeerResult<SerdeEpochHistory>,
-            ) -> QueryStep<SignedEpochOutcome> {
-                let response = result.and_then(|hist| {
-                    hist.try_into_inner(&self.decoders)
-                        .map_err(|e| PeerError::Rpc(jsonrpsee_core::Error::Custom(e.to_string())))
-                });
-                match self.strategy.process(peer, response) {
-                    QueryStep::Retry(r) => QueryStep::Retry(r),
-                    QueryStep::Continue => QueryStep::Continue,
-                    QueryStep::Success(res) => QueryStep::Success(res),
-                    QueryStep::Failure { general, peers } => QueryStep::Failure { general, peers },
-                }
-            }
-        }
-
-        let qs = ValidHistoryWrapper {
-            decoders,
-            strategy: VerifiableResponse::new(
-                move |epoch: &SignedEpochOutcome| epoch.verify_sig(&epoch_pk).is_ok(),
-                true,
-                self.all_peers().total(),
-            ),
-        };
-
-        self.request_with_strategy::<SerdeEpochHistory, _>(
-            qs,
-            FETCH_EPOCH_HISTORY_ENDPOINT.to_owned(),
-            ApiRequestErased::new(epoch),
-        )
-        .await
+    async fn get_block(&self, block_index: u64) -> FederationResult<Option<SignedBlock>> {
+        self.request_current_consensus("get_block".to_string(), ApiRequestErased::new(block_index))
+            .await
     }
 
-    async fn fetch_epoch_count(&self) -> FederationResult<u64> {
-        self.request_current_consensus(
-            FETCH_EPOCH_COUNT_ENDPOINT.to_owned(),
-            ApiRequestErased::default(),
-        )
-        .await
+    async fn get_block_count(&self) -> FederationResult<u64> {
+        self.request_current_consensus("get_block_count".to_owned(), ApiRequestErased::default())
+            .await
     }
 
     async fn await_transaction(&self, txid: TransactionId) -> FederationResult<TransactionId> {
@@ -944,8 +890,6 @@ pub enum ServerStatus {
     VerifyingConfigs,
     /// We have verified all our peer configs
     VerifiedConfigs,
-    /// Restarted from a planned upgrade (requires action to start)
-    Upgrading,
     /// Consensus is running
     ConsensusRunning,
 }
