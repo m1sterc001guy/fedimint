@@ -117,7 +117,7 @@ impl Amount {
         if let Denomination::MilliSatoshi = denom {
             return Self::from_str(s);
         }
-        let btc_amt = bitcoin::util::amount::Amount::from_str_in(s, denom)?;
+        let btc_amt = bitcoin::amount::Amount::from_str_in(s, denom)?;
         Ok(Self::from(btc_amt))
     }
 
@@ -171,7 +171,7 @@ pub enum ParseAmountError {
     #[error("Error parsing string as integer: {0}")]
     NotANumber(#[from] ParseIntError),
     #[error("Error parsing string as a bitcoin amount: {0}")]
-    WrongBitcoinAmount(#[from] bitcoin::util::amount::ParseAmountError),
+    WrongBitcoinAmount(#[from] bitcoin::amount::ParseAmountError),
 }
 
 impl<T> NumPeers for BTreeMap<PeerId, T> {

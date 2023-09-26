@@ -237,7 +237,8 @@ impl FederationId {
     /// other LN senders will know that they cannot pay the invoice.
     pub fn to_fake_ln_pub_key(
         &self,
-        secp: &secp256k1::Secp256k1<secp256k1_zkp::All>,
+        //secp: &secp256k1::Secp256k1<secp256k1_zkp::All>,
+        secp: &secp256k1::Secp256k1<secp256k1::All>,
     ) -> anyhow::Result<secp256k1::PublicKey> {
         let bytes = <Sha256 as bitcoin_hashes::Hash>::hash(&self.0.to_bytes()[..]);
         let sk = secp256k1::SecretKey::from_slice(&bytes)?;

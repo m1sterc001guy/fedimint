@@ -370,7 +370,7 @@ mod tests {
     fn verifies_hash() {
         let sk: SecretKey = SecretKey::random();
         let _pk = sk.public_key();
-        let wrong_hash: Sha256 = Hash::hash(b"wrong");
+        let wrong_hash = bitcoin_hashes::Hash::hash(b"wrong");
         let sig = SerdeSignature(sk.sign(wrong_hash));
 
         let epoch0 = history(0, &None, Some(sig));

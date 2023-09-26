@@ -1,5 +1,5 @@
 use bitcoin::hashes::Hash as BitcoinHash;
-use bitcoin::XOnlyPublicKey;
+use bitcoin::key::XOnlyPublicKey;
 use bitcoin_hashes::hex::ToHex;
 use fedimint_core::core::{DynInput, DynOutput};
 use fedimint_core::encoding::{Decodable, Encodable};
@@ -39,14 +39,14 @@ impl Transaction {
 
     /// Generate the transaction hash.
     pub fn tx_hash_from_parts(inputs: &[DynInput], outputs: &[DynOutput]) -> TransactionId {
-        let mut engine = TransactionId::engine();
+        let mut engine = <TransactionId as bitcoin_hashes::Hash>::engine();
         inputs
             .consensus_encode(&mut engine)
             .expect("write to hash engine can't fail");
         outputs
             .consensus_encode(&mut engine)
             .expect("write to hash engine can't fail");
-        TransactionId::from_engine(engine)
+        <TransactionId as bitcoin_hashes::Hash>::from_engine(engine)
     }
 
     /// Validate the aggregated Schnorr Signature signed over the `tx_hash`
@@ -116,7 +116,7 @@ where
 
 /// Create an aggregated signature over the `msg`
 pub fn agg_sign<R, C, M>(
-    keys: &[bitcoin::KeyPair],
+    keys: &[bitcoin::key::KeyPair],
     msg: M,
     ctx: &Secp256k1<C>,
     mut rng: R,
