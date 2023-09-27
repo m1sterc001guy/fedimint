@@ -35,11 +35,11 @@ macro_rules! impl_encode_decode_bridge {
 impl_encode_decode_bridge!(bitcoin::block::Header);
 impl_encode_decode_bridge!(bitcoin::BlockHash);
 impl_encode_decode_bridge!(bitcoin::OutPoint);
-//impl_encode_decode_bridge!(Box<bitcoin::Script>);
+impl_encode_decode_bridge!(bitcoin::ScriptBuf);
 impl_encode_decode_bridge!(bitcoin::Transaction);
 impl_encode_decode_bridge!(bitcoin::Txid);
 impl_encode_decode_bridge!(bitcoin::merkle_tree::PartialMerkleTree);
-//impl_encode_decode_bridge!(bitcoin::psbt::Psbt);
+//impl_encode_decode_bridge!(bitcoin::psbt::PartiallySignedTransaction);
 
 impl<K> Encodable for miniscript::Descriptor<K>
 where

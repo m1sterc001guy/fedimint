@@ -255,9 +255,9 @@ impl MintClientExt for Client {
         }
 
         let operation_id = OperationId(
-            notes
+            *notes
                 .consensus_hash::<sha256t::Hash<OOBReissueTag>>()
-                .into_inner(),
+                .as_byte_array(),
         );
 
         let amount = notes.total_amount();
@@ -1103,9 +1103,9 @@ impl MintClientModule {
         let spendable_selected_notes = Self::select_notes(dbtx, min_amount).await?;
 
         let operation_id = OperationId(
-            spendable_selected_notes
+            *spendable_selected_notes
                 .consensus_hash::<sha256t::Hash<OOBSpendTag>>()
-                .into_inner(),
+                .as_byte_array(),
         );
 
         for (amount, note) in spendable_selected_notes.iter_items() {

@@ -100,8 +100,12 @@ impl TransactionBuilder {
         let signature = if !input_keys.is_empty() {
             let keys = input_keys.into_iter().flatten().collect::<Vec<_>>();
 
-            let signature =
-                fedimint_core::transaction::agg_sign(&keys, txid.as_hash(), secp_ctx, &mut rng);
+            let signature = fedimint_core::transaction::agg_sign(
+                &keys,
+                *txid.as_raw_hash(),
+                secp_ctx,
+                &mut rng,
+            );
             Some(signature)
         } else {
             None

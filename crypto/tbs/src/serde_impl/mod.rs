@@ -2,14 +2,15 @@ pub mod scalar;
 
 macro_rules! impl_serde_g {
     ($g:ty, $len:expr) => {
-        use bitcoin_hashes::hex::{FromHex, ToHex};
+        use bitcoin_hashes::hex::FromHex;
+        use hex::ToHex;
         use serde::de::Error;
         use serde::{Deserialize, Deserializer, Serializer};
 
         pub fn serialize<S: Serializer>(g: &$g, s: S) -> Result<S::Ok, S::Error> {
             let bytes = g.to_compressed();
             if s.is_human_readable() {
-                s.serialize_str(&bytes.to_hex().as_ref())
+                s.serialize_str(&bytes.encode_hex::<String>().as_ref())
             } else {
                 s.serialize_bytes(&bytes)
             }

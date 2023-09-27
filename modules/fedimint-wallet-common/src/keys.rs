@@ -39,6 +39,10 @@ impl MiniscriptKey for CompressedPublicKey {
     type Hash256 = miniscript::hash256::Hash;
     type Ripemd160 = bitcoin::hashes::ripemd160::Hash;
     type Hash160 = bitcoin::hashes::hash160::Hash;
+
+    fn num_der_paths(&self) -> usize {
+        0
+    }
 }
 
 impl ToPublicKey for CompressedPublicKey {

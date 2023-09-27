@@ -15,6 +15,7 @@ pub use dbtx::ClientSMDatabaseTransaction;
 pub use executor::{ActiveState, Executor, ExecutorBuilder, InactiveState};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::task::{MaybeSend, MaybeSync};
+use hex::ToHex;
 pub use notifier::{ModuleNotifier, Notifier, NotifierSender};
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -63,7 +64,7 @@ impl OperationId {
 
 impl Display for OperationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        bitcoin_hashes::hex::format_hex(&self.0, f)
+        f.write_str(&self.0.encode_hex::<String>().as_str())
     }
 }
 

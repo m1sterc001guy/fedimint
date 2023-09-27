@@ -342,9 +342,8 @@ impl Client {
     /// Static version of [`Self::get_derived_backup_signing_key`] for testing
     /// without creating whole `MintClient`
     fn get_derived_backup_signing_key_static(secret: &DerivableSecret) -> secp256k1_zkp::KeyPair {
-        secret
-            .derive_backup_secret()
-            .to_secp_key(&Secp256k1::<secp256k1::SignOnly>::gen_new())
+        let ctx = &Secp256k1::<secp256k1::SignOnly>::gen_new();
+        secret.derive_backup_secret().to_secp_key(ctx)
     }
 
     fn get_derived_backup_encryption_key(&self) -> fedimint_aead::LessSafeKey {

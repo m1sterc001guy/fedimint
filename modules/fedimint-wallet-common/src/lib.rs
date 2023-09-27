@@ -2,7 +2,7 @@ use std::hash::Hasher;
 
 use bitcoin::psbt::raw::ProprietaryKey;
 use bitcoin::psbt::PartiallySignedTransaction;
-use bitcoin::{Amount, BlockHash, Network, Script, Transaction, Txid};
+use bitcoin::{Amount, BlockHash, Network, ScriptBuf, Transaction, Txid};
 use config::WalletClientConfig;
 use fedimint_core::core::{Decoder, ModuleInstanceId, ModuleKind};
 use fedimint_core::encoding::{Decodable, Encodable, UnzipConsensus};
@@ -84,7 +84,7 @@ pub struct PendingTransaction {
     pub tx: Transaction,
     pub tweak: [u8; 32],
     pub change: bitcoin::Amount,
-    pub destination: Script,
+    pub destination: ScriptBuf,
     pub fees: PegOutFees,
     pub selected_utxos: Vec<(UTXOKey, SpendableUTXO)>,
     pub peg_out_amount: Amount,
@@ -100,7 +100,7 @@ impl Serialize for PendingTransaction {
         self.consensus_encode(&mut bytes).unwrap();
 
         if serializer.is_human_readable() {
-            serializer.serialize_str(&bytes.to_hex())
+            serializer.serialize_str(&bytes.encode_hex::<String>())
         } else {
             serializer.serialize_bytes(&bytes)
         }
@@ -115,7 +115,7 @@ pub struct UnsignedTransaction {
     pub signatures: Vec<(PeerId, PegOutSignatureItem)>,
     pub change: bitcoin::Amount,
     pub fees: PegOutFees,
-    pub destination: Script,
+    pub destination: ScriptBuf,
     pub selected_utxos: Vec<(UTXOKey, SpendableUTXO)>,
     pub peg_out_amount: Amount,
     pub rbf: Option<Rbf>,
@@ -130,7 +130,7 @@ impl Serialize for UnsignedTransaction {
         self.consensus_encode(&mut bytes).unwrap();
 
         if serializer.is_human_readable() {
-            serializer.serialize_str(&bytes.to_hex())
+            serializer.serialize_str(&bytes.encode_hex::<String>())
         } else {
             serializer.serialize_bytes(&bytes)
         }
