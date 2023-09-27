@@ -1,4 +1,3 @@
-use bitcoin::hashes::Hash as BitcoinHash;
 use bitcoin::key::XOnlyPublicKey;
 use bitcoin_hashes::hex::ToHex;
 use fedimint_core::core::{DynInput, DynOutput};
