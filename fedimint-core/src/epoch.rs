@@ -234,7 +234,7 @@ impl Decodable for SerdeSignatureShare {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use bitcoin::hashes::Hash;
+    use bitcoin::hashes::Hash as BitcoinHash;
     use bitcoin_hashes::sha256;
     use fedimint_core::encoding::Encodable;
     use fedimint_core::epoch::combine_sigs;

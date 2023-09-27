@@ -49,12 +49,9 @@ pub mod transaction;
 pub mod txoproof;
 pub mod util;
 
-hash_newtype!(
-    TransactionId,
-    Sha256,
-    32,
-    doc = "A transaction id for peg-ins, peg-outs and reissuances"
-);
+hash_newtype! {
+    pub struct TransactionId(Sha256);
+}
 
 #[derive(
     Debug,
@@ -372,7 +369,7 @@ impl Decodable for TransactionId {
     ) -> Result<Self, DecodeError> {
         let mut bytes = [0u8; 32];
         d.read_exact(&mut bytes).map_err(DecodeError::from_err)?;
-        Ok(TransactionId::from_inner(bytes))
+        Ok(TransactionId::from_byte_array(bytes))
     }
 }
 

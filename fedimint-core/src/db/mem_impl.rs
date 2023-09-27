@@ -3,8 +3,8 @@ use std::fmt::Debug;
 use std::sync::Mutex;
 
 use anyhow::Result;
-use bitcoin_hashes::hex::ToHex;
 use futures::{stream, StreamExt};
+use hex::ToHex;
 use macro_rules_attribute::apply;
 
 use super::{
@@ -58,7 +58,11 @@ impl MemDatabase {
         let data = self.data.lock().unwrap();
         let data_iter = data.iter();
         for (key, value) in data_iter {
-            println!("{}: {}", key.to_hex(), value.to_hex());
+            println!(
+                "{}: {}",
+                key.encode_hex::<String>(),
+                value.encode_hex::<String>()
+            );
         }
     }
 }

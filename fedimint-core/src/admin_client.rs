@@ -289,7 +289,8 @@ pub struct ConfigGenParamsRequest {
 mod serde_tls_cert {
     use std::borrow::Cow;
 
-    use bitcoin_hashes::hex::{FromHex, ToHex};
+    use bitcoin_hashes::hex::FromHex;
+    use hex::ToHex;
     use serde::de::Error;
     use serde::{Deserialize, Deserializer, Serializer};
     use tokio_rustls::rustls;
@@ -298,7 +299,7 @@ mod serde_tls_cert {
     where
         S: Serializer,
     {
-        let hex_str = certs.0.to_hex();
+        let hex_str = certs.0.encode_hex::<String>();
         serializer.serialize_str(&hex_str)
     }
 

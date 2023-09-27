@@ -1,9 +1,9 @@
 use bitcoin::key::XOnlyPublicKey;
-use bitcoin_hashes::hex::ToHex;
 use fedimint_core::core::{DynInput, DynOutput};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::SerdeModuleEncoding;
 use fedimint_core::{Amount, TransactionId};
+use hex::ToHex;
 use rand::Rng;
 use secp256k1_zkp::{schnorr, Secp256k1, Signing, Verification};
 use thiserror::Error;
@@ -80,7 +80,7 @@ impl Transaction {
         } else {
             Err(TransactionError::InvalidSignature {
                 tx: self.consensus_encode_to_hex().expect("Can't fail"),
-                hash: self.tx_hash().to_hex(),
+                hash: self.tx_hash().encode_hex::<String>(),
                 sig: signature.consensus_encode_to_hex().expect("Can't fail"),
                 key: agg_pub_key.consensus_encode_to_hex().expect("Can't fail"),
             })

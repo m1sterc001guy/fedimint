@@ -5,7 +5,8 @@ use std::io::Cursor;
 use bitcoin::block::Header;
 use bitcoin::merkle_tree::PartialMerkleTree;
 use bitcoin::{BlockHash, Txid};
-use bitcoin_hashes::hex::{FromHex, ToHex};
+use bitcoin_hashes::hex::FromHex;
+use hex::ToHex;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -84,7 +85,7 @@ impl Serialize for TxOutProof {
         self.consensus_encode(&mut bytes).unwrap();
 
         if serializer.is_human_readable() {
-            serializer.serialize_str(&bytes.to_hex())
+            serializer.serialize_str(&bytes.encode_hex::<String>())
         } else {
             serializer.serialize_bytes(&bytes)
         }

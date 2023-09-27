@@ -1,14 +1,14 @@
 use std::hash::Hasher;
 
-use bitcoin::hashes::hex::ToHex;
-use bitcoin::util::psbt::raw::ProprietaryKey;
-use bitcoin::util::psbt::PartiallySignedTransaction;
+use bitcoin::psbt::raw::ProprietaryKey;
+use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::{Amount, BlockHash, Network, Script, Transaction, Txid};
 use config::WalletClientConfig;
 use fedimint_core::core::{Decoder, ModuleInstanceId, ModuleKind};
 use fedimint_core::encoding::{Decodable, Encodable, UnzipConsensus};
 use fedimint_core::module::{CommonModuleInit, ModuleCommon, ModuleConsensusVersion};
 use fedimint_core::{plugin_types_trait_impl_common, Feerate, PeerId};
+use hex::ToHex;
 use impl_tools::autoimpl;
 use miniscript::Descriptor;
 use serde::{Deserialize, Serialize};
@@ -74,7 +74,7 @@ pub struct PegOutSignatureItem {
 pub struct SpendableUTXO {
     #[serde(with = "::fedimint_core::encoding::as_hex")]
     pub tweak: [u8; 32],
-    #[serde(with = "bitcoin::util::amount::serde::as_sat")]
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: bitcoin::Amount,
 }
 
@@ -159,7 +159,7 @@ impl PegOutFees {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Deserialize, Serialize, Encodable, Decodable)]
 pub struct PegOut {
     pub recipient: bitcoin::Address,
-    #[serde(with = "bitcoin::util::amount::serde::as_sat")]
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: bitcoin::Amount,
     pub fees: PegOutFees,
 }

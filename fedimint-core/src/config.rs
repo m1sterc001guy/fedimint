@@ -5,9 +5,10 @@ use std::ops::Mul;
 use std::path::Path;
 use std::str::FromStr;
 
+use ::hex::ToHex;
 use anyhow::{bail, format_err, Context};
 use bitcoin::secp256k1;
-use bitcoin_hashes::hex::{format_hex, FromHex};
+use bitcoin_hashes::hex::FromHex;
 use bitcoin_hashes::sha256::{Hash as Sha256, HashEngine};
 use bitcoin_hashes::{hex, sha256};
 use fedimint_core::cancellable::Cancelled;
@@ -210,7 +211,7 @@ pub struct FederationId(pub threshold_crypto::PublicKey);
 
 impl Display for FederationId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        format_hex(&self.0.to_bytes(), f)
+        f.write_str(&self.0.to_bytes().encode_hex::<String>().as_str())
     }
 }
 
@@ -237,10 +238,9 @@ impl FederationId {
     /// other LN senders will know that they cannot pay the invoice.
     pub fn to_fake_ln_pub_key(
         &self,
-        //secp: &secp256k1::Secp256k1<secp256k1_zkp::All>,
-        secp: &secp256k1::Secp256k1<secp256k1::All>,
+        secp: &secp256k1::Secp256k1<secp256k1_zkp::All>,
     ) -> anyhow::Result<secp256k1::PublicKey> {
-        let bytes = <Sha256 as bitcoin_hashes::Hash>::hash(&self.0.to_bytes()[..]);
+        let bytes = <Sha256 as bitcoin_hashes::Hash>::hash(&self.0.to_bytes()[..]).to_byte_array();
         let sk = secp256k1::SecretKey::from_slice(&bytes)?;
         Ok(secp256k1::PublicKey::from_secret_key(secp, &sk))
     }
@@ -881,7 +881,8 @@ pub fn load_from_file<T: DeserializeOwned>(path: &Path) -> Result<T, anyhow::Err
 pub mod serde_binary_human_readable {
     use std::borrow::Cow;
 
-    use bitcoin_hashes::hex::{FromHex, ToHex};
+    use bitcoin_hashes::hex::FromHex;
+    use hex::ToHex;
     use serde::de::DeserializeOwned;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -889,7 +890,7 @@ pub mod serde_binary_human_readable {
         if s.is_human_readable() {
             let bytes =
                 bincode::serialize(x).map_err(|e| serde::ser::Error::custom(format!("{e:?}")))?;
-            s.serialize_str(&bytes.to_hex())
+            s.serialize_str(&bytes.encode_hex::<String>())
         } else {
             Serialize::serialize(x, s)
         }

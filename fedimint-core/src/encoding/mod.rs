@@ -18,8 +18,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{cmp, mem};
 
 use anyhow::format_err;
-use bitcoin_hashes::hex::{FromHex, ToHex};
+use bitcoin_hashes::hex::FromHex;
 pub use fedimint_derive::{Decodable, Encodable, UnzipConsensus};
+use hex::ToHex;
 use lightning::util::ser::{Readable, Writeable};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -81,7 +82,7 @@ pub trait Encodable {
     fn consensus_encode_to_hex(&self) -> Result<String, std::io::Error> {
         let mut bytes = vec![];
         self.consensus_encode(&mut bytes)?;
-        Ok(bytes.to_hex())
+        Ok(bytes.encode_hex::<String>())
     }
 
     /// Generate a SHA256 hash of the consensus encoding using the default hash
