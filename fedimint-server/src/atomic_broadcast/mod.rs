@@ -35,7 +35,7 @@
 //! * As the local subgraph grows the units within it are ordered and so are the
 //!   attached batches. As soon as it is ordered the broadcast instances unpacks
 //!   our batch sends the serialization to Fedimint Consensus in the form of an
-//!   [OrderedItem] .
+//!   ordered item.
 //! * Fedimint Consensus then deserializes the item and either accepts the item
 //!   bases on its current consensus state or discards it otherwise. Fedimint
 //!   Consensus transmits its decision to its broadcast instance via the
@@ -114,7 +114,7 @@ pub enum Recipient {
     Peer(PeerId),
 }
 
-/// This enum specifies whether an [OrderedItem] has been accepted or discarded
+/// This enum specifies whether an ordered item has been accepted or discarded
 /// by Fedimint Consensus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {

@@ -694,7 +694,7 @@ mod tests {
     use fedimint_core::db::Database;
     use fedimint_core::module::registry::ModuleDecoderRegistry;
     use fedimint_core::module::ApiAuth;
-    use fedimint_core::task::{sleep, TaskGroup};
+    use fedimint_core::task::{sleep, spawn, TaskGroup};
     use fedimint_core::util::SafeUrl;
     use fedimint_core::Amount;
     use fedimint_dummy_common::config::{
@@ -884,7 +884,7 @@ mod tests {
         }
 
         // Run the Fedimint servers and test concurrently
-        tokio::spawn(async move {
+        spawn("Fedimint server apis", async move {
             join_all(apis.iter_mut().map(|api| api.run(TaskGroup::new()))).await;
         });
 

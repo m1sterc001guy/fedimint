@@ -6,6 +6,7 @@ use fedimint_core::block::{consensus_hash_sha256, SchnorrSignature};
 use tokio::sync::watch;
 
 use super::keychain::Keychain;
+use crate::LOG_CONSENSUS;
 
 type ConsensusItem = Vec<u8>;
 
@@ -80,7 +81,7 @@ impl aleph_bft::DataProvider<UnitData> for DataProvider {
                     items.push(item);
                 }
             } else {
-                tracing::error!("Consensus item length is over BYTE_LIMIT");
+                tracing::warn!(target: LOG_CONSENSUS,"Consensus item length is over BYTE_LIMIT");
             }
         }
 

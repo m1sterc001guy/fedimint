@@ -4,6 +4,7 @@ use fedimint_core::db::Database;
 
 use super::SignedBlock;
 use crate::db::{AlephUnitsKey, SignedBlockKey};
+use crate::LOG_CONSENSUS;
 
 pub async fn load_block(db: &Database, index: u64) -> Option<SignedBlock> {
     db.begin_transaction()
@@ -30,7 +31,7 @@ pub async fn open_session(db: Database, session_index: u64) -> (Cursor<Vec<u8>>,
 
     std::mem::drop(dbtx);
 
-    tracing::info!("Loaded aleph buffer with {} bytes", buffer.len());
+    tracing::info!(target: LOG_CONSENSUS,"Loaded aleph buffer with {} bytes", buffer.len());
 
     // the cursor enables aleph bft to read the units via std::io::Read
     let unit_loader = Cursor::new(buffer);

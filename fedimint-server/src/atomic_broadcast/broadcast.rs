@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::keychain::Keychain;
 use super::{db, session, Decision, Message, Recipient};
+use crate::LOG_CONSENSUS;
 
 pub struct AtomicBroadcast {
     keychain: Keychain,
@@ -49,7 +50,7 @@ impl AtomicBroadcast {
         let (ordered_item_sender, ordered_item_receiver) = mpsc::channel(256);
 
         if let Some(signed_block) = db::load_block(&self.db, index).await {
-            tracing::info!("Loaded block with index {}", index);
+            tracing::info!(target: LOG_CONSENSUS,"Loaded block with index {}", index);
 
             spawn("atomic run session db", async move {
                 let mut decision_receivers = vec![];
@@ -76,7 +77,7 @@ impl AtomicBroadcast {
                 }
             });
         } else {
-            tracing::info!("Run session with index {}", index);
+            tracing::info!(target: LOG_CONSENSUS,"Run session with index {}", index);
 
             let (backup_loader, backup_saver) = db::open_session(self.db.clone(), index).await;
 
@@ -100,18 +101,18 @@ impl AtomicBroadcast {
                 );
 
                 if let Ok(signed_block) = session_result.await {
-                    tracing::info!("Completed session with index {}", index);
-
                     db::complete_session(&db, index, signed_block.clone()).await;
+
+                    tracing::info!(target: LOG_CONSENSUS,"Completed session with index {}", index);
 
                     // signal that the session is complete. It is critical that we do so only after
                     // we call db::complete_session.
                     // Otherwise the broadcast may miss a signed block in its history if Fedimint
-                    // Consensus completes the session first and the system
+                    // Consensus signal first and the system
                     // crashes before the signed block is stable on disk.
                     ordered_item_sender.send(None).await.ok();
                 } else {
-                    tracing::warn!("Session with index {} has been interrupted", index);
+                    tracing::warn!(target: LOG_CONSENSUS,"Session with index {} has been interrupted", index);
                 }
             });
         }
