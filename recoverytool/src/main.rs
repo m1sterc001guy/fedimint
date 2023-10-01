@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 use anyhow::anyhow;
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::hashes::sha256;
 use bitcoin::hashes::sha256::Hash;
 use bitcoin::network::constants::Network;
 use bitcoin::OutPoint;
@@ -39,7 +38,6 @@ use futures::stream::StreamExt;
 use miniscript::{Descriptor, MiniscriptKey, ToPublicKey, TranslatePk, Translator};
 use secp256k1::SecretKey;
 use serde::Serialize;
-use tracing::info;
 
 /// Tool to recover the on-chain wallet of a Fedimint federation
 #[derive(Debug, Parser)]

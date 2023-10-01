@@ -46,8 +46,7 @@ use crate::core::backup::SignedBackupRequest;
 use crate::core::{Decoder, OutputOutcome};
 use crate::endpoint_constants::{
     AWAIT_OUTPUT_OUTCOME_ENDPOINT, BACKUP_ENDPOINT, CONFIG_ENDPOINT, CONFIG_HASH_ENDPOINT,
-    FETCH_EPOCH_COUNT_ENDPOINT, FETCH_EPOCH_HISTORY_ENDPOINT, RECOVER_ENDPOINT,
-    TRANSACTION_ENDPOINT, VERSION_ENDPOINT, WAIT_TRANSACTION_ENDPOINT,
+    RECOVER_ENDPOINT, TRANSACTION_ENDPOINT, VERSION_ENDPOINT, WAIT_TRANSACTION_ENDPOINT,
 };
 use crate::module::{ApiRequestErased, ApiVersion, SupportedApiVersionsSummary};
 use crate::query::{

@@ -149,13 +149,10 @@ pub fn get_global_database_migrations<'a>() -> MigrationMap<'a> {
 
 #[cfg(test)]
 mod fedimint_migration_tests {
-    use std::collections::BTreeMap;
-
     use anyhow::{ensure, Context};
     use bitcoin::{secp256k1, KeyPair};
     use bitcoin_hashes::Hash;
     use fedimint_core::api::ClientConfigDownloadToken;
-    use fedimint_core::block::{Block, SignedBlock};
     use fedimint_core::core::DynInput;
     use fedimint_core::db::{apply_migrations, DatabaseTransaction};
     use fedimint_core::epoch::{ConsensusItem, SerdeSignature, SerdeSignatureShare};
@@ -175,14 +172,13 @@ mod fedimint_migration_tests {
     use threshold_crypto::SignatureShare;
 
     use super::{
-        AcceptedTransactionKey, AlephUnitsKey, ClientConfigSignatureKey,
-        ClientConfigSignatureSharePrefix, SignedBlockKey,
+        AcceptedTransactionKey, ClientConfigSignatureKey, ClientConfigSignatureSharePrefix,
     };
     use crate::core::DynOutput;
     use crate::db::{
-        get_global_database_migrations, AcceptedTransactionKeyPrefix, AlephUnitsPrefix,
-        ClientConfigDownloadKey, ClientConfigDownloadKeyPrefix, ClientConfigSignatureShareKey,
-        DbKeyPrefix, SignedBlockPrefix, GLOBAL_DATABASE_VERSION,
+        get_global_database_migrations, AcceptedTransactionKeyPrefix, ClientConfigDownloadKey,
+        ClientConfigDownloadKeyPrefix, ClientConfigSignatureShareKey, DbKeyPrefix,
+        GLOBAL_DATABASE_VERSION,
     };
 
     /// Create a database with version 0 data. The database produced is not
