@@ -35,9 +35,12 @@ pub async fn run(
     ordered_item_sender: mpsc::Sender<Option<(OrderedItem, oneshot::Sender<Decision>)>>,
     federation_api: WsFederationApi,
 ) -> anyhow::Result<SignedBlock> {
+    // if all nodes are correct the session will take 45 to 60 seconds. The
+    // more nodes go offline the longer the session will take to complete.
+    const EXPECTED_ROUNDS_PER_SESSION: usize = 45 * 4;
+    const EXPONENTIAL_SLOWDOWN_OFFSET: usize = 3 * EXPECTED_ROUNDS_PER_SESSION;
     const MAX_ROUND: u16 = 5000;
     const ROUND_DELAY: f64 = 250.0;
-    const EXPONENTIAL_SLOWDOWN_OFFSET: usize = 3000;
     const BASE: f64 = 1.01;
 
     let mut config = aleph_bft::default_config(
@@ -52,9 +55,10 @@ pub async fn run(
     // guarantee that an attacker cannot exhaust our memory by preventing the
     // creation of a threshold signature, thereby keeping the session open
     // indefinitely. Hence we increase the delay between rounds exponentially
-    // such that MAX_ROUND would only be reached after roughly 350 years.
+    // such that MAX_ROUND would only be reached after roughly 350 years if we
+    assert!(EXPONENTIAL_SLOWDOWN_OFFSET <= 3000);
     // In case of such an attack the broadcast stops ordering any items until the
-    // attack subsides.
+    // attack subsides as not items are ordered while the signatures are collected.
     config.max_round = MAX_ROUND;
     config.delay_config.unit_creation_delay = std::sync::Arc::new(|round_index| {
         let delay = if round_index == 0 {
@@ -90,9 +94,8 @@ pub async fn run(
     .expect("some handle on non-wasm");
 
     // this is the minimum number of unit data that will be ordered before we reach
-    // the EXPONENTIAL_SLOWDOWN_OFFSET even if no malicious peer attaches unit
-    // data
-    let batches_per_block = EXPONENTIAL_SLOWDOWN_OFFSET * keychain.peer_count() / 3;
+    // the EXPONENTIAL_SLOWDOWN_OFFSET even if f peers do not attach unit data
+    let batches_per_block = EXPECTED_ROUNDS_PER_SESSION * keychain.peer_count();
     let mut num_batches = 0;
     let mut pending_items = vec![];
 
