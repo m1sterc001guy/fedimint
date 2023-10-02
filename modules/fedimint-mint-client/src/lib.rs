@@ -800,7 +800,7 @@ impl ClientModule for MintClientModule {
             .transpose()?
             .unwrap_or(EcashBackup::new_empty());
 
-        let current_block_count = api.get_block_count().await?;
+        let current_block_count = api.fetch_block_count().await?;
         let state = MintRestoreInProgressState::from_backup(
             current_block_count,
             snapshot,

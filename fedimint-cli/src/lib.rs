@@ -654,7 +654,7 @@ impl FedimintCli {
                     .build_client_ng(&self.module_inits, None)
                     .await?
                     .api()
-                    .get_block_count()
+                    .fetch_block_count()
                     .await?;
                 Ok(CliOutput::EpochCount { count })
             }

@@ -312,31 +312,30 @@ impl MintRestoreInProgressState {
                     info!(block_idx, "Fetching epoch");
 
                     let block = loop {
-                        info!(target: LOG_CLIENT_RECOVERY_MINT, block_idx, "Awaiting epoch");
-                        match api.get_block(block_idx).await {
-                            Ok(Some(signed_block)) => break signed_block.block,
-                            Ok(None) => {
-                                // TODO: better error handling, but endless looping wouldn't be good either
-                                panic!("We requested a block that doesn't exist, this should not happen");
-                            }
+                        info!(target: LOG_CLIENT_RECOVERY_MINT, block_idx, "Awaiting signed block");
+                        match api.await_signed_block(block_idx).await {
+                            Ok(signed_block) => break signed_block.block,
                             Err(e) => {
-                                info!(e = %e, block_idx, "Error trying to fetch epoch history");
+                                info!(e = %e, block_idx, "Error trying to fetch signed block");
                             }
                         }
                     };
 
                     assert_eq!(block_idx, block.index);
-                    let consensus_items = block.items.into_iter().map(|item| {
-                        let mut item_bytes_cursor = Cursor::new(item.item);
-                        let ci: ConsensusItem = Decodable::consensus_decode(&mut item_bytes_cursor, &decoders).expect("Malicious federation returned non-decodable result");
-                        // FIXME: assert cursor fully consumed
-                        (item.peer_id, ci)
-                    }).collect::<Vec<_>>();
+                    let consensus_items = block
+                        .items
+                        .into_iter()
+                        .map(|item| {
+                            let mut item_bytes_cursor = Cursor::new(item.item);
+                            let ci: ConsensusItem =
+                                Decodable::consensus_decode(&mut item_bytes_cursor, &decoders)
+                                    .expect("Malicious federation returned non-decodable result");
+                            // FIXME: assert cursor fully consumed
+                            (item.peer_id, ci)
+                        })
+                        .collect::<Vec<_>>();
 
-                    (
-                        block_idx,
-                        consensus_items,
-                    )
+                    (block_idx, consensus_items)
                 })
             })
             .buffered(8)

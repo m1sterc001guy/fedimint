@@ -82,7 +82,7 @@ impl_db_record!(
     key = SignedBlockKey,
     value = SignedBlock,
     db_prefix = DbKeyPrefix::SignedBlock,
-    notify_on_modify = false,
+    notify_on_modify = true,
 );
 impl_db_lookup!(key = SignedBlockKey, query_prefix = SignedBlockPrefix);
 

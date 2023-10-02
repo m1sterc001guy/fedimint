@@ -46,7 +46,7 @@ impl MintClientModule {
         module_instance_id: ModuleInstanceId,
     ) -> anyhow::Result<EcashBackup> {
         // fetch consensus height first - so we dont miss anything when scanning
-        let fedimint_block_count = api.get_block_count().await?;
+        let fedimint_block_count = api.fetch_block_count().await?;
 
         let notes = Self::get_all_spendable_notes(dbtx).await;
 

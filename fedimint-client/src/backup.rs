@@ -138,7 +138,7 @@ impl EncryptedClientBackup {
 impl Client {
     /// Create a backup, include provided `metadata`
     pub async fn create_backup(&self, metadata: Metadata) -> anyhow::Result<ClientBackup> {
-        let fedimint_block_count = self.inner.api.get_block_count().await?;
+        let fedimint_block_count = self.inner.api.fetch_block_count().await?;
         let mut modules = BTreeMap::new();
         let mut dbtx = self.db().begin_transaction().await;
         for (id, kind, module) in self.inner.modules.iter_modules() {

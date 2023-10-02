@@ -336,9 +336,9 @@ impl AsRef<dyn IGlobalFederationApi + 'static> for DynGlobalApi {
 pub trait GlobalFederationApi {
     async fn submit_transaction(&self, tx: Transaction) -> FederationResult<TransactionId>;
 
-    async fn get_block(&self, block_index: u64) -> FederationResult<Option<SignedBlock>>;
+    async fn await_signed_block(&self, block_index: u64) -> FederationResult<SignedBlock>;
 
-    async fn get_block_count(&self) -> FederationResult<u64>;
+    async fn fetch_block_count(&self) -> FederationResult<u64>;
 
     async fn await_transaction(&self, txid: TransactionId) -> FederationResult<TransactionId>;
 
@@ -406,13 +406,16 @@ where
         .await
     }
 
-    async fn get_block(&self, block_index: u64) -> FederationResult<Option<SignedBlock>> {
-        self.request_current_consensus("get_block".to_string(), ApiRequestErased::new(block_index))
-            .await
+    async fn await_signed_block(&self, block_index: u64) -> FederationResult<SignedBlock> {
+        self.request_current_consensus(
+            "await_signed_block".to_string(),
+            ApiRequestErased::new(block_index),
+        )
+        .await
     }
 
-    async fn get_block_count(&self) -> FederationResult<u64> {
-        self.request_current_consensus("get_block_count".to_owned(), ApiRequestErased::default())
+    async fn fetch_block_count(&self) -> FederationResult<u64> {
+        self.request_current_consensus("fetch_block_count".to_owned(), ApiRequestErased::default())
             .await
     }
 

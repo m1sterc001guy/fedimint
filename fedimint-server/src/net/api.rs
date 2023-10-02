@@ -316,7 +316,7 @@ impl ConsensusApi {
         Ok((&outcome).into())
     }
 
-    pub async fn get_block_count(&self) -> u64 {
+    pub async fn fetch_block_count(&self) -> u64 {
         self.db
             .begin_transaction()
             .await
@@ -326,12 +326,11 @@ impl ConsensusApi {
             .await as u64
     }
 
-    pub async fn get_block(&self, index: u64) -> Option<SignedBlock> {
+    pub async fn await_signed_block(&self, index: u64) -> SignedBlock {
         self.db
-            .begin_transaction()
+            .wait_key_check(&SignedBlockKey(index), std::convert::identity)
             .await
-            .get_value(&SignedBlockKey(index))
-            .await
+            .0
     }
 
     pub async fn download_client_config(&self, info: InviteCode) -> ApiResult<ClientConfig> {
@@ -367,7 +366,7 @@ impl ConsensusApi {
     pub async fn get_federation_status(&self) -> ApiResult<FederationStatus> {
         let peers_connection_status = self.peer_status_channels.get_all_status().await;
         let latest_contribution_by_peer = self.latest_contribution_by_peer.read().await.clone();
-        let session_count = self.get_block_count().await;
+        let session_count = self.fetch_block_count().await;
 
         let status_by_peer = peers_connection_status
             .into_iter()
@@ -604,15 +603,15 @@ pub fn server_endpoints() -> Vec<ApiEndpoint<ConsensusApi>> {
             }
         },
         api_endpoint! {
-            "get_block_count",
+            "fetch_block_count",
             async |fedimint: &ConsensusApi, _context, _v: ()| -> u64 {
-                Ok(fedimint.get_block_count().await)
+                Ok(fedimint.fetch_block_count().await)
             }
         },
         api_endpoint! {
-            "get_block",
-            async |fedimint: &ConsensusApi, _context, index: u64| -> Option<SignedBlock> {
-                Ok(fedimint.get_block(index).await)
+            "await_signed_block",
+            async |fedimint: &ConsensusApi, _context, index: u64| -> SignedBlock {
+                Ok(fedimint.await_signed_block(index).await)
             }
         },
         api_endpoint! {
