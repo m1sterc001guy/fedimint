@@ -149,10 +149,13 @@ pub fn get_global_database_migrations<'a>() -> MigrationMap<'a> {
 
 #[cfg(test)]
 mod fedimint_migration_tests {
+    use std::collections::BTreeMap;
+
     use anyhow::{ensure, Context};
     use bitcoin::{secp256k1, KeyPair};
     use bitcoin_hashes::Hash;
     use fedimint_core::api::ClientConfigDownloadToken;
+    use fedimint_core::block::{Block, SignedBlock};
     use fedimint_core::core::DynInput;
     use fedimint_core::db::{apply_migrations, DatabaseTransaction};
     use fedimint_core::epoch::{ConsensusItem, SerdeSignature, SerdeSignatureShare};
@@ -176,9 +179,10 @@ mod fedimint_migration_tests {
     };
     use crate::core::DynOutput;
     use crate::db::{
-        get_global_database_migrations, AcceptedTransactionKeyPrefix, ClientConfigDownloadKey,
-        ClientConfigDownloadKeyPrefix, ClientConfigSignatureShareKey, DbKeyPrefix,
-        GLOBAL_DATABASE_VERSION,
+        get_global_database_migrations, AcceptedIndex, AcceptedIndexPrefix,
+        AcceptedTransactionKeyPrefix, AlephUnitsKey, AlephUnitsPrefix, ClientConfigDownloadKey,
+        ClientConfigDownloadKeyPrefix, ClientConfigSignatureShareKey, DbKeyPrefix, SessionIndexKey,
+        SignedBlockKey, SignedBlockPrefix, GLOBAL_DATABASE_VERSION,
     };
 
     /// Create a database with version 0 data. The database produced is not
@@ -188,6 +192,9 @@ mod fedimint_migration_tests {
     /// database keys/values change - instead a new function should be added
     /// that creates a new database backup that can be tested.
     async fn create_db_with_v0_data(mut dbtx: DatabaseTransaction<'_>) {
+        dbtx.insert_new_entry(&SessionIndexKey, &0).await;
+        dbtx.insert_new_entry(&AcceptedIndex(0), &()).await;
+
         let accepted_tx_id = AcceptedTransactionKey(TransactionId::from_slice(&BYTE_32).unwrap());
 
         let (sk, _) = secp256k1::generate_keypair(&mut OsRng);
@@ -219,6 +226,21 @@ mod fedimint_migration_tests {
             .collect::<Vec<_>>();
 
         dbtx.insert_new_entry(&accepted_tx_id, &module_ids).await;
+
+        dbtx.insert_new_entry(
+            &SignedBlockKey(0),
+            &SignedBlock {
+                block: Block {
+                    index: 0,
+                    items: Vec::new(),
+                },
+                signatures: BTreeMap::new(),
+            },
+        )
+        .await;
+
+        dbtx.insert_new_entry(&AlephUnitsKey(0, 0), &vec![42, 42, 42])
+            .await;
 
         let sig_share = SignatureShare(Standard.sample(&mut OsRng));
 
@@ -286,8 +308,24 @@ mod fedimint_migration_tests {
 
                 for prefix in DbKeyPrefix::iter() {
                     match prefix {
-                        DbKeyPrefix::SessionIndex => {},
-                        DbKeyPrefix::AcceptedIndex => {},
+                        DbKeyPrefix::SessionIndex => {
+                            dbtx
+                                .get_value(&SessionIndexKey)
+                                .await
+                                .expect("validate_migrations was not able to read the SessionIndexKey");
+                        },
+                        DbKeyPrefix::AcceptedIndex => {
+                                let accepted_indexes = dbtx
+                                    .find_by_prefix(&AcceptedIndexPrefix)
+                                    .await
+                                    .collect::<Vec<_>>()
+                                    .await;
+                                let num_accepted_indexes = accepted_indexes.len();
+                                ensure!(
+                                    num_accepted_indexes > 0,
+                                    "validate_migrations was not able to read any AcceptedIndexes"
+                                );
+                        },
                         DbKeyPrefix::AcceptedTransaction => {
                                 let accepted_transactions = dbtx
                                     .find_by_prefix(&AcceptedTransactionKeyPrefix)
@@ -300,40 +338,62 @@ mod fedimint_migration_tests {
                                     "validate_migrations was not able to read any AcceptedTransactions"
                                 );
                             }
-                        DbKeyPrefix::SignedBlock => {}
-                        DbKeyPrefix::AlephUnits => {}
-                            DbKeyPrefix::ClientConfigSignature => {
-                                dbtx
-                                    .get_value(&ClientConfigSignatureKey)
-                                    .await
-                                    .expect("validate_migrations was not able to read the ClientConfigSignature");
-                            }
-                            DbKeyPrefix::ClientConfigSignatureShare => {
-                                let signature_shares = dbtx
-                                    .find_by_prefix(&ClientConfigSignatureSharePrefix)
+                        DbKeyPrefix::SignedBlock => {
+                                let signed_blocks = dbtx
+                                    .find_by_prefix(&SignedBlockPrefix)
                                     .await
                                     .collect::<Vec<_>>()
                                     .await;
-                                let num_signature_shares = signature_shares.len();
+                                let num_signed_blocks = signed_blocks.len();
                                 ensure!(
-                                    num_signature_shares > 0,
-                                    "validate_migrations was not able to read any ClientConfigSignatureShares"
+                                    num_signed_blocks > 0,
+                                    "validate_migrations was not able to read any SignedBlocks"
                                 );
-                            }
-                            DbKeyPrefix::ClientConfigDownload => {
-                                let downloads = dbtx
-                                    .find_by_prefix(&ClientConfigDownloadKeyPrefix)
+                        }
+                        DbKeyPrefix::AlephUnits => {
+                                let aleph_units = dbtx
+                                    .find_by_prefix(&AlephUnitsPrefix)
                                     .await
                                     .collect::<Vec<_>>()
                                     .await;
-                                let downloads_len = downloads.len();
+                                let num_aleph_units = aleph_units.len();
                                 ensure!(
-                                    downloads_len > 0,
-                                    "validate_migrations was not able to read any ClientConfigDownloadKey"
+                                    num_aleph_units > 0,
+                                    "validate_migrations was not able to read any AlephUnits"
                                 );
-                            }
-                            // Module prefix is reserved for modules, no migration testing is needed
-                            DbKeyPrefix::Module => {}
+                        }
+                        DbKeyPrefix::ClientConfigSignature => {
+                            dbtx
+                                .get_value(&ClientConfigSignatureKey)
+                                .await
+                                .expect("validate_migrations was not able to read the ClientConfigSignature");
+                        }
+                        DbKeyPrefix::ClientConfigSignatureShare => {
+                            let signature_shares = dbtx
+                                .find_by_prefix(&ClientConfigSignatureSharePrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let num_signature_shares = signature_shares.len();
+                            ensure!(
+                                num_signature_shares > 0,
+                                "validate_migrations was not able to read any ClientConfigSignatureShares"
+                            );
+                        }
+                        DbKeyPrefix::ClientConfigDownload => {
+                            let downloads = dbtx
+                                .find_by_prefix(&ClientConfigDownloadKeyPrefix)
+                                .await
+                                .collect::<Vec<_>>()
+                                .await;
+                            let downloads_len = downloads.len();
+                            ensure!(
+                                downloads_len > 0,
+                                "validate_migrations was not able to read any ClientConfigDownloadKey"
+                            );
+                        }
+                        // Module prefix is reserved for modules, no migration testing is needed
+                        DbKeyPrefix::Module => {}
                     }
                 }
                 Ok(())
