@@ -38,6 +38,8 @@ pub async fn run(
     // if all nodes are correct the session will take 45 to 60 seconds. The
     // more nodes go offline the longer the session will take to complete.
     const EXPECTED_ROUNDS_PER_SESSION: usize = 45 * 4;
+    // this constant needs to be 3000 or less to guarantee that the session
+    // can never reach MAX_ROUNDs.
     const EXPONENTIAL_SLOWDOWN_OFFSET: usize = 3 * EXPECTED_ROUNDS_PER_SESSION;
     const MAX_ROUND: u16 = 5000;
     const ROUND_DELAY: f64 = 250.0;
@@ -55,8 +57,7 @@ pub async fn run(
     // guarantee that an attacker cannot exhaust our memory by preventing the
     // creation of a threshold signature, thereby keeping the session open
     // indefinitely. Hence we increase the delay between rounds exponentially
-    // such that MAX_ROUND would only be reached after roughly 350 years if we
-    assert!(EXPONENTIAL_SLOWDOWN_OFFSET <= 3000);
+    // such that MAX_ROUND would only be reached after roughly 350 years.
     // In case of such an attack the broadcast stops ordering any items until the
     // attack subsides as not items are ordered while the signatures are collected.
     config.max_round = MAX_ROUND;
