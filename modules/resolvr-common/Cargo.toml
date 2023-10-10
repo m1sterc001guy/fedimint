@@ -1,0 +1,9 @@
+[package]
+name = "resolvr-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.66"
+fedimint-core ={ path = "../../fedimint-core" }
+serde = { version = "1.0.149", features = [ "derive" ] }

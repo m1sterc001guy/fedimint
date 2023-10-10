@@ -18,7 +18,10 @@ use fedimint_core::module::registry::ModuleRegistry;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::{BitcoinHash, ModuleDecoderRegistry};
 use fedimint_logging::LOG_CORE;
-use serde::de::DeserializeOwned;
+use schnorr_fun::fun::Point;
+use schnorr_fun::Signature;
+use secp256kfun::marker::{NonZero, Public, Secret, Zero};
+use serde::de::{DeserializeOwned, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tbs::{serde_impl, Scalar};
@@ -745,12 +748,19 @@ pub trait TypedServerModuleConfig: DeserializeOwned + Serialize {
     }
 }
 
+pub type FrostShareAndPop = (
+    BTreeMap<schnorr_fun::fun::Scalar<Public, NonZero>, schnorr_fun::fun::Scalar<Secret, Zero>>,
+    Signature,
+);
+
 /// Things that a `distributed_gen` config can send between peers
 // TODO: Needs to be modularized in case modules want to send new message types for DKG
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum DkgPeerMsg {
     PublicKey(secp256k1::PublicKey),
     DistributedGen(SupportedDkgMessage),
+    Polynomial(Vec<Point>),
+    ShareAndPop(FrostShareAndPop),
     // Dkg completed on our side
     Done,
 }
