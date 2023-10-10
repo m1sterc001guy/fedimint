@@ -1,0 +1,16 @@
+[package]
+name = "resolvr-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1"
+anyhow = "1.0.66"
+fedimint-core ={ path = "../../fedimint-core" }
+fedimint-server = { path = "../../fedimint-server" }
+erased-serde = "0.3"
+rand = { version = "0.8" }
+resolvr-common ={ path = "../resolvr-common" }
+schnorr_fun = "0.9.1"
+sha2 = "0.10"
+tracing = "0.1.37"
