@@ -17,8 +17,6 @@ use fedimint_wallet_server::common::config::{
     WalletGenParams, WalletGenParamsConsensus, WalletGenParamsLocal,
 };
 use fedimint_wallet_server::WalletGen;
-use resolvr_common::config::{ResolvrGenParams, ResolvrGenParamsConsensus, ResolvrGenParamsLocal};
-use resolvr_server::ResolvrGen;
 
 /// Module for creating `fedimintd` binary with custom modules
 pub mod fedimintd;
@@ -61,15 +59,6 @@ pub fn attach_default_module_init_params(
             LightningGenParams {
                 local: LightningGenParamsLocal { bitcoin_rpc },
                 consensus: LightningGenParamsConsensus { network },
-            },
-        )
-        .attach_config_gen_params(
-            3,
-            ResolvrGen::kind(),
-            ResolvrGenParams {
-                local: ResolvrGenParamsLocal {},
-                // TODO: Dont hardcode this
-                consensus: ResolvrGenParamsConsensus { threshold: 3 },
             },
         );
 }
