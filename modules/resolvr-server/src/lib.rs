@@ -1,7 +1,12 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
+use anyhow::bail;
 use async_trait::async_trait;
+use db::{
+    ResolvrNonceKey, ResolvrNonceKeyMessagePrefix, ResolvrSignatureShareKey,
+    ResolvrSignatureShareKeyPrefix,
+};
 use fedimint_core::config::{
     ConfigGenModuleParams, DkgResult, FrostShareAndPop, ServerModuleConfig,
     ServerModuleConsensusConfig, TypedServerModuleConfig, TypedServerModuleConsensusConfig,
@@ -10,32 +15,68 @@ use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::db::{Database, DatabaseVersion, MigrationMap, ModuleDatabaseTransaction};
 use fedimint_core::module::audit::Audit;
 use fedimint_core::module::{
-    ApiEndpoint, CoreConsensusVersion, ExtendsCommonModuleInit, InputMeta, ModuleConsensusVersion,
-    ModuleError, PeerHandle, ServerModuleInit, ServerModuleInitArgs, SupportedModuleApiVersions,
-    TransactionItemAmount,
+    api_endpoint, ApiEndpoint, ConsensusProposal, CoreConsensusVersion, ExtendsCommonModuleInit,
+    InputMeta, ModuleConsensusVersion, ModuleError, PeerHandle, ServerModuleInit,
+    ServerModuleInitArgs, SupportedModuleApiVersions, TransactionItemAmount,
 };
 use fedimint_core::server::DynServerModule;
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, PeerId, ServerModule};
 use fedimint_server::config::distributedgen::PeerHandleOps;
+use futures::StreamExt;
+use rand::rngs::OsRng;
 use resolvr_common::config::{
     ResolvrClientConfig, ResolvrConfig, ResolvrConfigConsensus, ResolvrConfigLocal,
     ResolvrConfigPrivate, ResolvrGenParams,
 };
 use resolvr_common::{
-    ResolvrCommonGen, ResolvrConsensusItem, ResolvrInput, ResolvrModuleTypes, ResolvrOutput,
-    ResolvrOutputOutcome, CONSENSUS_VERSION,
+    ResolvrCommonGen, ResolvrConsensusItem, ResolvrInput, ResolvrModuleTypes, ResolvrNonceKeyPair,
+    ResolvrOutput, ResolvrOutputOutcome, CONSENSUS_VERSION,
 };
-use schnorr_fun::frost::{self};
+use schnorr_fun::frost::{self, Frost};
 use schnorr_fun::fun::marker::{Public, Secret, Zero};
 use schnorr_fun::fun::{Point, Scalar};
+use schnorr_fun::musig::NonceKeyPair;
+use schnorr_fun::nonce::{GlobalRng, Synthetic};
 use schnorr_fun::{Message, Signature};
-use sha2::Sha256;
+use sha2::digest::core_api::{CoreWrapper, CtVariableCoreWrapper};
+use sha2::digest::typenum::{UInt, UTerm, B0, B1};
+use sha2::{OidSha256, Sha256, Sha256VarCore};
 use tracing::info;
+
+use crate::db::ResolvrNonceKeyPrefix;
 
 mod db;
 
-#[derive(Debug, Clone)]
-pub struct ResolvrGen;
+type ResolvrFrost = Frost<
+    CoreWrapper<
+        CtVariableCoreWrapper<
+            Sha256VarCore,
+            UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>,
+            OidSha256,
+        >,
+    >,
+    Synthetic<
+        CoreWrapper<
+            CtVariableCoreWrapper<
+                Sha256VarCore,
+                UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>,
+                OidSha256,
+            >,
+        >,
+        GlobalRng<OsRng>,
+    >,
+>;
+
+#[derive(Clone)]
+pub struct ResolvrGen {
+    pub frost: ResolvrFrost,
+}
+
+impl std::fmt::Debug for ResolvrGen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvrGen").finish()
+    }
+}
 
 #[apply(async_trait_maybe_send!)]
 impl ExtendsCommonModuleInit for ResolvrGen {
@@ -64,7 +105,7 @@ impl ServerModuleInit for ResolvrGen {
     }
 
     async fn init(&self, args: &ServerModuleInitArgs<Self>) -> anyhow::Result<DynServerModule> {
-        Ok(Resolvr::new(args.cfg().to_typed()?).into())
+        Ok(Resolvr::new(args.cfg().to_typed()?, self.frost.clone()).into())
     }
 
     fn get_database_migrations(&self) -> MigrationMap {
@@ -107,14 +148,15 @@ impl ServerModuleInit for ResolvrGen {
 
         info!("Public Polynomials Received: {public_polys_received:?}");
 
-        let frost = frost::new_with_synthetic_nonces::<Sha256, rand::rngs::OsRng>();
-        let keygen = frost
+        let keygen = self
+            .frost
             .new_keygen(public_polys_received)
             .expect("something went wrong with what was provided by the other parties");
-        let keygen_id = frost.keygen_id(&keygen);
+        let keygen_id = self.frost.keygen_id(&keygen);
         let pop_message = Message::raw(&keygen_id);
         let (shares_i_generated, pop) =
-            frost.create_shares_and_pop(&keygen, &my_secret_poly, pop_message);
+            self.frost
+                .create_shares_and_pop(&keygen, &my_secret_poly, pop_message);
 
         // Exchange shares and proof-of-possession
         let shares_and_pop: BTreeMap<PeerId, FrostShareAndPop> = peers
@@ -142,7 +184,8 @@ impl ServerModuleInit for ResolvrGen {
             })
             .collect::<BTreeMap<Scalar<Public>, (Scalar<Secret, Zero>, Signature)>>();
 
-        let (my_secret_share, frost_key) = frost
+        let (my_secret_share, frost_key) = self
+            .frost
             .finish_keygen(keygen.clone(), my_index, my_shares, pop_message)
             .expect("Finish keygen failed");
 
@@ -150,7 +193,7 @@ impl ServerModuleInit for ResolvrGen {
 
         Ok(ResolvrConfig {
             local: ResolvrConfigLocal {},
-            private: ResolvrConfigPrivate {},
+            private: ResolvrConfigPrivate { my_secret_share },
             consensus: ResolvrConfigConsensus { threshold },
         }
         .to_erased())
@@ -178,9 +221,33 @@ fn peer_id_to_scalar(peer_id: &PeerId) -> Scalar<Public> {
     Scalar::from_non_zero_u32(NonZeroU32::new(id).expect("NonZeroU32 returned None")).public()
 }
 
-#[derive(Debug)]
 pub struct Resolvr {
     pub cfg: ResolvrConfig,
+    pub frost: Frost<
+        CoreWrapper<
+            CtVariableCoreWrapper<
+                Sha256VarCore,
+                UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>,
+                OidSha256,
+            >,
+        >,
+        Synthetic<
+            CoreWrapper<
+                CtVariableCoreWrapper<
+                    Sha256VarCore,
+                    UInt<UInt<UInt<UInt<UInt<UInt<UTerm, B1>, B0>, B0>, B0>, B0>, B0>,
+                    OidSha256,
+                >,
+            >,
+            GlobalRng<OsRng>,
+        >,
+    >,
+}
+
+impl std::fmt::Debug for Resolvr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resolvr").field("cfg", &self.cfg).finish()
+    }
 }
 
 #[async_trait]
@@ -191,17 +258,79 @@ impl ServerModule for Resolvr {
 
     async fn consensus_proposal(
         &self,
-        _dbtx: &mut ModuleDatabaseTransaction<'_>,
+        dbtx: &mut ModuleDatabaseTransaction<'_>,
     ) -> Vec<ResolvrConsensusItem> {
-        vec![]
+        let nonce_requests: Vec<_> = dbtx
+            .find_by_prefix(&ResolvrNonceKeyPrefix)
+            .await
+            .collect::<Vec<_>>()
+            .await;
+
+        let consensus_items = nonce_requests
+            .into_iter()
+            .filter(|(_, nonce)| nonce.is_none())
+            .map(|(msg, _)| {
+                ResolvrConsensusItem::Nonce(
+                    msg.0,
+                    ResolvrNonceKeyPair(NonceKeyPair::random(&mut rand::rngs::OsRng)),
+                )
+            });
+
+        let sig_requests: Vec<_> = dbtx
+            .find_by_prefix(&ResolvrSignatureShareKeyPrefix)
+            .await
+            .collect::<Vec<_>>()
+            .await;
+        sig_requests
+            .into_iter()
+            .filter(|(_, sig)| sig.is_none())
+            .map(|(msg, sig)| {
+                //let session = frost.start_sign_session();
+                //todo!()
+                (msg, sig)
+            });
+
+        consensus_items.collect()
     }
 
     async fn process_consensus_item<'a, 'b>(
         &'a self,
-        _dbtx: &mut ModuleDatabaseTransaction<'b>,
-        _consensus_item: ResolvrConsensusItem,
-        _peer_id: PeerId,
+        dbtx: &mut ModuleDatabaseTransaction<'b>,
+        consensus_item: ResolvrConsensusItem,
+        peer_id: PeerId,
     ) -> anyhow::Result<()> {
+        // Insert newly received nonces into the database
+        match consensus_item {
+            ResolvrConsensusItem::Nonce(msg, nonce) => {
+                if dbtx
+                    .get_value(&ResolvrNonceKey(msg.clone(), peer_id))
+                    .await
+                    .is_some()
+                {
+                    bail!("Already received a nonce for this message");
+                }
+
+                dbtx.insert_new_entry(&ResolvrNonceKey(msg.clone(), peer_id), &Some(nonce))
+                    .await;
+
+                let nonces = dbtx
+                    .find_by_prefix(&ResolvrNonceKeyMessagePrefix(msg.clone()))
+                    .await
+                    .collect::<Vec<_>>()
+                    .await;
+
+                // Check if we have enough nonces to begin a signing session
+                if nonces.len() <= self.cfg.consensus.threshold as usize {
+                    return Ok(());
+                }
+
+                dbtx.insert_new_entry(&ResolvrSignatureShareKey(msg.clone(), peer_id), &None)
+                    .await;
+            }
+        }
+
+        // Collect all of the nonces we've received so far
+
         Ok(())
     }
 
@@ -256,13 +385,20 @@ impl ServerModule for Resolvr {
     }
 
     fn api_endpoints(&self) -> Vec<ApiEndpoint<Self>> {
-        vec![]
+        vec![api_endpoint! {
+            "sign_message",
+            async |module: &Resolvr, context, message: String| -> () {
+                Ok(())
+            }
+        }]
     }
 }
 
 impl Resolvr {
-    pub fn new(cfg: ResolvrConfig) -> Resolvr {
-        Self { cfg }
+    pub fn new(cfg: ResolvrConfig, frost: ResolvrFrost) -> Resolvr {
+        //Self { cfg, frost: frost::new_with_synthetic_nonces::<Sha256,
+        // rand::rngs::OsRng>() }
+        Self { cfg, frost }
     }
 }
 

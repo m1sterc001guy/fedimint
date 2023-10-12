@@ -8,9 +8,11 @@ async-trait = "0.1"
 anyhow = "1.0.66"
 fedimint-core ={ path = "../../fedimint-core" }
 fedimint-server = { path = "../../fedimint-server" }
+futures = "0.3.28"
 erased-serde = "0.3"
 rand = { version = "0.8" }
 resolvr-common ={ path = "../resolvr-common" }
-schnorr_fun = "0.9.1"
+schnorr_fun = { version = "0.9.1", features = ["serde", "bincode"] }
 sha2 = "0.10"
+serde = { version = "1.0.149", features = [ "derive" ] }
 tracing = "0.1.37"
