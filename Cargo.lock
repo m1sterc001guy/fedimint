@@ -2175,9 +2175,11 @@ dependencies = [
  "resolvr-common",
  "resolvr-server",
  "ring",
+ "schnorr_fun",
  "secp256k1-zkp",
  "serde",
  "serde_json",
+ "sha2",
  "sha3",
  "tbs",
  "thiserror",
@@ -4291,6 +4293,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fedimint-core",
+ "schnorr_fun",
  "serde",
 ]
 
@@ -4303,9 +4306,11 @@ dependencies = [
  "erased-serde",
  "fedimint-core",
  "fedimint-server",
+ "futures",
  "rand",
  "resolvr-common",
  "schnorr_fun",
+ "serde",
  "sha2",
  "tracing",
 ]

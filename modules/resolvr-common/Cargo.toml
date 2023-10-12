@@ -7,3 +7,4 @@ edition = "2021"
 anyhow = "1.0.66"
 fedimint-core ={ path = "../../fedimint-core" }
 serde = { version = "1.0.149", features = [ "derive" ] }
+schnorr_fun = { version = "0.9.1", features = ["serde", "bincode"] }

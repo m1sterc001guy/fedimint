@@ -1,6 +1,10 @@
 use fedimint_core::core::ModuleKind;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::plugin_types_trait_impl_config;
+use schnorr_fun::frost::FrostKey;
+use schnorr_fun::fun::bincode::Encode;
+use schnorr_fun::fun::marker::{Normal, Secret};
+use schnorr_fun::fun::Scalar;
 use serde::{Deserialize, Serialize};
 
 use crate::ResolvrCommonGen;
@@ -44,10 +48,32 @@ pub struct ResolvrConfigLocal;
 #[derive(Clone, Debug, Serialize, Deserialize, Encodable, Decodable)]
 pub struct ResolvrConfigConsensus {
     pub threshold: u32,
+    //pub frost_key: FrostKey<Normal>,
 }
 
+// TODO: How do we save the FrostKey from DKG??
+/*
+impl Encodable for ResolvrConfigConsensus {
+    fn consensus_encode<W: std::io::Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
+        self.frost_key.into_xonly_key().encode(writer);
+        todo!()
+    }
+}
+
+impl Decodable for ResolvrConfigConsensus {
+    fn consensus_decode<R: std::io::Read>(
+        r: &mut R,
+        _modules: &fedimint_core::module::registry::ModuleDecoderRegistry,
+    ) -> Result<Self, fedimint_core::encoding::DecodeError> {
+        todo!()
+    }
+}
+*/
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ResolvrConfigPrivate;
+pub struct ResolvrConfigPrivate {
+    pub my_secret_share: Scalar<Secret>,
+}
 
 plugin_types_trait_impl_config!(
     ResolvrCommonGen,
