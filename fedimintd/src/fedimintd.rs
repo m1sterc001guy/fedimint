@@ -24,7 +24,6 @@ use fedimint_server::config::io::{CODE_VERSION, DB_FILE, PLAINTEXT_PASSWORD};
 use fedimint_server::FedimintServer;
 use fedimint_wallet_server::WalletGen;
 use futures::FutureExt;
-use resolvr_server::ResolvrGen;
 use tokio::select;
 use tracing::{debug, error, info, warn};
 
@@ -177,7 +176,6 @@ impl Fedimintd {
         self.with_module(LightningGen)
             .with_module(MintGen)
             .with_module(WalletGen)
-            .with_module(ResolvrGen)
     }
 
     pub async fn run(self) -> ! {

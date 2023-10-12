@@ -100,14 +100,12 @@ impl ServerModuleInit for ResolvrGen {
         let public_polys_received = peer_polynomials
             .iter()
             .map(|(peer, poly)| {
-                let id = peer.to_usize() as u32;
-                let index = Scalar::from_non_zero_u32(
-                    NonZeroU32::new(id).expect("NonZeroU32 returned None"),
-                )
-                .public();
+                let index = peer_id_to_scalar(peer);
                 (index, poly.clone())
             })
             .collect::<BTreeMap<Scalar<Public>, Vec<Point>>>();
+
+        info!("Public Polynomials Received: {public_polys_received:?}");
 
         let frost = frost::new_with_synthetic_nonces::<Sha256, rand::rngs::OsRng>();
         let keygen = frost
@@ -126,23 +124,18 @@ impl ServerModuleInit for ResolvrGen {
             )
             .await?;
 
-        let my_id = peers.our_id.to_usize() as u32;
-        let my_index =
-            Scalar::from_non_zero_u32(NonZeroU32::new(my_id).expect("NonZero U32 returned None"))
-                .public();
+        info!("Shares and Pop: {shares_and_pop:?}");
+
+        let my_index = peer_id_to_scalar(&peers.our_id);
 
         let my_shares = shares_and_pop
             .iter()
             .map(|(peer, shares_from_peer)| {
-                let id = peer.to_usize() as u32;
-                let index = Scalar::from_non_zero_u32(
-                    NonZeroU32::new(id).expect("NonZeroU32 returned None"),
-                )
-                .public();
+                let index = peer_id_to_scalar(peer);
                 (
                     index,
                     (
-                        shares_from_peer.0.get(&index).unwrap().clone(),
+                        shares_from_peer.0.get(&my_index).unwrap().clone(),
                         shares_from_peer.1.clone(),
                     ),
                 )
@@ -153,7 +146,7 @@ impl ServerModuleInit for ResolvrGen {
             .finish_keygen(keygen.clone(), my_index, my_shares, pop_message)
             .expect("Finish keygen failed");
 
-        info!("MyId: {my_id} MySecretShare: {my_secret_share} FrostKey: {frost_key:?}");
+        info!("MyIndex: {my_index} MySecretShare: {my_secret_share} FrostKey: {frost_key:?}");
 
         Ok(ResolvrConfig {
             local: ResolvrConfigLocal {},
@@ -178,6 +171,11 @@ impl ServerModuleInit for ResolvrGen {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+}
+
+fn peer_id_to_scalar(peer_id: &PeerId) -> Scalar<Public> {
+    let id = (peer_id.to_usize() + 1) as u32;
+    Scalar::from_non_zero_u32(NonZeroU32::new(id).expect("NonZeroU32 returned None")).public()
 }
 
 #[derive(Debug)]
