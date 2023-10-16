@@ -194,7 +194,10 @@ impl ServerModuleInit for ResolvrGen {
         Ok(ResolvrConfig {
             local: ResolvrConfigLocal {},
             private: ResolvrConfigPrivate { my_secret_share },
-            consensus: ResolvrConfigConsensus { threshold },
+            consensus: ResolvrConfigConsensus {
+                threshold,
+                frost_key,
+            },
         }
         .to_erased())
     }
@@ -276,19 +279,22 @@ impl ServerModule for Resolvr {
                 )
             });
 
+        let frost_key = self.cfg.consensus.frost_key.clone();
+
         let sig_requests: Vec<_> = dbtx
             .find_by_prefix(&ResolvrSignatureShareKeyPrefix)
             .await
             .collect::<Vec<_>>()
             .await;
-        sig_requests
-            .into_iter()
-            .filter(|(_, sig)| sig.is_none())
-            .map(|(msg, sig)| {
-                //let session = frost.start_sign_session();
-                //todo!()
-                (msg, sig)
-            });
+        //sig_requests
+        //    .into_iter()
+        //    .filter(|(_, sig)| sig.is_none())
+        //    .map(|(msg, sig)| {
+        // TODO: Get nonces here, start sign session, and sign signature share
+        //let session = frost.start_sign_session(frost_key.into_xonly_key());
+        //todo!()
+        //        (msg, sig)
+        //    });
 
         consensus_items.collect()
     }
@@ -326,7 +332,7 @@ impl ServerModule for Resolvr {
 
                 dbtx.insert_new_entry(&ResolvrSignatureShareKey(msg.clone(), peer_id), &None)
                     .await;
-            }
+            } // TODO: Construct all signature shares here and produce a signature
         }
 
         // Collect all of the nonces we've received so far
