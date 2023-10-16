@@ -1,9 +1,11 @@
+use std::io::ErrorKind;
+
 use fedimint_core::core::ModuleKind;
-use fedimint_core::encoding::{Decodable, Encodable};
+use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
 use fedimint_core::plugin_types_trait_impl_config;
 use schnorr_fun::frost::FrostKey;
 use schnorr_fun::fun::bincode::Encode;
-use schnorr_fun::fun::marker::{Normal, Secret};
+use schnorr_fun::fun::marker::{EvenY, Normal, Secret};
 use schnorr_fun::fun::Scalar;
 use serde::{Deserialize, Serialize};
 
@@ -45,18 +47,22 @@ pub struct ResolvrClientConfig;
 #[derive(Clone, Debug, Serialize, Deserialize, Encodable, Decodable)]
 pub struct ResolvrConfigLocal;
 
-#[derive(Clone, Debug, Serialize, Deserialize, Encodable, Decodable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolvrConfigConsensus {
     pub threshold: u32,
-    //pub frost_key: FrostKey<Normal>,
+    pub frost_key: FrostKey<Normal>,
 }
 
 // TODO: How do we save the FrostKey from DKG??
-/*
 impl Encodable for ResolvrConfigConsensus {
     fn consensus_encode<W: std::io::Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
-        self.frost_key.into_xonly_key().encode(writer);
-        todo!()
+        let threshold_bytes = self.threshold.to_le_bytes();
+        let frost_key_bytes = bincode::serialize(&self.frost_key).map_err(|_| {
+            std::io::Error::new(ErrorKind::Other, format!("Error serializing FrostKey"))
+        })?;
+        writer.write(&threshold_bytes.as_slice())?;
+        writer.write(&frost_key_bytes.as_slice())?;
+        Ok(threshold_bytes.len() + frost_key_bytes.len())
     }
 }
 
@@ -65,10 +71,25 @@ impl Decodable for ResolvrConfigConsensus {
         r: &mut R,
         _modules: &fedimint_core::module::registry::ModuleDecoderRegistry,
     ) -> Result<Self, fedimint_core::encoding::DecodeError> {
-        todo!()
+        let mut threshold_bytes = [0; 4]; // Assuming u32 threshold
+        r.read_exact(&mut threshold_bytes)
+            .map_err(|_| DecodeError::from_str("Failed to read threshold bytes"))?;
+        let threshold = u32::from_le_bytes(threshold_bytes);
+
+        // Now, you need to read and deserialize the FrostKey
+        let mut frost_key_bytes = Vec::new();
+        r.read_to_end(&mut frost_key_bytes)
+            .map_err(|_| DecodeError::from_str("Failed to read FrostKey bytes"))?;
+        let frost_key: FrostKey<Normal> = bincode::deserialize(&frost_key_bytes)
+            .map_err(|_| DecodeError::from_str("Error deserializing FrostKey"))?;
+
+        // Create and return the ResolvrConfigConsensus
+        Ok(ResolvrConfigConsensus {
+            threshold,
+            frost_key,
+        })
     }
 }
-*/
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolvrConfigPrivate {
