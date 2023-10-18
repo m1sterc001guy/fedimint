@@ -7,7 +7,7 @@ use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
 use fedimint_core::module::registry::ModuleInstanceId;
 use fedimint_core::module::{CommonModuleInit, ModuleCommon, ModuleConsensusVersion};
 use fedimint_core::plugin_types_trait_impl_common;
-use schnorr_fun::fun::marker::Public;
+use schnorr_fun::fun::marker::{Public, Zero};
 use schnorr_fun::fun::Scalar;
 use schnorr_fun::musig::NonceKeyPair;
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,7 @@ pub const CONSENSUS_VERSION: ModuleConsensusVersion = ModuleConsensusVersion(0);
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
 pub enum ResolvrConsensusItem {
     Nonce(String, ResolvrNonceKeyPair),
+    FrostSigShare(String, ResolvrSignatureShare),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
@@ -128,8 +129,8 @@ impl Decodable for ResolvrNonceKeyPair {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
-pub struct ResolvrSignatureShare(pub Scalar<Public>);
+#[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Eq, Hash)]
+pub struct ResolvrSignatureShare(pub Scalar<Public, Zero>);
 
 impl Encodable for ResolvrSignatureShare {
     fn consensus_encode<W: std::io::Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
@@ -148,9 +149,7 @@ impl Decodable for ResolvrSignatureShare {
         r.read_exact(&mut bytes)
             .map_err(|_| DecodeError::from_str("Failed to decode ResolvrSignatureShare"))?;
         match Scalar::from_bytes(bytes) {
-            Some(share) => Ok(ResolvrSignatureShare(
-                share.non_zero().expect("SignatureShare cannot be zero"),
-            )),
+            Some(share) => Ok(ResolvrSignatureShare(share)),
             None => Err(DecodeError::from_str(
                 "Failed to create ResolvrSignatureShare from bytes",
             )),
