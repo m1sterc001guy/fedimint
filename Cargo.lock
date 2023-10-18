@@ -1297,6 +1297,7 @@ dependencies = [
  "futures",
  "lightning-invoice 0.24.0",
  "rand",
+ "resolvr-client",
  "serde",
  "serde_json",
  "thiserror",
@@ -4285,6 +4286,19 @@ dependencies = [
  "web-sys",
  "webpki-roots 0.25.2",
  "winreg",
+]
+
+[[package]]
+name = "resolvr-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "erased-serde",
+ "fedimint-client",
+ "fedimint-core",
+ "resolvr-common",
+ "serde",
 ]
 
 [[package]]

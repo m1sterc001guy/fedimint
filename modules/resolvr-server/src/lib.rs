@@ -488,6 +488,7 @@ impl ServerModule for Resolvr {
         vec![api_endpoint! {
             "sign_message",
             async |module: &Resolvr, context, message: String| -> () {
+                info!("Received sign_message request. Message: {message}");
                 Ok(())
             }
         }]
