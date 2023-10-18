@@ -24,6 +24,7 @@ use fedimint_ln_common::contracts::ContractId;
 use fedimint_mint_client::{MintClientExt, MintClientModule, OOBNotes};
 use fedimint_wallet_client::{WalletClientExt, WalletClientModule, WithdrawState};
 use futures::StreamExt;
+use resolvr_client::ResolvrClientExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::iso8601;
@@ -136,6 +137,10 @@ pub enum ClientCmd {
     },
     /// Returns the client config
     Config,
+    SignMessage {
+        #[clap(long)]
+        msg: String,
+    },
 }
 
 pub fn parse_gateway_id(s: &str) -> Result<secp256k1::PublicKey, secp256k1::Error> {
@@ -474,6 +479,10 @@ pub async fn handle_command(
         ClientCmd::Config => {
             let config = client.get_config_json();
             Ok(serde_json::to_value(config).expect("Client config is serializable"))
+        }
+        ClientCmd::SignMessage { msg } => {
+            client.request_sign_message(msg).await?;
+            Ok(json!("Done"))
         }
     }
 }
