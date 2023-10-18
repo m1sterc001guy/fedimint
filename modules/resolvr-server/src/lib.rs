@@ -489,6 +489,9 @@ impl ServerModule for Resolvr {
             "sign_message",
             async |module: &Resolvr, context, message: String| -> () {
                 info!("Received sign_message request. Message: {message}");
+                let mut dbtx = context.dbtx();
+                let my_id = module.cfg.private.my_peer_id;
+                dbtx.insert_new_entry(&ResolvrNonceKey(message, my_id), &None).await;
                 Ok(())
             }
         }]
@@ -497,8 +500,6 @@ impl ServerModule for Resolvr {
 
 impl Resolvr {
     pub fn new(cfg: ResolvrConfig, frost: ResolvrFrost) -> Resolvr {
-        //Self { cfg, frost: frost::new_with_synthetic_nonces::<Sha256,
-        // rand::rngs::OsRng>() }
         Self { cfg, frost }
     }
 
@@ -510,8 +511,10 @@ impl Resolvr {
             .find_by_prefix(&ResolvrNonceKeyMessagePrefix(msg))
             .await
             .map(|(key, nonce)| {
-                //(peer_id_to_scalar(&key.1), nonce.expect("TODO: Filter out nonces that are Nonce").0.public())
-                (peer_id_to_scalar(&key.1), nonce.expect("TODO: Filter out nonces that are Nonce").0)
+                (
+                    peer_id_to_scalar(&key.1),
+                    nonce.expect("TODO: Filter out nonces that are Nonce").0,
+                )
             })
             .collect::<BTreeMap<_, _>>()
             .await;
