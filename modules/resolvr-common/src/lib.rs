@@ -12,6 +12,7 @@ use schnorr_fun::fun::Scalar;
 use schnorr_fun::musig::NonceKeyPair;
 use serde::{Deserialize, Serialize};
 
+pub mod api;
 pub mod config;
 
 /// Unique name for this module
