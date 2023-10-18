@@ -12,17 +12,17 @@ use fedimint_core::config::{
     ServerModuleConsensusConfig, TypedServerModuleConfig, TypedServerModuleConsensusConfig,
 };
 use fedimint_core::core::ModuleInstanceId;
-use fedimint_core::db::{Database, DatabaseVersion, MigrationMap, ModuleDatabaseTransaction};
+use fedimint_core::db::{DatabaseVersion, MigrationMap, ModuleDatabaseTransaction};
 use fedimint_core::module::audit::Audit;
 use fedimint_core::module::{
-    api_endpoint, ApiEndpoint, ConsensusProposal, CoreConsensusVersion, ExtendsCommonModuleInit,
-    InputMeta, ModuleConsensusVersion, ModuleError, PeerHandle, ServerModuleInit,
-    ServerModuleInitArgs, SupportedModuleApiVersions, TransactionItemAmount,
+    api_endpoint, ApiEndpoint, CoreConsensusVersion, ExtendsCommonModuleInit, InputMeta,
+    ModuleConsensusVersion, ModuleError, PeerHandle, ServerModuleInit, ServerModuleInitArgs,
+    SupportedModuleApiVersions, TransactionItemAmount,
 };
 use fedimint_core::server::DynServerModule;
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, PeerId, ServerModule};
 use fedimint_server::config::distributedgen::PeerHandleOps;
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use rand::rngs::OsRng;
 use resolvr_common::config::{
     ResolvrClientConfig, ResolvrConfig, ResolvrConfigConsensus, ResolvrConfigLocal,
@@ -40,7 +40,7 @@ use schnorr_fun::nonce::{GlobalRng, Synthetic};
 use schnorr_fun::{Message, Signature};
 use sha2::digest::core_api::{CoreWrapper, CtVariableCoreWrapper};
 use sha2::digest::typenum::{UInt, UTerm, B0, B1};
-use sha2::{OidSha256, Sha256, Sha256VarCore};
+use sha2::{OidSha256, Sha256VarCore};
 use tracing::info;
 
 use crate::db::ResolvrNonceKeyPrefix;
@@ -114,8 +114,8 @@ impl ServerModuleInit for ResolvrGen {
 
     fn trusted_dealer_gen(
         &self,
-        peers: &[PeerId],
-        params: &ConfigGenModuleParams,
+        _peers: &[PeerId],
+        _params: &ConfigGenModuleParams,
     ) -> BTreeMap<PeerId, ServerModuleConfig> {
         todo!()
     }
@@ -283,6 +283,18 @@ impl ServerModule for Resolvr {
             })
             .collect::<Vec<_>>();
 
+        let my_peer_id = self.cfg.private.my_peer_id;
+        for item in consensus_items.clone() {
+            match item {
+                ResolvrConsensusItem::Nonce(msg, nonce) => {
+                    info!("Inserting Nonce for myself!");
+                    dbtx.insert_entry(&ResolvrNonceKey(msg, my_peer_id), &Some(nonce))
+                        .await;
+                }
+                _ => panic!("Unexpected consensus item"),
+            }
+        }
+
         let frost_key = self.cfg.consensus.frost_key.clone();
         let xonly_frost_key = frost_key.into_xonly_key();
 
@@ -330,6 +342,17 @@ impl ServerModule for Resolvr {
             ));
         }
 
+        for item in sig_shares.clone() {
+            match item {
+                ResolvrConsensusItem::FrostSigShare(msg, sig_share) => {
+                    info!("Inserting SigShare for myself!");
+                    dbtx.insert_entry(&ResolvrSignatureShareKey(msg, my_peer_id), &Some(sig_share))
+                        .await;
+                }
+                _ => panic!("Unexpected consensus item"),
+            }
+        }
+
         consensus_items.append(&mut sig_shares);
         consensus_items
     }
@@ -351,6 +374,7 @@ impl ServerModule for Resolvr {
                     bail!("Already received a nonce for this message and peer. PeerId: {peer_id}");
                 }
 
+                info!("Found NonceConsensusItem from {peer_id}. Writing to database.");
                 dbtx.insert_new_entry(&ResolvrNonceKey(msg.clone(), peer_id), &Some(nonce))
                     .await;
 
@@ -361,10 +385,15 @@ impl ServerModule for Resolvr {
                     .await;
 
                 // Check if we have enough nonces to begin a signing session
-                if nonces.len() <= self.cfg.consensus.threshold as usize {
+                info!("NoncesLen: {} Threshold: {}", nonces.len(), "4");
+                //if nonces.len() <= self.cfg.consensus.threshold as usize {
+                // TODO: FIX THIS
+                if nonces.len() < 4 {
+                    info!("Returning because we do not have enough nonces");
                     return Ok(());
                 }
 
+                info!("Creating request to sign the message with our share");
                 dbtx.insert_new_entry(&ResolvrSignatureShareKey(msg.clone(), peer_id), &None)
                     .await;
             }
@@ -393,15 +422,18 @@ impl ServerModule for Resolvr {
                         .start_sign_session(&xonly_frost_key, session_nonces, message);
 
                 let curr_index = peer_id_to_scalar(&peer_id);
+                info!("Verifying received signature share...");
                 if !self.frost.verify_signature_share(
                     &xonly_frost_key,
                     &session,
                     curr_index,
                     share.0,
                 ) {
+                    info!("RECEIVED SIGNATURE SHARE WAS INVALID");
                     return Err(anyhow!("Signature share from {peer_id} is not valid"));
                 }
 
+                info!("Found signature share from {peer_id}, saving to database");
                 dbtx.insert_new_entry(
                     &ResolvrSignatureShareKey(msg.clone(), peer_id),
                     &Some(share),
@@ -415,10 +447,14 @@ impl ServerModule for Resolvr {
                     .collect::<Vec<_>>()
                     .await;
 
-                if sig_shares.len() <= self.cfg.consensus.threshold as usize {
+                // TODO: FIX THIS
+                info!("SigShares len: {} Threshold: {}", sig_shares.len(), "4");
+                if sig_shares.len() < 4 {
+                    info!("Returning because we do not have enough signature shares");
                     return Ok(());
                 }
 
+                info!("Combining signature shares...");
                 // Try to combine the messages into a signature
                 let combined_sig =
                     self.frost
@@ -507,6 +543,7 @@ impl Resolvr {
         dbtx: &mut ModuleDatabaseTransaction<'_>,
         msg: String,
     ) -> BTreeMap<Scalar<Public>, NonceKeyPair> {
+        /*
         let nonces = dbtx
             .find_by_prefix(&ResolvrNonceKeyMessagePrefix(msg))
             .await
@@ -518,6 +555,20 @@ impl Resolvr {
             })
             .collect::<BTreeMap<_, _>>()
             .await;
+        nonces
+        */
+        let mut nonces = BTreeMap::new();
+        let potential_nonces = dbtx
+            .find_by_prefix(&ResolvrNonceKeyMessagePrefix(msg))
+            .await
+            .collect::<Vec<_>>()
+            .await;
+        for (key, nonce) in potential_nonces {
+            if let Some(nonce) = nonce {
+                nonces.insert(peer_id_to_scalar(&key.1), nonce.0);
+            }
+        }
+
         nonces
     }
 }
