@@ -11,6 +11,7 @@ use serde::Serialize;
 pub enum DbKeyPrefix {
     Nonce = 0x01,
     SignatureShare = 0x02,
+    MessageSignRequest = 0x03,
 }
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
@@ -24,7 +25,7 @@ pub struct ResolvrNonceKeyPrefix;
 
 impl_db_record!(
     key = ResolvrNonceKey,
-    value = Option<ResolvrNonceKeyPair>,
+    value = ResolvrNonceKeyPair,
     db_prefix = DbKeyPrefix::Nonce
 );
 
@@ -54,3 +55,12 @@ pub struct ResolvrSignatureShareKeyMessagePrefix(pub String);
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
 pub struct ResolvrSignatureShareKeyPrefix;
+
+#[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
+pub struct MessageSignRequest;
+
+impl_db_record!(
+    key = MessageSignRequest,
+    value = String,
+    db_prefix = DbKeyPrefix::MessageSignRequest
+);
