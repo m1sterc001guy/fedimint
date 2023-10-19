@@ -21,7 +21,7 @@ use fedimint_logging::LOG_CORE;
 use schnorr_fun::fun::Point;
 use schnorr_fun::Signature;
 use secp256kfun::marker::{NonZero, Public, Secret, Zero};
-use serde::de::{DeserializeOwned, Visitor};
+use serde::de::DeserializeOwned;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tbs::{serde_impl, Scalar};
