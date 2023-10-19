@@ -4,8 +4,7 @@ use fedimint_core::core::ModuleKind;
 use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
 use fedimint_core::{plugin_types_trait_impl_config, PeerId};
 use schnorr_fun::frost::FrostKey;
-use schnorr_fun::fun::bincode::Encode;
-use schnorr_fun::fun::marker::{EvenY, Normal, Secret};
+use schnorr_fun::fun::marker::{Normal, Secret};
 use schnorr_fun::fun::Scalar;
 use serde::{Deserialize, Serialize};
 

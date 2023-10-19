@@ -21,7 +21,7 @@ pub trait ResolvrClientExt {
 #[apply(async_trait_maybe_send)]
 impl ResolvrClientExt for Client {
     async fn request_sign_message(&self, msg: String) -> anyhow::Result<()> {
-        let (resolvr, instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
+        let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
         resolvr.module_api.request_sign_message(msg).await?;
         Ok(())
     }
@@ -36,10 +36,10 @@ impl ExtendsCommonModuleInit for ResolvrClientGen {
 
     async fn dump_database(
         &self,
-        dbtx: &mut ModuleDatabaseTransaction<'_>,
-        prefix_names: Vec<String>,
+        _dbtx: &mut ModuleDatabaseTransaction<'_>,
+        _prefix_names: Vec<String>,
     ) -> Box<dyn Iterator<Item = (String, Box<dyn erased_serde::Serialize + Send>)> + '_> {
-        todo!()
+        Box::new(vec![].into_iter())
     }
 }
 
@@ -78,18 +78,17 @@ impl ClientModule for ResolvrClientModule {
         ResolvrClientContext {}
     }
 
-    fn input_amount(&self, input: &<Self::Common as ModuleCommon>::Input) -> TransactionItemAmount {
+    fn input_amount(
+        &self,
+        _input: &<Self::Common as ModuleCommon>::Input,
+    ) -> TransactionItemAmount {
         todo!()
     }
 
     fn output_amount(
         &self,
-        output: &<Self::Common as ModuleCommon>::Output,
+        _output: &<Self::Common as ModuleCommon>::Output,
     ) -> TransactionItemAmount {
-        todo!()
-    }
-
-    fn get_config(&self) -> <<Self as ClientModule>::Common as ModuleCommon>::ClientConfig {
         todo!()
     }
 }
@@ -111,8 +110,8 @@ impl State for ResolvrClientStateMachines {
 
     fn transitions(
         &self,
-        context: &Self::ModuleContext,
-        global_context: &Self::GlobalContext,
+        _context: &Self::ModuleContext,
+        _global_context: &Self::GlobalContext,
     ) -> Vec<fedimint_client::sm::StateTransition<Self>> {
         vec![]
     }

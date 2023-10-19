@@ -4,8 +4,8 @@ use std::num::NonZeroU32;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use db::{
-    MessageSignRequest, ResolvrNonceKey, ResolvrNonceKeyMessagePrefix, ResolvrSignatureShareKey,
-    ResolvrSignatureShareKeyMessagePrefix, ResolvrSignatureShareKeyPrefix,
+    MessageNonceRequest, MessageSignRequest, ResolvrNonceKey, ResolvrNonceKeyMessagePrefix,
+    ResolvrSignatureShareKey, ResolvrSignatureShareKeyMessagePrefix,
 };
 use fedimint_core::config::{
     ConfigGenModuleParams, DkgResult, FrostShareAndPop, ServerModuleConfig,
@@ -42,8 +42,6 @@ use sha2::digest::core_api::{CoreWrapper, CtVariableCoreWrapper};
 use sha2::digest::typenum::{UInt, UTerm, B0, B1};
 use sha2::{OidSha256, Sha256VarCore};
 use tracing::info;
-
-use crate::db::ResolvrNonceKeyPrefix;
 
 mod db;
 
@@ -260,74 +258,33 @@ impl std::fmt::Debug for Resolvr {
 impl ServerModule for Resolvr {
     type Common = ResolvrModuleTypes;
     type Gen = ResolvrGen;
-    type VerificationCache = ResolvrVerificationCache;
 
     async fn consensus_proposal(
         &self,
         dbtx: &mut ModuleDatabaseTransaction<'_>,
     ) -> Vec<ResolvrConsensusItem> {
         let mut consensus_items = Vec::new();
-        if let Some(message) = dbtx.get_value(&MessageSignRequest).await {
+        if let Some(message) = dbtx.get_value(&MessageNonceRequest).await {
             consensus_items.push(ResolvrConsensusItem::Nonce(
                 message,
                 ResolvrNonceKeyPair(NonceKeyPair::random(&mut rand::rngs::OsRng)),
             ));
         }
 
-        consensus_items
-        /*
-        let nonce_items: Vec<_> = dbtx
-            .find_by_prefix(&ResolvrNonceKeyPrefix)
-            .await
-            .map(|(msg, nonce)| {
-                ResolvrConsensusItem::Nonce(
-                    msg.0,
-                    ResolvrNonceKeyPair(NonceKeyPair::random(&mut rand::rngs::OsRng)),
-                )
-            })
-            .collect::<Vec<_>>()
-            .await;
+        if let Some(message) = dbtx.get_value(&MessageSignRequest).await {
+            let frost_key = self.cfg.consensus.frost_key.clone();
+            let xonly_frost_key = frost_key.into_xonly_key();
 
-        let my_peer_id = self.cfg.private.my_peer_id;
-        for item in consensus_items.clone() {
-            match item {
-                ResolvrConsensusItem::Nonce(msg, nonce) => {
-                    info!("Found nonce consensus item. Msg: {msg} MyPeerId: {my_peer_id} Nonce: {nonce:?}");
-                    dbtx.insert_entry(&ResolvrNonceKey(msg, my_peer_id), &Some(nonce))
-                        .await;
-                }
-                _ => panic!("Unexpected consensus item"),
-            }
-        }
-        */
-
-        /*
-        let frost_key = self.cfg.consensus.frost_key.clone();
-        let xonly_frost_key = frost_key.into_xonly_key();
-
-        let sig_requests: Vec<_> = dbtx
-            .find_by_prefix(&ResolvrSignatureShareKeyPrefix)
-            .await
-            .collect::<Vec<_>>()
-            .await;
-        let empty_sigs = sig_requests
-            .into_iter()
-            .filter(|(_, sig)| sig.is_none())
-            .collect::<Vec<_>>();
-
-        let mut sig_shares = Vec::new();
-        for (key, _) in empty_sigs {
-            let msg_str = key.0.clone();
-            let message = Message::plain("resolvr", msg_str.as_bytes());
-            let nonces = Resolvr::get_nonces(dbtx, msg_str.clone()).await;
+            let message_raw = Message::plain("resolvr", message.as_bytes());
+            let nonces = Resolvr::get_nonces(dbtx, message.clone()).await;
             let session_nonces = nonces
                 .clone()
                 .into_iter()
                 .map(|(key, nonce)| (key, nonce.public()))
                 .collect::<BTreeMap<_, _>>();
-            let session = self
-                .frost
-                .start_sign_session(&xonly_frost_key, session_nonces, message);
+            let session =
+                self.frost
+                    .start_sign_session(&xonly_frost_key, session_nonces, message_raw);
 
             let my_secret_share = self.cfg.private.my_secret_share.clone();
             let my_index = peer_id_to_scalar(&self.cfg.private.my_peer_id);
@@ -343,25 +300,17 @@ impl ServerModule for Resolvr {
                 my_nonce,
             );
             let resolvr_sig_share = ResolvrSignatureShare(my_sig_share);
-            sig_shares.push(ResolvrConsensusItem::FrostSigShare(
-                msg_str,
+            info!(
+                "Submitting FrostSigShare from peer: {}",
+                self.cfg.private.my_peer_id
+            );
+            consensus_items.push(ResolvrConsensusItem::FrostSigShare(
+                message,
                 resolvr_sig_share,
             ));
         }
 
-        for item in sig_shares.clone() {
-            match item {
-                ResolvrConsensusItem::FrostSigShare(msg, sig_share) => {
-                    info!("Inserting SigShare for myself!");
-                    dbtx.insert_entry(&ResolvrSignatureShareKey(msg, my_peer_id), &Some(sig_share))
-                        .await;
-                }
-                _ => panic!("Unexpected consensus item"),
-            }
-        }
-
-        consensus_items.append(&mut sig_shares);
-        */
+        consensus_items
     }
 
     async fn process_consensus_item<'a, 'b>(
@@ -373,8 +322,6 @@ impl ServerModule for Resolvr {
         // Insert newly received nonces into the database
         match consensus_item {
             ResolvrConsensusItem::Nonce(msg, nonce) => {
-                info!("Process consensus Item. Message: {msg} Nonce: {nonce:?} PeerId: {peer_id}");
-                /*
                 if dbtx
                     .get_value(&ResolvrNonceKey(msg.clone(), peer_id))
                     .await
@@ -383,8 +330,9 @@ impl ServerModule for Resolvr {
                     bail!("Already received a nonce for this message and peer. PeerId: {peer_id}");
                 }
 
-                info!("Found NonceConsensusItem from {peer_id}. Writing to database.");
-                dbtx.insert_new_entry(&ResolvrNonceKey(msg.clone(), peer_id), &Some(nonce))
+                let my_peer_id = self.cfg.private.my_peer_id;
+                info!("Process Nonce Consensus Item. Message: {msg} Nonce: {nonce:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
+                dbtx.insert_new_entry(&ResolvrNonceKey(msg.clone(), peer_id), &nonce)
                     .await;
 
                 let nonces = dbtx
@@ -393,30 +341,23 @@ impl ServerModule for Resolvr {
                     .collect::<Vec<_>>()
                     .await;
 
-                let nonces = nonces.into_iter().filter(|(_, nonce)| nonce.is_some()).collect::<Vec<_>>();
+                let threshold = self.cfg.consensus.threshold;
+                if nonces.len() >= threshold as usize {
+                    info!("Got enough nonces!");
+                    dbtx.remove_entry(&MessageNonceRequest).await;
 
-                // Check if we have enough nonces to begin a signing session
-                info!("NoncesLen: {} Threshold: {}", nonces.len(), "4");
-
-                if nonces.len() >= 4 {
-                    info!("Got all four nonces");
-                    //dbtx.remove_by_prefix(&ResolvrNonceKeyMessagePrefix(msg.clone())).await;
+                    // If my nonce was included, submit a request to sign a share
+                    if nonces
+                        .into_iter()
+                        .find(|(key, _)| key.1 == my_peer_id)
+                        .is_some()
+                    {
+                        dbtx.insert_new_entry(&MessageSignRequest, &msg.clone())
+                            .await;
+                    }
                 }
-
-                //if nonces.len() <= self.cfg.consensus.threshold as usize {
-                // TODO: FIX THIS
-                if nonces.len() < 4 {
-                    info!("Returning because we do not have enough nonces");
-                    return Ok(());
-                }
-
-                info!("Creating request to sign the message with our share");
-                dbtx.insert_new_entry(&ResolvrSignatureShareKey(msg.clone(), peer_id), &None)
-                    .await;
-                */
             }
             ResolvrConsensusItem::FrostSigShare(msg, share) => {
-                /*
                 if dbtx
                     .get_value(&ResolvrSignatureShareKey(msg.clone(), peer_id))
                     .await
@@ -428,6 +369,8 @@ impl ServerModule for Resolvr {
                 }
 
                 // Verify the share is valid under the public key
+                let my_peer_id = self.cfg.private.my_peer_id;
+                info!("Process SigShare Consensus Item. Message: {msg} Nonce: {share:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
                 let xonly_frost_key = self.cfg.consensus.frost_key.clone().into_xonly_key();
                 let message = Message::plain("resolvr", msg.as_bytes());
                 let nonces = Resolvr::get_nonces(dbtx, msg.clone()).await;
@@ -452,54 +395,55 @@ impl ServerModule for Resolvr {
                     return Err(anyhow!("Signature share from {peer_id} is not valid"));
                 }
 
-                info!("Found signature share from {peer_id}, saving to database");
-                dbtx.insert_new_entry(
-                    &ResolvrSignatureShareKey(msg.clone(), peer_id),
-                    &Some(share),
-                )
-                .await;
+                info!("Saving SigShare to database. Message: {msg} Nonce: {share:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
+                dbtx.insert_new_entry(&ResolvrSignatureShareKey(msg.clone(), peer_id), &share)
+                    .await;
 
                 let sig_shares = dbtx
                     .find_by_prefix(&ResolvrSignatureShareKeyMessagePrefix(msg.clone()))
                     .await
-                    .map(|(_, sig_share)| sig_share.expect("Sig share should not be Nonce").0)
                     .collect::<Vec<_>>()
                     .await;
 
-                // TODO: FIX THIS
-                info!("SigShares len: {} Threshold: {}", sig_shares.len(), "4");
-                if sig_shares.len() < 4 {
-                    info!("Returning because we do not have enough signature shares");
-                    return Ok(());
+                let threshold = self.cfg.consensus.threshold;
+                if sig_shares.len() >= threshold as usize {
+                    info!("Got enough signature shares!");
+                    dbtx.remove_entry(&MessageSignRequest).await;
+
+                    let frost_shares = sig_shares
+                        .into_iter()
+                        .map(|(_, sig_share)| sig_share.0)
+                        .collect::<Vec<_>>();
+
+                    // Try to combine the messages into a signature
+                    let combined_sig = self.frost.combine_signature_shares(
+                        &xonly_frost_key,
+                        &session,
+                        frost_shares,
+                    );
+
+                    tracing::info!(
+                        "Signature for message. Message: {msg} Signature: {combined_sig}"
+                    );
+
+                    let verification_outcome = self.frost.schnorr.verify(
+                        &xonly_frost_key.public_key(),
+                        message,
+                        &combined_sig,
+                    );
+                    tracing::info!("Signature Verification Outcome: {verification_outcome}");
+                    // TODO: Write to database as OutputOutcome
                 }
-
-                info!("Combining signature shares...");
-                // Try to combine the messages into a signature
-                let combined_sig =
-                    self.frost
-                        .combine_signature_shares(&xonly_frost_key, &session, sig_shares);
-
-                // TODO: Write to database as OutputOutcome
-                tracing::info!("CombinedSig: {combined_sig}");
-                */
             }
         }
 
         Ok(())
     }
 
-    fn build_verification_cache<'a>(
-        &'a self,
-        _inputs: impl Iterator<Item = &'a ResolvrInput> + Send,
-    ) -> Self::VerificationCache {
-        ResolvrVerificationCache
-    }
-
     async fn process_input<'a, 'b, 'c>(
         &'a self,
         _dbtx: &mut ModuleDatabaseTransaction<'c>,
         _input: &'b ResolvrInput,
-        _cache: &Self::VerificationCache,
     ) -> Result<InputMeta, ModuleError> {
         Ok(InputMeta {
             amount: TransactionItemAmount {
@@ -541,12 +485,10 @@ impl ServerModule for Resolvr {
     fn api_endpoints(&self) -> Vec<ApiEndpoint<Self>> {
         vec![api_endpoint! {
             "sign_message",
-            async |module: &Resolvr, context, message: String| -> () {
+            async |_module: &Resolvr, context, message: String| -> () {
                 info!("Received sign_message request. Message: {message}");
                 let mut dbtx = context.dbtx();
-                //let my_id = module.cfg.private.my_peer_id;
-                //dbtx.insert_new_entry(&ResolvrNonceKey(message, my_id), &ResolvrNonceKeyPair(NonceKeyPair::random(&mut rand::rngs::OsRng))).await;
-                dbtx.insert_new_entry(&MessageSignRequest, &message).await;
+                dbtx.insert_new_entry(&MessageNonceRequest, &message).await;
                 Ok(())
             }
         }]
@@ -576,7 +518,6 @@ impl Resolvr {
             .await;
         nonces
         */
-        /*
         let mut nonces = BTreeMap::new();
         let potential_nonces = dbtx
             .find_by_prefix(&ResolvrNonceKeyMessagePrefix(msg))
@@ -584,18 +525,9 @@ impl Resolvr {
             .collect::<Vec<_>>()
             .await;
         for (key, nonce) in potential_nonces {
-            if let Some(nonce) = nonce {
-                nonces.insert(peer_id_to_scalar(&key.1), nonce.0);
-            }
+            nonces.insert(peer_id_to_scalar(&key.1), nonce.0);
         }
 
         nonces
-        */
-        todo!()
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct ResolvrVerificationCache;
-
-impl fedimint_core::server::VerificationCache for ResolvrVerificationCache {}
