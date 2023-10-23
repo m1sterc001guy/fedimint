@@ -137,7 +137,7 @@ pub enum ClientCmd {
     },
     /// Returns the client config
     Config,
-    SignMessage {
+    NostrNote {
         #[clap(long)]
         msg: String,
     },
@@ -480,9 +480,14 @@ pub async fn handle_command(
             let config = client.get_config_json();
             Ok(serde_json::to_value(config).expect("Client config is serializable"))
         }
-        ClientCmd::SignMessage { msg } => {
-            client.request_sign_message(msg).await?;
-            Ok(json!("Done"))
+        ClientCmd::NostrNote { msg } => {
+            let pubkey = client.get_npub().await?;
+            let unsigned_event =
+                nostr_sdk::EventBuilder::new_text_note(msg, &[]).to_unsigned_event(pubkey);
+            client.request_sign_event(unsigned_event.clone()).await?;
+
+            let note_id = format!("{}", unsigned_event.id);
+            Ok(json!(note_id))
         }
     }
 }

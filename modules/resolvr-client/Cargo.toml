@@ -8,6 +8,7 @@ anyhow = "1.0.66"
 async-trait = "0.1.73"
 fedimint-core ={ path = "../../fedimint-core" }
 fedimint-client = { path = "../../fedimint-client" }
+nostr-sdk = "0.24.0"
 erased-serde = "0.3"
 resolvr-common ={ path = "../resolvr-common" }
 serde = { version = "1.0.149", features = [ "derive" ] }

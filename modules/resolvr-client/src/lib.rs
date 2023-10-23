@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use fedimint_client::module::init::{ClientModuleInit, ClientModuleInitArgs};
 use fedimint_client::module::ClientModule;
 use fedimint_client::sm::{Context, DynState, State};
@@ -11,19 +12,38 @@ use fedimint_core::module::{
 };
 use fedimint_core::{apply, async_trait_maybe_send};
 use resolvr_common::api::ResolvrFederationApi;
-use resolvr_common::{ResolvrCommonGen, ResolvrModuleTypes, KIND};
+use resolvr_common::{ResolvrCommonGen, ResolvrModuleTypes, UnsignedEvent, KIND};
 
 #[apply(async_trait_maybe_send)]
 pub trait ResolvrClientExt {
-    async fn request_sign_message(&self, msg: String) -> anyhow::Result<()>;
+    async fn request_sign_event(
+        &self,
+        unsigned_event: nostr_sdk::UnsignedEvent,
+    ) -> anyhow::Result<()>;
+    async fn get_npub(&self) -> anyhow::Result<nostr_sdk::key::XOnlyPublicKey>;
 }
 
 #[apply(async_trait_maybe_send)]
 impl ResolvrClientExt for Client {
-    async fn request_sign_message(&self, msg: String) -> anyhow::Result<()> {
+    async fn request_sign_event(
+        &self,
+        unsigned_event: nostr_sdk::UnsignedEvent,
+    ) -> anyhow::Result<()> {
         let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
-        resolvr.module_api.request_sign_message(msg).await?;
+        resolvr
+            .module_api
+            .request_sign_event(UnsignedEvent(unsigned_event))
+            .await?;
         Ok(())
+    }
+
+    async fn get_npub(&self) -> anyhow::Result<nostr_sdk::key::XOnlyPublicKey> {
+        let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
+        resolvr
+            .module_api
+            .get_npub()
+            .await
+            .map_err(|e| anyhow!("get_npub error: {e:?}"))
     }
 }
 
