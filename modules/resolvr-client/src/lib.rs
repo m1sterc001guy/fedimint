@@ -8,7 +8,8 @@ use fedimint_core::core::{IntoDynInstance, ModuleInstanceId};
 use fedimint_core::db::ModuleDatabaseTransaction;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::{
-    ApiVersion, ExtendsCommonModuleInit, ModuleCommon, MultiApiVersion, TransactionItemAmount,
+    ApiAuth, ApiVersion, ExtendsCommonModuleInit, ModuleCommon, MultiApiVersion,
+    TransactionItemAmount,
 };
 use fedimint_core::{apply, async_trait_maybe_send};
 use resolvr_common::api::ResolvrFederationApi;
@@ -19,6 +20,7 @@ pub trait ResolvrClientExt {
     async fn request_sign_event(
         &self,
         unsigned_event: nostr_sdk::UnsignedEvent,
+        auth: ApiAuth,
     ) -> anyhow::Result<()>;
     async fn get_npub(&self) -> anyhow::Result<nostr_sdk::key::XOnlyPublicKey>;
 }
@@ -28,11 +30,12 @@ impl ResolvrClientExt for Client {
     async fn request_sign_event(
         &self,
         unsigned_event: nostr_sdk::UnsignedEvent,
+        auth: ApiAuth,
     ) -> anyhow::Result<()> {
         let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
         resolvr
             .module_api
-            .request_sign_event(UnsignedEvent(unsigned_event))
+            .request_sign_event(UnsignedEvent(unsigned_event), auth)
             .await?;
         Ok(())
     }

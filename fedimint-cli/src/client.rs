@@ -31,7 +31,7 @@ use time::format_description::well_known::iso8601;
 use time::OffsetDateTime;
 use tracing::info;
 
-use crate::{metadata_from_clap_cli, LnInvoiceResponse};
+use crate::{metadata_from_clap_cli, LnInvoiceResponse, Opts};
 
 #[derive(Debug, Clone)]
 pub enum ModuleSelector {
@@ -155,6 +155,7 @@ pub async fn handle_command(
     command: ClientCmd,
     _config: ClientConfig,
     client: Client,
+    cli: Opts,
 ) -> anyhow::Result<serde_json::Value> {
     match command {
         ClientCmd::Info => get_note_summary(&client).await,
@@ -481,10 +482,13 @@ pub async fn handle_command(
             Ok(serde_json::to_value(config).expect("Client config is serializable"))
         }
         ClientCmd::NostrNote { msg } => {
+            // TODO: Validate that msg has quotes
             let pubkey = client.get_npub().await?;
             let unsigned_event =
                 nostr_sdk::EventBuilder::new_text_note(msg, &[]).to_unsigned_event(pubkey);
-            client.request_sign_event(unsigned_event.clone()).await?;
+            client
+                .request_sign_event(unsigned_event.clone(), cli.auth()?)
+                .await?;
 
             let note_id = format!("{}", unsigned_event.id);
             Ok(json!(note_id))

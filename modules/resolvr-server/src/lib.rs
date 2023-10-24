@@ -21,6 +21,7 @@ use fedimint_core::module::{
 };
 use fedimint_core::server::DynServerModule;
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, PeerId, ServerModule};
+use fedimint_server::check_auth;
 use fedimint_server::config::distributedgen::PeerHandleOps;
 use futures::StreamExt;
 use nostr_sdk::{event, Client, Event, Keys, ToBech32};
@@ -336,7 +337,7 @@ impl ServerModule for Resolvr {
                 }
 
                 let my_peer_id = self.cfg.private.my_peer_id;
-                info!("Process Nonce Consensus Item. Nonce: {nonce:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
+                info!("Saving new Nonce Consensus Item. Nonce: {nonce:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
                 dbtx.insert_new_entry(&ResolvrNonceKey(msg.clone(), peer_id), &nonce)
                     .await;
 
@@ -360,6 +361,12 @@ impl ServerModule for Resolvr {
                         dbtx.insert_new_entry(&MessageSignRequest, &msg.clone())
                             .await;
                     }
+                } else {
+                    info!(
+                        "Dont have enough nonces yet. Nonce Len: {} Threshold: {}",
+                        nonces.len(),
+                        threshold
+                    );
                 }
             }
             ResolvrConsensusItem::FrostSigShare(unsigned_event, share) => {
@@ -509,6 +516,7 @@ impl ServerModule for Resolvr {
             api_endpoint! {
                 "sign_event",
                 async |_module: &Resolvr, context, unsigned_event: UnsignedEvent| -> () {
+                    check_auth(context)?;
                     info!("Received sign_message request. Message: {unsigned_event:?}");
                     let mut dbtx = context.dbtx();
                     dbtx.insert_new_entry(&MessageNonceRequest, &unsigned_event).await;

@@ -181,7 +181,8 @@ pub fn local_config_gen_params(
                 local: ConfigGenParamsLocal {
                     our_id: *peer,
                     our_private_key: tls_keys[peer].1.clone(),
-                    api_auth: ApiAuth("pass".to_string()),
+                    //api_auth: ApiAuth("pass".to_string()),
+                    api_auth: ApiAuth(format!("pass{}", peer)),
                     p2p_bind: p2p_bind.parse().expect("Valid address"),
                     api_bind: api_bind.parse().expect("Valid address"),
                     download_token_limit: None,
