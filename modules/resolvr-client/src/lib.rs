@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::anyhow;
 use fedimint_client::module::init::{ClientModuleInit, ClientModuleInitArgs};
 use fedimint_client::module::ClientModule;
@@ -10,7 +12,7 @@ use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::{
     ApiVersion, ExtendsCommonModuleInit, ModuleCommon, MultiApiVersion, TransactionItemAmount,
 };
-use fedimint_core::{apply, async_trait_maybe_send};
+use fedimint_core::{apply, async_trait_maybe_send, PeerId};
 use resolvr_common::api::ResolvrFederationApi;
 use resolvr_common::{ResolvrCommonGen, ResolvrModuleTypes, UnsignedEvent, KIND};
 
@@ -19,8 +21,11 @@ pub trait ResolvrClientExt {
     async fn request_sign_event(
         &self,
         unsigned_event: nostr_sdk::UnsignedEvent,
+        peer_id: PeerId,
     ) -> anyhow::Result<()>;
     async fn get_npub(&self) -> anyhow::Result<nostr_sdk::key::XOnlyPublicKey>;
+
+    async fn list_note_requests(&self) -> anyhow::Result<HashMap<String, (UnsignedEvent, usize)>>;
 }
 
 #[apply(async_trait_maybe_send)]
@@ -28,11 +33,12 @@ impl ResolvrClientExt for Client {
     async fn request_sign_event(
         &self,
         unsigned_event: nostr_sdk::UnsignedEvent,
+        peer_id: PeerId,
     ) -> anyhow::Result<()> {
         let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
         resolvr
             .module_api
-            .request_sign_event(UnsignedEvent(unsigned_event))
+            .request_sign_event(UnsignedEvent(unsigned_event), peer_id)
             .await?;
         Ok(())
     }
@@ -44,6 +50,15 @@ impl ResolvrClientExt for Client {
             .get_npub()
             .await
             .map_err(|e| anyhow!("get_npub error: {e:?}"))
+    }
+
+    async fn list_note_requests(&self) -> anyhow::Result<HashMap<String, (UnsignedEvent, usize)>> {
+        let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
+        resolvr
+            .module_api
+            .list_note_requests()
+            .await
+            .map_err(|e| anyhow!("list_note_requests error: {e:?}"))
     }
 }
 

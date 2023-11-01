@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU32;
 
 use anyhow::{anyhow, bail};
@@ -23,7 +23,7 @@ use fedimint_core::server::DynServerModule;
 use fedimint_core::{apply, async_trait_maybe_send, Amount, OutPoint, PeerId, ServerModule};
 use fedimint_server::config::distributedgen::PeerHandleOps;
 use futures::StreamExt;
-use nostr_sdk::{event, Client, Event, Keys, ToBech32};
+use nostr_sdk::{Client, Keys, ToBech32};
 use rand::rngs::OsRng;
 use resolvr_common::config::{
     ResolvrClientConfig, ResolvrConfig, ResolvrConfigConsensus, ResolvrConfigLocal,
@@ -39,11 +39,12 @@ use schnorr_fun::fun::{Point, Scalar};
 use schnorr_fun::musig::NonceKeyPair;
 use schnorr_fun::nonce::{GlobalRng, Synthetic};
 use schnorr_fun::{Message, Signature};
-use serde_json::json;
 use sha2::digest::core_api::{CoreWrapper, CtVariableCoreWrapper};
 use sha2::digest::typenum::{UInt, UTerm, B0, B1};
 use sha2::{OidSha256, Sha256VarCore};
 use tracing::info;
+
+use crate::db::ResolvrNonceKeyPrefix;
 
 mod db;
 
@@ -347,6 +348,7 @@ impl ServerModule for Resolvr {
                     .await;
 
                 let threshold = self.cfg.consensus.threshold;
+                info!("NumNonces: {} Threshold: {}", nonces.len(), threshold);
                 if nonces.len() >= threshold as usize {
                     info!("Got enough nonces!");
                     dbtx.remove_entry(&MessageNonceRequest).await;
@@ -522,6 +524,26 @@ impl ServerModule for Resolvr {
                     let xonly = nostr_sdk::key::XOnlyPublicKey::from_slice(&public_key).expect("Failed to create xonly public key");
                     info!("Nostr NPUB: {}", xonly.to_bech32().expect("Failed to format npub as bech32"));
                     Ok(xonly)
+                }
+            },
+            api_endpoint! {
+                "list_note_requests",
+                async |_module: &Resolvr, context, _v:()| -> HashMap<String, (UnsignedEvent, usize)> {
+                    let mut dbtx = context.dbtx();
+                    info!("Listing message requests...");
+                    let requests = dbtx.find_by_prefix(&ResolvrNonceKeyPrefix).await.collect::<Vec<_>>().await;
+                    let mut event_map: HashMap<String, (UnsignedEvent, usize)> = HashMap::new();
+                    for (event, _) in requests {
+                        let id = event.0.0.id.to_hex();
+                        if let Some((nostr_event, mut count)) = event_map.get(&id) {
+                            count += 1;
+                            event_map.insert(id, (nostr_event.clone(), count));
+                        } else {
+                            event_map.insert(id, (event.0.clone(), 1));
+                        }
+                    }
+                    info!("EventMap: {event_map:?}");
+                    Ok(event_map)
                 }
             },
         ]
