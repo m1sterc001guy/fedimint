@@ -24,6 +24,7 @@ use fedimint_ln_common::contracts::ContractId;
 use fedimint_mint_client::{MintClientExt, MintClientModule, OOBNotes};
 use fedimint_wallet_client::{WalletClientExt, WalletClientModule, WithdrawState};
 use futures::StreamExt;
+use nostr_sdk::ToBech32;
 use nostrmint_client::NostrmintClientExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -160,6 +161,7 @@ pub enum ClientCmd {
         #[clap(long)]
         peer_id: PeerId,
     },
+    GetNpub,
 }
 
 pub fn parse_gateway_id(s: &str) -> Result<secp256k1::PublicKey, secp256k1::Error> {
@@ -501,8 +503,6 @@ pub async fn handle_command(
             Ok(serde_json::to_value(config).expect("Client config is serializable"))
         }
         ClientCmd::CreateNote { msg, peer_id } => {
-            // TODO: Lookup message requests first and only create new event if one does not
-            // exist
             let pubkey = client.get_npub().await?;
             let unsigned_event =
                 nostr_sdk::EventBuilder::new_text_note(msg, &[]).to_unsigned_event(pubkey);
@@ -527,6 +527,11 @@ pub async fn handle_command(
             }
 
             Err(anyhow!("No event with id: {event_id}"))
+        }
+        ClientCmd::GetNpub => {
+            let pubkey = client.get_npub().await?;
+            let npub = pubkey.to_bech32()?;
+            Ok(json!(npub))
         }
     }
 }
