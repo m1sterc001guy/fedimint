@@ -25,15 +25,15 @@ use fedimint_server::check_auth;
 use fedimint_server::config::distributedgen::PeerHandleOps;
 use futures::StreamExt;
 use nostr_sdk::{Client, Keys, ToBech32};
-use rand::rngs::OsRng;
-use resolvr_common::config::{
+use nostrmint_common::config::{
     ResolvrClientConfig, ResolvrConfig, ResolvrConfigConsensus, ResolvrConfigLocal,
     ResolvrConfigPrivate, ResolvrGenParams,
 };
-use resolvr_common::{
+use nostrmint_common::{
     ResolvrCommonGen, ResolvrConsensusItem, ResolvrInput, ResolvrModuleTypes, ResolvrNonceKeyPair,
     ResolvrOutput, ResolvrOutputOutcome, ResolvrSignatureShare, UnsignedEvent, CONSENSUS_VERSION,
 };
+use rand::rngs::OsRng;
 use schnorr_fun::frost::{self, Frost};
 use schnorr_fun::fun::marker::{Public, Secret, Zero};
 use schnorr_fun::fun::{Point, Scalar};

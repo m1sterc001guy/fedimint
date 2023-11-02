@@ -1,5 +1,5 @@
 use fedimintd::fedimintd::Fedimintd;
-use resolvr_server::ResolvrGen;
+use nostrmint_server::ResolvrGen;
 use schnorr_fun::frost;
 use sha2::Sha256;
 
@@ -12,8 +12,8 @@ async fn main() -> anyhow::Result<()> {
         })
         .with_extra_module_inits_params(
             3,
-            resolvr_common::KIND,
-            resolvr_common::config::ResolvrGenParams::default(),
+            nostrmint_common::KIND,
+            nostrmint_common::config::ResolvrGenParams::default(),
         )
         .run()
         .await

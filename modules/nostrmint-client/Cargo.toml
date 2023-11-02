@@ -1,5 +1,5 @@
 [package]
-name = "resolvr-client"
+name = "nostrmint-client"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,5 +10,5 @@ fedimint-core ={ path = "../../fedimint-core" }
 fedimint-client = { path = "../../fedimint-client" }
 nostr-sdk = "0.24.0"
 erased-serde = "0.3"
-resolvr-common ={ path = "../resolvr-common" }
+nostrmint-common ={ path = "../nostrmint-common" }
 serde = { version = "1.0.149", features = [ "derive" ] }

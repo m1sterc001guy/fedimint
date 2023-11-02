@@ -14,8 +14,8 @@ use fedimint_core::module::{
     TransactionItemAmount,
 };
 use fedimint_core::{apply, async_trait_maybe_send, PeerId};
-use resolvr_common::api::ResolvrFederationApi;
-use resolvr_common::{ResolvrCommonGen, ResolvrModuleTypes, UnsignedEvent, KIND};
+use nostrmint_common::api::ResolvrFederationApi;
+use nostrmint_common::{ResolvrCommonGen, ResolvrModuleTypes, UnsignedEvent, KIND};
 
 #[apply(async_trait_maybe_send)]
 pub trait ResolvrClientExt {

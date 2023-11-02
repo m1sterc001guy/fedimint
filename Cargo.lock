@@ -1378,8 +1378,8 @@ dependencies = [
  "futures",
  "lightning-invoice 0.24.0",
  "nostr-sdk",
+ "nostrmint-client",
  "rand",
- "resolvr-client",
  "serde",
  "serde_json",
  "thiserror",
@@ -2252,11 +2252,11 @@ dependencies = [
  "hyper",
  "itertools 0.10.5",
  "jsonrpsee",
+ "nostrmint-common",
+ "nostrmint-server",
  "rand",
  "rayon",
  "rcgen",
- "resolvr-common",
- "resolvr-server",
  "ring",
  "schnorr_fun",
  "secp256k1-zkp",
@@ -3646,6 +3646,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostrmint-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "erased-serde",
+ "fedimint-client",
+ "fedimint-core",
+ "nostr-sdk",
+ "nostrmint-common",
+ "serde",
+]
+
+[[package]]
+name = "nostrmint-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bincode 1.3.3",
+ "fedimint-core",
+ "nostr-sdk",
+ "schnorr_fun",
+ "serde",
+]
+
+[[package]]
+name = "nostrmint-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "erased-serde",
+ "fedimint-core",
+ "fedimint-server",
+ "futures",
+ "nostr-sdk",
+ "nostrmint-common",
+ "rand",
+ "schnorr_fun",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4445,53 +4492,6 @@ dependencies = [
  "web-sys",
  "webpki-roots 0.25.2",
  "winreg",
-]
-
-[[package]]
-name = "resolvr-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "erased-serde",
- "fedimint-client",
- "fedimint-core",
- "nostr-sdk",
- "resolvr-common",
- "serde",
-]
-
-[[package]]
-name = "resolvr-common"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bincode 1.3.3",
- "fedimint-core",
- "nostr-sdk",
- "schnorr_fun",
- "serde",
-]
-
-[[package]]
-name = "resolvr-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "erased-serde",
- "fedimint-core",
- "fedimint-server",
- "futures",
- "nostr-sdk",
- "rand",
- "resolvr-common",
- "schnorr_fun",
- "serde",
- "serde_json",
- "sha2",
- "tracing",
 ]
 
 [[package]]

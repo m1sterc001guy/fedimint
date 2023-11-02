@@ -1,5 +1,5 @@
 use fedimint_cli::FedimintCli;
-use resolvr_client::ResolvrClientGen;
+use nostrmint_client::ResolvrClientGen;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

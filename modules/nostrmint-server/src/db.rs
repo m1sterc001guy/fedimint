@@ -1,6 +1,6 @@
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::{impl_db_lookup, impl_db_record, PeerId};
-use resolvr_common::{ResolvrNonceKeyPair, ResolvrSignatureShare, UnsignedEvent};
+use nostrmint_common::{ResolvrNonceKeyPair, ResolvrSignatureShare, UnsignedEvent};
 use serde::Serialize;
 
 #[repr(u8)]

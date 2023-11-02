@@ -1,5 +1,5 @@
 [package]
-name = "resolvr-server"
+name = "nostrmint-server"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,7 +12,7 @@ futures = "0.3.28"
 erased-serde = "0.3"
 nostr-sdk = "0.24.0"
 rand = { version = "0.8" }
-resolvr-common ={ path = "../resolvr-common" }
+nostrmint-common ={ path = "../nostrmint-common" }
 schnorr_fun = { version = "0.9.1", features = ["serde", "bincode"] }
 sha2 = "0.10"
 serde = { version = "1.0.149", features = [ "derive" ] }
