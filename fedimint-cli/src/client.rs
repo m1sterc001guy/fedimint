@@ -24,7 +24,7 @@ use fedimint_ln_common::contracts::ContractId;
 use fedimint_mint_client::{MintClientExt, MintClientModule, OOBNotes};
 use fedimint_wallet_client::{WalletClientExt, WalletClientModule, WithdrawState};
 use futures::StreamExt;
-use nostrmint_client::ResolvrClientExt;
+use nostrmint_client::NostrmintClientExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::iso8601;

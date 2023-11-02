@@ -1,7 +1,7 @@
 use core::hash::Hash;
 use std::fmt;
 
-use config::ResolvrClientConfig;
+use config::NostrmintClientConfig;
 use fedimint_core::core::{Decoder, ModuleKind};
 use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
 use fedimint_core::module::registry::ModuleInstanceId;
@@ -17,86 +17,86 @@ pub mod api;
 pub mod config;
 
 /// Unique name for this module
-pub const KIND: ModuleKind = ModuleKind::from_static_str("resolvr");
+pub const KIND: ModuleKind = ModuleKind::from_static_str("nostrmint");
 
 /// Modules are non-compatible with older versions
 pub const CONSENSUS_VERSION: ModuleConsensusVersion = ModuleConsensusVersion(0);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
-pub enum ResolvrConsensusItem {
-    Nonce(UnsignedEvent, ResolvrNonceKeyPair),
-    FrostSigShare(UnsignedEvent, ResolvrSignatureShare),
+pub enum NostrmintConsensusItem {
+    Nonce(UnsignedEvent, NostrmintNonceKeyPair),
+    FrostSigShare(UnsignedEvent, NostrmintSignatureShare),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
-pub struct ResolvrInput;
+pub struct NostrmintInput;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
-pub struct ResolvrOutput;
+pub struct NostrmintOutput;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
-pub struct ResolvrOutputOutcome;
+pub struct NostrmintOutputOutcome;
 
-pub struct ResolvrModuleTypes;
+pub struct NostrmintModuleTypes;
 
 plugin_types_trait_impl_common!(
-    ResolvrModuleTypes,
-    ResolvrClientConfig,
-    ResolvrInput,
-    ResolvrOutput,
-    ResolvrOutputOutcome,
-    ResolvrConsensusItem
+    NostrmintModuleTypes,
+    NostrmintClientConfig,
+    NostrmintInput,
+    NostrmintOutput,
+    NostrmintOutputOutcome,
+    NostrmintConsensusItem
 );
 
 #[derive(Debug)]
-pub struct ResolvrCommonGen;
+pub struct NostrmintCommonGen;
 
-impl CommonModuleInit for ResolvrCommonGen {
+impl CommonModuleInit for NostrmintCommonGen {
     const CONSENSUS_VERSION: ModuleConsensusVersion = CONSENSUS_VERSION;
 
     const KIND: ModuleKind = KIND;
 
-    type ClientConfig = ResolvrClientConfig;
+    type ClientConfig = NostrmintClientConfig;
 
     fn decoder() -> Decoder {
-        ResolvrModuleTypes::decoder_builder().build()
+        NostrmintModuleTypes::decoder_builder().build()
     }
 }
 
-impl fmt::Display for ResolvrClientConfig {
+impl fmt::Display for NostrmintClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ResolvrClientConfig")
+        write!(f, "NostrmintClientConfig")
     }
 }
 
-impl fmt::Display for ResolvrInput {
+impl fmt::Display for NostrmintInput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ResolvrInput")
+        write!(f, "NostrmintInput")
     }
 }
 
-impl fmt::Display for ResolvrOutput {
+impl fmt::Display for NostrmintOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ResolvrOutput")
+        write!(f, "NostrmintOutput")
     }
 }
 
-impl fmt::Display for ResolvrOutputOutcome {
+impl fmt::Display for NostrmintOutputOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ResolvrOutputOutcome")
+        write!(f, "NostrmintOutputOutcome")
     }
 }
 
-impl fmt::Display for ResolvrConsensusItem {
+impl fmt::Display for NostrmintConsensusItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ResolvrConsensusItem")
+        write!(f, "NostrmintConsensusItem")
     }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
-pub struct ResolvrNonceKeyPair(pub NonceKeyPair);
+pub struct NostrmintNonceKeyPair(pub NonceKeyPair);
 
-impl Hash for ResolvrNonceKeyPair {
+impl Hash for NostrmintNonceKeyPair {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let mut bytes = Vec::new();
         self.consensus_encode(&mut bytes).unwrap();
@@ -104,9 +104,9 @@ impl Hash for ResolvrNonceKeyPair {
     }
 }
 
-impl Eq for ResolvrNonceKeyPair {}
+impl Eq for NostrmintNonceKeyPair {}
 
-impl Encodable for ResolvrNonceKeyPair {
+impl Encodable for NostrmintNonceKeyPair {
     fn consensus_encode<W: std::io::Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         let bytes = self.0.to_bytes();
         writer.write(&bytes)?;
@@ -114,16 +114,16 @@ impl Encodable for ResolvrNonceKeyPair {
     }
 }
 
-impl Decodable for ResolvrNonceKeyPair {
+impl Decodable for NostrmintNonceKeyPair {
     fn consensus_decode<R: std::io::Read>(
         r: &mut R,
         _modules: &fedimint_core::module::registry::ModuleDecoderRegistry,
     ) -> Result<Self, fedimint_core::encoding::DecodeError> {
         let mut bytes = [0; 64];
         r.read_exact(&mut bytes)
-            .map_err(|_| DecodeError::from_str("Failed to decode ResolvrNonceKeyPair"))?;
+            .map_err(|_| DecodeError::from_str("Failed to decode NostrmintNonceKeyPair"))?;
         match NonceKeyPair::from_bytes(bytes) {
-            Some(nonce_keypair) => Ok(ResolvrNonceKeyPair(nonce_keypair)),
+            Some(nonce_keypair) => Ok(NostrmintNonceKeyPair(nonce_keypair)),
             None => Err(DecodeError::from_str(
                 "Failed to create NonceKeyPair from bytes",
             )),
@@ -132,9 +132,9 @@ impl Decodable for ResolvrNonceKeyPair {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Eq, Hash)]
-pub struct ResolvrSignatureShare(pub Scalar<Public, Zero>);
+pub struct NostrmintSignatureShare(pub Scalar<Public, Zero>);
 
-impl Encodable for ResolvrSignatureShare {
+impl Encodable for NostrmintSignatureShare {
     fn consensus_encode<W: std::io::Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
         let bytes = self.0.to_bytes();
         writer.write(&bytes)?;
@@ -142,18 +142,18 @@ impl Encodable for ResolvrSignatureShare {
     }
 }
 
-impl Decodable for ResolvrSignatureShare {
+impl Decodable for NostrmintSignatureShare {
     fn consensus_decode<R: std::io::Read>(
         r: &mut R,
         _modules: &fedimint_core::module::registry::ModuleDecoderRegistry,
     ) -> Result<Self, DecodeError> {
         let mut bytes = [0; 32];
         r.read_exact(&mut bytes)
-            .map_err(|_| DecodeError::from_str("Failed to decode ResolvrSignatureShare"))?;
+            .map_err(|_| DecodeError::from_str("Failed to decode NostrmintSignatureShare"))?;
         match Scalar::from_bytes(bytes) {
-            Some(share) => Ok(ResolvrSignatureShare(share)),
+            Some(share) => Ok(NostrmintSignatureShare(share)),
             None => Err(DecodeError::from_str(
-                "Failed to create ResolvrSignatureShare from bytes",
+                "Failed to create NostrmintSignatureShare from bytes",
             )),
         }
     }

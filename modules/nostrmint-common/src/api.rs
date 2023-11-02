@@ -8,7 +8,7 @@ use fedimint_core::{apply, async_trait_maybe_send, PeerId};
 use crate::UnsignedEvent;
 
 #[apply(async_trait_maybe_send!)]
-pub trait ResolvrFederationApi {
+pub trait NostrmintFederationApi {
     async fn request_sign_event(
         &self,
         unsigned_event: UnsignedEvent,
@@ -21,7 +21,7 @@ pub trait ResolvrFederationApi {
 }
 
 #[apply(async_trait_maybe_send!)]
-impl<T: ?Sized> ResolvrFederationApi for T
+impl<T: ?Sized> NostrmintFederationApi for T
 where
     T: IModuleFederationApi + MaybeSend + MaybeSync + 'static,
 {

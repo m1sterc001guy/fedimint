@@ -4,8 +4,8 @@ use std::num::NonZeroU32;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use db::{
-    MessageNonceRequest, MessageSignRequest, ResolvrNonceKey, ResolvrNonceKeyMessagePrefix,
-    ResolvrSignatureShareKey, ResolvrSignatureShareKeyMessagePrefix,
+    MessageNonceRequest, MessageSignRequest, NostrmintNonceKey, NostrmintNonceKeyMessagePrefix,
+    NostrmintSignatureShareKey, NostrmintSignatureShareKeyMessagePrefix,
 };
 use fedimint_core::config::{
     ConfigGenModuleParams, DkgResult, FrostShareAndPop, ServerModuleConfig,
@@ -26,12 +26,13 @@ use fedimint_server::config::distributedgen::PeerHandleOps;
 use futures::StreamExt;
 use nostr_sdk::{Client, Keys, ToBech32};
 use nostrmint_common::config::{
-    ResolvrClientConfig, ResolvrConfig, ResolvrConfigConsensus, ResolvrConfigLocal,
-    ResolvrConfigPrivate, ResolvrGenParams,
+    NostrmintClientConfig, NostrmintConfig, NostrmintConfigConsensus, NostrmintConfigLocal,
+    NostrmintConfigPrivate, NostrmintGenParams,
 };
 use nostrmint_common::{
-    ResolvrCommonGen, ResolvrConsensusItem, ResolvrInput, ResolvrModuleTypes, ResolvrNonceKeyPair,
-    ResolvrOutput, ResolvrOutputOutcome, ResolvrSignatureShare, UnsignedEvent, CONSENSUS_VERSION,
+    NostrmintCommonGen, NostrmintConsensusItem, NostrmintInput, NostrmintModuleTypes,
+    NostrmintNonceKeyPair, NostrmintOutput, NostrmintOutputOutcome, NostrmintSignatureShare,
+    UnsignedEvent, CONSENSUS_VERSION,
 };
 use rand::rngs::OsRng;
 use schnorr_fun::frost::{self, Frost};
@@ -45,11 +46,11 @@ use sha2::digest::typenum::{UInt, UTerm, B0, B1};
 use sha2::{OidSha256, Sha256VarCore};
 use tracing::info;
 
-use crate::db::ResolvrNonceKeyPrefix;
+use crate::db::NostrmintNonceKeyPrefix;
 
 mod db;
 
-type ResolvrFrost = Frost<
+type NostrmintFrost = Frost<
     CoreWrapper<
         CtVariableCoreWrapper<
             Sha256VarCore,
@@ -70,19 +71,19 @@ type ResolvrFrost = Frost<
 >;
 
 #[derive(Clone)]
-pub struct ResolvrGen {
-    pub frost: ResolvrFrost,
+pub struct NostrmintGen {
+    pub frost: NostrmintFrost,
 }
 
-impl std::fmt::Debug for ResolvrGen {
+impl std::fmt::Debug for NostrmintGen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvrGen").finish()
+        f.debug_struct("NostrmintGen").finish()
     }
 }
 
 #[apply(async_trait_maybe_send!)]
-impl ExtendsCommonModuleInit for ResolvrGen {
-    type Common = ResolvrCommonGen;
+impl ExtendsCommonModuleInit for NostrmintGen {
+    type Common = NostrmintCommonGen;
 
     async fn dump_database(
         &self,
@@ -94,8 +95,8 @@ impl ExtendsCommonModuleInit for ResolvrGen {
 }
 
 #[async_trait]
-impl ServerModuleInit for ResolvrGen {
-    type Params = ResolvrGenParams;
+impl ServerModuleInit for NostrmintGen {
+    type Params = NostrmintGenParams;
     const DATABASE_VERSION: DatabaseVersion = DatabaseVersion(1);
 
     fn versions(&self, _core: CoreConsensusVersion) -> &[ModuleConsensusVersion] {
@@ -107,7 +108,7 @@ impl ServerModuleInit for ResolvrGen {
     }
 
     async fn init(&self, args: &ServerModuleInitArgs<Self>) -> anyhow::Result<DynServerModule> {
-        Ok(Resolvr::new(args.cfg().to_typed()?, self.frost.clone())
+        Ok(Nostrmint::new(args.cfg().to_typed()?, self.frost.clone())
             .await?
             .into())
     }
@@ -133,14 +134,14 @@ impl ServerModuleInit for ResolvrGen {
 
         let params = self
             .parse_params(params)
-            .expect("Failed to parse ResolvrGenParams");
+            .expect("Failed to parse NostrmintGenParams");
         let threshold = params.consensus.threshold;
         let my_secret_poly = frost::generate_scalar_poly(threshold as usize, &mut rng);
         let my_public_poly = frost::to_point_poly(&my_secret_poly);
 
         // Exchange public polynomials
         let peer_polynomials: BTreeMap<PeerId, Vec<Point>> = peers
-            .exchange_polynomials("resolvr".to_string(), my_public_poly)
+            .exchange_polynomials("nostrmint".to_string(), my_public_poly)
             .await?;
         let public_polys_received = peer_polynomials
             .iter()
@@ -165,7 +166,7 @@ impl ServerModuleInit for ResolvrGen {
         // Exchange shares and proof-of-possession
         let shares_and_pop: BTreeMap<PeerId, FrostShareAndPop> = peers
             .exchange_shares_and_pop(
-                "resolvr_shares_and_pop".to_string(),
+                "nostrmint_shares_and_pop".to_string(),
                 (shares_i_generated.clone(), pop),
             )
             .await?;
@@ -195,13 +196,13 @@ impl ServerModuleInit for ResolvrGen {
 
         info!("MyIndex: {my_index} MySecretShare: {my_secret_share} FrostKey: {frost_key:?}");
 
-        Ok(ResolvrConfig {
-            local: ResolvrConfigLocal {},
-            private: ResolvrConfigPrivate {
+        Ok(NostrmintConfig {
+            local: NostrmintConfigLocal {},
+            private: NostrmintConfigPrivate {
                 my_secret_share,
                 my_peer_id: peers.our_id,
             },
-            consensus: ResolvrConfigConsensus {
+            consensus: NostrmintConfigConsensus {
                 threshold,
                 frost_key,
             },
@@ -212,9 +213,9 @@ impl ServerModuleInit for ResolvrGen {
     fn get_client_config(
         &self,
         config: &ServerModuleConsensusConfig,
-    ) -> anyhow::Result<ResolvrClientConfig> {
-        let _config = ResolvrConfigConsensus::from_erased(config)?;
-        Ok(ResolvrClientConfig {})
+    ) -> anyhow::Result<NostrmintClientConfig> {
+        let _config = NostrmintConfigConsensus::from_erased(config)?;
+        Ok(NostrmintClientConfig {})
     }
 
     fn validate_config(
@@ -231,8 +232,8 @@ fn peer_id_to_scalar(peer_id: &PeerId) -> Scalar<Public> {
     Scalar::from_non_zero_u32(NonZeroU32::new(id).expect("NonZeroU32 returned None")).public()
 }
 
-pub struct Resolvr {
-    pub cfg: ResolvrConfig,
+pub struct Nostrmint {
+    pub cfg: NostrmintConfig,
     // TODO: Use typedef
     pub frost: Frost<
         CoreWrapper<
@@ -256,26 +257,26 @@ pub struct Resolvr {
     pub nostr_client: Client,
 }
 
-impl std::fmt::Debug for Resolvr {
+impl std::fmt::Debug for Nostrmint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Resolvr").field("cfg", &self.cfg).finish()
+        f.debug_struct("Nostrmint").field("cfg", &self.cfg).finish()
     }
 }
 
 #[async_trait]
-impl ServerModule for Resolvr {
-    type Common = ResolvrModuleTypes;
-    type Gen = ResolvrGen;
+impl ServerModule for Nostrmint {
+    type Common = NostrmintModuleTypes;
+    type Gen = NostrmintGen;
 
     async fn consensus_proposal(
         &self,
         dbtx: &mut ModuleDatabaseTransaction<'_>,
-    ) -> Vec<ResolvrConsensusItem> {
+    ) -> Vec<NostrmintConsensusItem> {
         let mut consensus_items = Vec::new();
         if let Some(event) = dbtx.get_value(&MessageNonceRequest).await {
-            consensus_items.push(ResolvrConsensusItem::Nonce(
+            consensus_items.push(NostrmintConsensusItem::Nonce(
                 event,
-                ResolvrNonceKeyPair(NonceKeyPair::random(&mut rand::rngs::OsRng)),
+                NostrmintNonceKeyPair(NonceKeyPair::random(&mut rand::rngs::OsRng)),
             ));
         }
 
@@ -283,7 +284,7 @@ impl ServerModule for Resolvr {
             let frost_key = self.cfg.consensus.frost_key.clone();
             let xonly_frost_key = frost_key.into_xonly_key();
             let message_raw = Message::raw(event.0.id.as_bytes());
-            let nonces = Resolvr::get_nonces(dbtx, event.clone()).await;
+            let nonces = Nostrmint::get_nonces(dbtx, event.clone()).await;
             let session_nonces = nonces
                 .clone()
                 .into_iter()
@@ -306,14 +307,14 @@ impl ServerModule for Resolvr {
                 &my_secret_share,
                 my_nonce,
             );
-            let resolvr_sig_share = ResolvrSignatureShare(my_sig_share);
+            let nostrmint_sig_share = NostrmintSignatureShare(my_sig_share);
             info!(
                 "Submitting FrostSigShare from peer: {}",
                 self.cfg.private.my_peer_id
             );
-            consensus_items.push(ResolvrConsensusItem::FrostSigShare(
+            consensus_items.push(NostrmintConsensusItem::FrostSigShare(
                 event,
-                resolvr_sig_share,
+                nostrmint_sig_share,
             ));
         }
 
@@ -323,14 +324,14 @@ impl ServerModule for Resolvr {
     async fn process_consensus_item<'a, 'b>(
         &'a self,
         dbtx: &mut ModuleDatabaseTransaction<'b>,
-        consensus_item: ResolvrConsensusItem,
+        consensus_item: NostrmintConsensusItem,
         peer_id: PeerId,
     ) -> anyhow::Result<()> {
         // Insert newly received nonces into the database
         match consensus_item {
-            ResolvrConsensusItem::Nonce(msg, nonce) => {
+            NostrmintConsensusItem::Nonce(msg, nonce) => {
                 if dbtx
-                    .get_value(&ResolvrNonceKey(msg.clone(), peer_id))
+                    .get_value(&NostrmintNonceKey(msg.clone(), peer_id))
                     .await
                     .is_some()
                 {
@@ -339,11 +340,11 @@ impl ServerModule for Resolvr {
 
                 let my_peer_id = self.cfg.private.my_peer_id;
                 info!("Process Nonce Consensus Item. Nonce: {nonce:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
-                dbtx.insert_new_entry(&ResolvrNonceKey(msg.clone(), peer_id), &nonce)
+                dbtx.insert_new_entry(&NostrmintNonceKey(msg.clone(), peer_id), &nonce)
                     .await;
 
                 let nonces = dbtx
-                    .find_by_prefix(&ResolvrNonceKeyMessagePrefix(msg.clone()))
+                    .find_by_prefix(&NostrmintNonceKeyMessagePrefix(msg.clone()))
                     .await
                     .collect::<Vec<_>>()
                     .await;
@@ -365,9 +366,9 @@ impl ServerModule for Resolvr {
                     }
                 }
             }
-            ResolvrConsensusItem::FrostSigShare(unsigned_event, share) => {
+            NostrmintConsensusItem::FrostSigShare(unsigned_event, share) => {
                 if dbtx
-                    .get_value(&ResolvrSignatureShareKey(unsigned_event.clone(), peer_id))
+                    .get_value(&NostrmintSignatureShareKey(unsigned_event.clone(), peer_id))
                     .await
                     .is_some()
                 {
@@ -381,7 +382,7 @@ impl ServerModule for Resolvr {
                 info!("Process SigShare Consensus Item. Message: Nonce: {share:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
                 let xonly_frost_key = self.cfg.consensus.frost_key.clone().into_xonly_key();
                 let message_raw = Message::raw(unsigned_event.0.id.as_bytes());
-                let nonces = Resolvr::get_nonces(dbtx, unsigned_event.clone()).await;
+                let nonces = Nostrmint::get_nonces(dbtx, unsigned_event.clone()).await;
                 let session_nonces = nonces
                     .clone()
                     .into_iter()
@@ -405,13 +406,13 @@ impl ServerModule for Resolvr {
 
                 info!("Saving SigShare to database. Message: Nonce: {share:?} PeerId: {peer_id} MyPeerId: {my_peer_id}");
                 dbtx.insert_new_entry(
-                    &ResolvrSignatureShareKey(unsigned_event.clone(), peer_id),
+                    &NostrmintSignatureShareKey(unsigned_event.clone(), peer_id),
                     &share,
                 )
                 .await;
 
                 let sig_shares = dbtx
-                    .find_by_prefix(&ResolvrSignatureShareKeyMessagePrefix(
+                    .find_by_prefix(&NostrmintSignatureShareKeyMessagePrefix(
                         unsigned_event.clone(),
                     ))
                     .await
@@ -468,7 +469,7 @@ impl ServerModule for Resolvr {
     async fn process_input<'a, 'b, 'c>(
         &'a self,
         _dbtx: &mut ModuleDatabaseTransaction<'c>,
-        _input: &'b ResolvrInput,
+        _input: &'b NostrmintInput,
     ) -> Result<InputMeta, ModuleError> {
         Ok(InputMeta {
             amount: TransactionItemAmount {
@@ -482,7 +483,7 @@ impl ServerModule for Resolvr {
     async fn process_output<'a, 'b>(
         &'a self,
         _dbtx: &mut ModuleDatabaseTransaction<'b>,
-        _output: &'a ResolvrOutput,
+        _output: &'a NostrmintOutput,
         _out_point: OutPoint,
     ) -> Result<TransactionItemAmount, ModuleError> {
         Ok(TransactionItemAmount {
@@ -495,7 +496,7 @@ impl ServerModule for Resolvr {
         &self,
         _dbtx: &mut ModuleDatabaseTransaction<'_>,
         _out_point: OutPoint,
-    ) -> Option<ResolvrOutputOutcome> {
+    ) -> Option<NostrmintOutputOutcome> {
         None
     }
 
@@ -511,7 +512,7 @@ impl ServerModule for Resolvr {
         vec![
             api_endpoint! {
                 "sign_event",
-                async |_module: &Resolvr, context, unsigned_event: UnsignedEvent| -> () {
+                async |_module: &Nostrmint, context, unsigned_event: UnsignedEvent| -> () {
                     check_auth(context)?;
                     info!("Received sign_message request. Message: {unsigned_event:?}");
                     let mut dbtx = context.dbtx();
@@ -521,7 +522,7 @@ impl ServerModule for Resolvr {
             },
             api_endpoint! {
                 "npub",
-                async |module: &Resolvr, _context, _v: ()| -> nostr_sdk::key::XOnlyPublicKey {
+                async |module: &Nostrmint, _context, _v: ()| -> nostr_sdk::key::XOnlyPublicKey {
                     let public_key = module.cfg.consensus.frost_key.public_key().to_xonly_bytes();
                     let xonly = nostr_sdk::key::XOnlyPublicKey::from_slice(&public_key).expect("Failed to create xonly public key");
                     info!("Nostr NPUB: {}", xonly.to_bech32().expect("Failed to format npub as bech32"));
@@ -530,10 +531,10 @@ impl ServerModule for Resolvr {
             },
             api_endpoint! {
                 "list_note_requests",
-                async |_module: &Resolvr, context, _v:()| -> HashMap<String, (UnsignedEvent, usize)> {
+                async |_module: &Nostrmint, context, _v:()| -> HashMap<String, (UnsignedEvent, usize)> {
                     let mut dbtx = context.dbtx();
                     info!("Listing message requests...");
-                    let requests = dbtx.find_by_prefix(&ResolvrNonceKeyPrefix).await.collect::<Vec<_>>().await;
+                    let requests = dbtx.find_by_prefix(&NostrmintNonceKeyPrefix).await.collect::<Vec<_>>().await;
                     let mut event_map: HashMap<String, (UnsignedEvent, usize)> = HashMap::new();
                     for (event, _) in requests {
                         let id = event.0.0.id.to_hex();
@@ -552,8 +553,8 @@ impl ServerModule for Resolvr {
     }
 }
 
-impl Resolvr {
-    pub async fn new(cfg: ResolvrConfig, frost: ResolvrFrost) -> anyhow::Result<Resolvr> {
+impl Nostrmint {
+    pub async fn new(cfg: NostrmintConfig, frost: NostrmintFrost) -> anyhow::Result<Nostrmint> {
         let public_key = cfg.consensus.frost_key.public_key().to_xonly_bytes();
         let xonly = nostr_sdk::key::XOnlyPublicKey::from_slice(&public_key)
             .expect("Failed to create xonly public key");
@@ -579,7 +580,7 @@ impl Resolvr {
     ) -> BTreeMap<Scalar<Public>, NonceKeyPair> {
         let mut nonces = BTreeMap::new();
         let potential_nonces = dbtx
-            .find_by_prefix(&ResolvrNonceKeyMessagePrefix(unsigned_event))
+            .find_by_prefix(&NostrmintNonceKeyMessagePrefix(unsigned_event))
             .await
             .collect::<Vec<_>>()
             .await;

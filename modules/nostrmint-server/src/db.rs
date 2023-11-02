@@ -1,6 +1,6 @@
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::{impl_db_lookup, impl_db_record, PeerId};
-use nostrmint_common::{ResolvrNonceKeyPair, ResolvrSignatureShare, UnsignedEvent};
+use nostrmint_common::{NostrmintNonceKeyPair, NostrmintSignatureShare, UnsignedEvent};
 use serde::Serialize;
 
 #[repr(u8)]
@@ -13,46 +13,46 @@ pub enum DbKeyPrefix {
 }
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
-pub struct ResolvrNonceKey(pub UnsignedEvent, pub PeerId);
+pub struct NostrmintNonceKey(pub UnsignedEvent, pub PeerId);
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
-pub struct ResolvrNonceKeyMessagePrefix(pub UnsignedEvent);
+pub struct NostrmintNonceKeyMessagePrefix(pub UnsignedEvent);
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
-pub struct ResolvrNonceKeyPrefix;
+pub struct NostrmintNonceKeyPrefix;
 
 impl_db_record!(
-    key = ResolvrNonceKey,
-    value = ResolvrNonceKeyPair,
+    key = NostrmintNonceKey,
+    value = NostrmintNonceKeyPair,
     db_prefix = DbKeyPrefix::Nonce
 );
 
 impl_db_lookup!(
-    key = ResolvrNonceKey,
-    query_prefix = ResolvrNonceKeyPrefix,
-    query_prefix = ResolvrNonceKeyMessagePrefix
+    key = NostrmintNonceKey,
+    query_prefix = NostrmintNonceKeyPrefix,
+    query_prefix = NostrmintNonceKeyMessagePrefix
 );
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
-pub struct ResolvrSignatureShareKey(pub UnsignedEvent, pub PeerId);
+pub struct NostrmintSignatureShareKey(pub UnsignedEvent, pub PeerId);
 
 impl_db_record!(
-    key = ResolvrSignatureShareKey,
-    value = ResolvrSignatureShare,
+    key = NostrmintSignatureShareKey,
+    value = NostrmintSignatureShare,
     db_prefix = DbKeyPrefix::SignatureShare
 );
 
 impl_db_lookup!(
-    key = ResolvrSignatureShareKey,
-    query_prefix = ResolvrSignatureShareKeyPrefix,
-    query_prefix = ResolvrSignatureShareKeyMessagePrefix
+    key = NostrmintSignatureShareKey,
+    query_prefix = NostrmintSignatureShareKeyPrefix,
+    query_prefix = NostrmintSignatureShareKeyMessagePrefix
 );
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
-pub struct ResolvrSignatureShareKeyMessagePrefix(pub UnsignedEvent);
+pub struct NostrmintSignatureShareKeyMessagePrefix(pub UnsignedEvent);
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
-pub struct ResolvrSignatureShareKeyPrefix;
+pub struct NostrmintSignatureShareKeyPrefix;
 
 #[derive(Debug, Clone, Encodable, Decodable, Eq, PartialEq, Hash, Serialize)]
 pub struct MessageNonceRequest;

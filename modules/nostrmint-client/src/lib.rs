@@ -14,11 +14,11 @@ use fedimint_core::module::{
     TransactionItemAmount,
 };
 use fedimint_core::{apply, async_trait_maybe_send, PeerId};
-use nostrmint_common::api::ResolvrFederationApi;
-use nostrmint_common::{ResolvrCommonGen, ResolvrModuleTypes, UnsignedEvent, KIND};
+use nostrmint_common::api::NostrmintFederationApi;
+use nostrmint_common::{NostrmintCommonGen, NostrmintModuleTypes, UnsignedEvent, KIND};
 
 #[apply(async_trait_maybe_send)]
-pub trait ResolvrClientExt {
+pub trait NostrmintClientExt {
     async fn request_sign_event(
         &self,
         unsigned_event: nostr_sdk::UnsignedEvent,
@@ -31,15 +31,15 @@ pub trait ResolvrClientExt {
 }
 
 #[apply(async_trait_maybe_send)]
-impl ResolvrClientExt for Client {
+impl NostrmintClientExt for Client {
     async fn request_sign_event(
         &self,
         unsigned_event: nostr_sdk::UnsignedEvent,
         peer_id: PeerId,
         auth: ApiAuth,
     ) -> anyhow::Result<()> {
-        let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
-        resolvr
+        let (nostrmint, _instance) = self.get_first_module::<NostrmintClientModule>(&KIND);
+        nostrmint
             .module_api
             .request_sign_event(UnsignedEvent(unsigned_event), peer_id, auth)
             .await?;
@@ -47,8 +47,8 @@ impl ResolvrClientExt for Client {
     }
 
     async fn get_npub(&self) -> anyhow::Result<nostr_sdk::key::XOnlyPublicKey> {
-        let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
-        resolvr
+        let (nostrmint, _instance) = self.get_first_module::<NostrmintClientModule>(&KIND);
+        nostrmint
             .module_api
             .get_npub()
             .await
@@ -56,8 +56,8 @@ impl ResolvrClientExt for Client {
     }
 
     async fn list_note_requests(&self) -> anyhow::Result<HashMap<String, (UnsignedEvent, usize)>> {
-        let (resolvr, _instance) = self.get_first_module::<ResolvrClientModule>(&KIND);
-        resolvr
+        let (nostrmint, _instance) = self.get_first_module::<NostrmintClientModule>(&KIND);
+        nostrmint
             .module_api
             .list_note_requests()
             .await
@@ -66,11 +66,11 @@ impl ResolvrClientExt for Client {
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolvrClientGen;
+pub struct NostrmintClientGen;
 
 #[apply(async_trait_maybe_send)]
-impl ExtendsCommonModuleInit for ResolvrClientGen {
-    type Common = ResolvrCommonGen;
+impl ExtendsCommonModuleInit for NostrmintClientGen {
+    type Common = NostrmintCommonGen;
 
     async fn dump_database(
         &self,
@@ -82,8 +82,8 @@ impl ExtendsCommonModuleInit for ResolvrClientGen {
 }
 
 #[apply(async_trait_maybe_send)]
-impl ClientModuleInit for ResolvrClientGen {
-    type Module = ResolvrClientModule;
+impl ClientModuleInit for NostrmintClientGen {
+    type Module = NostrmintClientModule;
 
     fn supported_api_versions(&self) -> MultiApiVersion {
         MultiApiVersion::try_from_iter([ApiVersion { major: 0, minor: 0 }])
@@ -91,29 +91,29 @@ impl ClientModuleInit for ResolvrClientGen {
     }
 
     async fn init(&self, args: &ClientModuleInitArgs<Self>) -> anyhow::Result<Self::Module> {
-        Ok(ResolvrClientModule {
+        Ok(NostrmintClientModule {
             module_api: args.module_api().clone(),
         })
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolvrClientContext;
+pub struct NostrmintClientContext;
 
-impl Context for ResolvrClientContext {}
+impl Context for NostrmintClientContext {}
 
 #[derive(Debug)]
-pub struct ResolvrClientModule {
+pub struct NostrmintClientModule {
     pub module_api: DynModuleApi,
 }
 
-impl ClientModule for ResolvrClientModule {
-    type Common = ResolvrModuleTypes;
-    type ModuleStateMachineContext = ResolvrClientContext;
-    type States = ResolvrClientStateMachines;
+impl ClientModule for NostrmintClientModule {
+    type Common = NostrmintModuleTypes;
+    type ModuleStateMachineContext = NostrmintClientContext;
+    type States = NostrmintClientStateMachines;
 
     fn context(&self) -> Self::ModuleStateMachineContext {
-        ResolvrClientContext {}
+        NostrmintClientContext {}
     }
 
     fn input_amount(
@@ -132,9 +132,9 @@ impl ClientModule for ResolvrClientModule {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Decodable, Encodable)]
-pub enum ResolvrClientStateMachines {}
+pub enum NostrmintClientStateMachines {}
 
-impl IntoDynInstance for ResolvrClientStateMachines {
+impl IntoDynInstance for NostrmintClientStateMachines {
     type DynType = DynState<DynGlobalClientContext>;
 
     fn into_dyn(self, instance_id: ModuleInstanceId) -> Self::DynType {
@@ -142,8 +142,8 @@ impl IntoDynInstance for ResolvrClientStateMachines {
     }
 }
 
-impl State for ResolvrClientStateMachines {
-    type ModuleContext = ResolvrClientContext;
+impl State for NostrmintClientStateMachines {
+    type ModuleContext = NostrmintClientContext;
     type GlobalContext = DynGlobalClientContext;
 
     fn transitions(
