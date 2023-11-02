@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use fedimint_core::api::{FederationApiExt, FederationResult, IModuleFederationApi, JsonRpcResult};
-use fedimint_core::module::ApiRequestErased;
+use fedimint_core::module::{ApiAuth, ApiRequestErased};
 use fedimint_core::task::{MaybeSend, MaybeSync};
 use fedimint_core::{apply, async_trait_maybe_send, PeerId};
 
@@ -13,6 +13,7 @@ pub trait ResolvrFederationApi {
         &self,
         unsigned_event: UnsignedEvent,
         peer_id: PeerId,
+        auth: ApiAuth,
     ) -> JsonRpcResult<()>;
     async fn get_npub(&self) -> FederationResult<nostr_sdk::key::XOnlyPublicKey>;
     async fn list_note_requests(&self)
@@ -28,11 +29,12 @@ where
         &self,
         unsigned_event: UnsignedEvent,
         peer_id: PeerId,
+        auth: ApiAuth,
     ) -> JsonRpcResult<()> {
         self.request_single_peer(
             None,
             "sign_event".to_string(),
-            ApiRequestErased::new(unsigned_event),
+            ApiRequestErased::new(unsigned_event).with_auth(auth),
             peer_id,
         )
         .await?;

@@ -31,7 +31,7 @@ use time::format_description::well_known::iso8601;
 use time::OffsetDateTime;
 use tracing::info;
 
-use crate::{metadata_from_clap_cli, LnInvoiceResponse};
+use crate::{metadata_from_clap_cli, LnInvoiceResponse, Opts};
 
 #[derive(Debug, Clone)]
 pub enum ModuleSelector {
@@ -174,6 +174,7 @@ pub async fn handle_command(
     command: ClientCmd,
     _config: ClientConfig,
     client: Client,
+    opts: Opts,
 ) -> anyhow::Result<serde_json::Value> {
     match command {
         ClientCmd::Info => get_note_summary(&client).await,
@@ -506,7 +507,7 @@ pub async fn handle_command(
             let unsigned_event =
                 nostr_sdk::EventBuilder::new_text_note(msg, &[]).to_unsigned_event(pubkey);
             client
-                .request_sign_event(unsigned_event.clone(), peer_id)
+                .request_sign_event(unsigned_event.clone(), peer_id, opts.auth()?)
                 .await?;
 
             let note_id = format!("{}", unsigned_event.id);
@@ -520,7 +521,7 @@ pub async fn handle_command(
             let note_requests = client.list_note_requests().await?;
             if let Some((unsigned_event, _count)) = note_requests.get(&event_id) {
                 client
-                    .request_sign_event(unsigned_event.clone().0, peer_id)
+                    .request_sign_event(unsigned_event.clone().0, peer_id, opts.auth()?)
                     .await?;
                 return Ok(json!("SigningEvent"));
             }
