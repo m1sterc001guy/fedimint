@@ -14,9 +14,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-pub use bitcoin::KeyPair;
+pub use bitcoin::key::KeyPair;
 use fedimint_core::encoding::{Decodable, DecodeError, DynEncodable, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
+use hex::ToHex;
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -69,7 +70,7 @@ impl OperationId {
 
 impl Display for OperationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        bitcoin_hashes::hex::format_hex(&self.0, f)
+        f.write_str(&self.0.encode_hex::<String>().as_str())
     }
 }
 

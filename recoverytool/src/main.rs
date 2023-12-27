@@ -305,7 +305,7 @@ fn tweak_descriptor(
     base_descriptor
         .tweak(tweak, secp256k1::SECP256K1)
         .translate_pk(&mut SecretKeyInjector {
-            secret: bitcoin::util::key::PrivateKey {
+            secret: bitcoin::key::PrivateKey {
                 compressed: true,
                 network,
                 inner: secret_key,
@@ -320,7 +320,7 @@ fn tweak_descriptor(
 struct ImportableWallet {
     outpoint: OutPoint,
     descriptor: Descriptor<Key>,
-    #[serde(with = "bitcoin::util::amount::serde::as_sat")]
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
     amount_sat: bitcoin::Amount,
 }
 
@@ -335,7 +335,7 @@ struct ImportableWalletMin {
 #[derive(Debug, Clone, Copy, Eq)]
 enum Key {
     Public(CompressedPublicKey),
-    Private(bitcoin::util::key::PrivateKey),
+    Private(bitcoin::key::PrivateKey),
 }
 
 impl PartialOrd for Key {
@@ -396,6 +396,10 @@ impl MiniscriptKey for Key {
     type Hash256 = miniscript::hash256::Hash;
     type Ripemd160 = bitcoin::hashes::ripemd160::Hash;
     type Hash160 = bitcoin::hashes::hash160::Hash;
+
+    fn num_der_paths(&self) -> usize {
+        0
+    }
 }
 
 impl ToPublicKey for Key {
@@ -424,7 +428,7 @@ impl ToPublicKey for Key {
 /// know.
 #[derive(Debug)]
 struct SecretKeyInjector {
-    secret: bitcoin::util::key::PrivateKey,
+    secret: bitcoin::key::PrivateKey,
     public: CompressedPublicKey,
 }
 
@@ -468,12 +472,11 @@ impl Translator<CompressedPublicKey, Key, ()> for SecretKeyInjector {
 
 #[test]
 fn parses_valid_length_tweaks() {
-    use bitcoin::hashes::hex::ToHex;
-
-    let bad_length_tweak_hex = rand::random::<[u8; 32]>().to_hex();
+    use hex::ToHex;
+    let bad_length_tweak_hex = rand::random::<[u8; 32]>().encode_hex::<String>();
     // rand::random only supports random byte arrays up to 32 bytes
     let good_length_tweak: [u8; 33] = core::array::from_fn(|_| rand::random::<u8>());
-    let good_length_tweak_hex = good_length_tweak.to_hex();
+    let good_length_tweak_hex = good_length_tweak.encode_hex::<String>();
     assert_eq!(
         tweak_parser(good_length_tweak_hex.as_str()).expect("should parse valid length hex"),
         good_length_tweak

@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, ensure, Context as AnyhowContext};
 use async_stream::stream;
+use bitcoin::address::NetworkUnchecked;
 use bitcoin::{Address, Network};
 use client_db::DbKeyPrefix;
 use fedimint_bitcoind::{create_bitcoind, DynBitcoindRpc};
@@ -184,12 +185,12 @@ pub struct WalletOperationMeta {
 #[serde(rename_all = "snake_case")]
 pub enum WalletOperationMetaVariant {
     Deposit {
-        address: bitcoin::Address,
+        address: String,
         expires_at: SystemTime,
     },
     Withdraw {
-        address: bitcoin::Address,
-        #[serde(with = "bitcoin::util::amount::serde::as_sat")]
+        address: String,
+        #[serde(with = "bitcoin::amount::serde::as_sat")]
         amount: bitcoin::Amount,
         fee: PegOutFees,
         change: Vec<OutPoint>,
@@ -322,13 +323,13 @@ impl WalletClientModule {
     /// The caller should be prepared to retry with a new fee estimate.
     pub async fn get_withdraw_fees(
         &self,
-        address: bitcoin::Address,
+        address: bitcoin::Address<NetworkUnchecked>,
         amount: bitcoin::Amount,
     ) -> anyhow::Result<PegOutFees> {
         check_address(&address, self.cfg.network)?;
 
         self.module_api
-            .fetch_peg_out_fees(&address, amount)
+            .fetch_peg_out_fees(&address.assume_checked(), amount)
             .await?
             .context("Federation didn't return peg-out fees")
     }
@@ -336,13 +337,13 @@ impl WalletClientModule {
     pub async fn create_withdraw_output(
         &self,
         operation_id: OperationId,
-        address: bitcoin::Address,
+        address: bitcoin::Address<NetworkUnchecked>,
         amount: bitcoin::Amount,
         fees: PegOutFees,
     ) -> anyhow::Result<ClientOutput<WalletOutput, WalletClientStates>> {
         check_address(&address, self.cfg.network)?;
 
-        let output = WalletOutput::new_v0_peg_out(address, amount, fees);
+        let output = WalletOutput::new_v0_peg_out(address.assume_checked(), amount, fees);
 
         let sm_gen = move |txid, out_idx| {
             vec![WalletClientStates::Withdraw(WithdrawStateMachine {
@@ -411,7 +412,7 @@ impl WalletClientModule {
                             WalletCommonInit::KIND.as_str(),
                             WalletOperationMeta {
                                 variant: WalletOperationMetaVariant::Deposit {
-                                    address: address.clone(),
+                                    address: address.clone().to_string(),
                                     expires_at: valid_until,
                                 },
                                 extra_meta: extra_meta_inner,
@@ -524,7 +525,7 @@ impl WalletClientModule {
     /// acknowledged by the user since it can be unexpectedly high.
     pub async fn withdraw<M: Serialize + MaybeSend + MaybeSync>(
         &self,
-        address: bitcoin::Address,
+        address: bitcoin::Address<NetworkUnchecked>,
         amount: bitcoin::Amount,
         fee: PegOutFees,
         extra_meta: M,
@@ -546,7 +547,7 @@ impl WalletClientModule {
                     WalletCommonInit::KIND.as_str(),
                     move |_, change| WalletOperationMeta {
                         variant: WalletOperationMetaVariant::Withdraw {
-                            address: address.clone(),
+                            address: address.clone().assume_checked().to_string(),
                             amount,
                             fee,
                             change,
@@ -662,7 +663,7 @@ impl WalletClientModule {
     }
 }
 
-fn check_address(address: &Address, network: Network) -> anyhow::Result<()> {
+fn check_address(address: &Address<NetworkUnchecked>, network: Network) -> anyhow::Result<()> {
     ensure!(
         address.is_valid_for_network(network),
         "Address isn't compatible with the federation's network: {network:?}"

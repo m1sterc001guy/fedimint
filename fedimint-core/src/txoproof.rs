@@ -2,9 +2,10 @@ use std::borrow::Cow;
 use std::hash::Hash;
 use std::io::Cursor;
 
-use bitcoin::util::merkleblock::PartialMerkleTree;
-use bitcoin::{BlockHash, BlockHeader, Txid};
-use bitcoin_hashes::hex::{FromHex, ToHex};
+use bitcoin::merkle_tree::PartialMerkleTree;
+use bitcoin::{BlockHash, block::Header, Txid};
+use bitcoin_hashes::hex::FromHex;
+use hex::ToHex;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -13,7 +14,7 @@ use crate::module::registry::ModuleDecoderRegistry;
 
 #[derive(Clone, Debug)]
 pub struct TxOutProof {
-    pub block_header: BlockHeader,
+    pub block_header: Header,
     pub merkle_proof: PartialMerkleTree,
 }
 
@@ -41,7 +42,7 @@ impl Decodable for TxOutProof {
         d: &mut D,
         modules: &ModuleDecoderRegistry,
     ) -> Result<Self, DecodeError> {
-        let block_header = BlockHeader::consensus_decode(d, modules)?;
+        let block_header = Header::consensus_decode(d, modules)?;
         let merkle_proof = PartialMerkleTree::consensus_decode(d, modules)?;
 
         let mut transactions = Vec::new();
@@ -83,7 +84,7 @@ impl Serialize for TxOutProof {
         self.consensus_encode(&mut bytes).unwrap();
 
         if serializer.is_human_readable() {
-            serializer.serialize_str(&bytes.to_hex())
+            serializer.serialize_str(&bytes.encode_hex::<String>())
         } else {
             serializer.serialize_bytes(&bytes)
         }

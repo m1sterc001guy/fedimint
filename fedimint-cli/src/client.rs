@@ -5,8 +5,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{bail, Context};
 use bip39::Mnemonic;
+use bitcoin::address::NetworkUnchecked;
 use bitcoin::{secp256k1, Network};
-use bitcoin_hashes::hex::ToHex;
 use clap::Subcommand;
 use fedimint_client::backup::Metadata;
 use fedimint_client::ClientArc;
@@ -32,6 +32,7 @@ use serde_json::json;
 use time::format_description::well_known::iso8601;
 use time::OffsetDateTime;
 use tracing::{debug, info, warn};
+use hex::ToHex;
 
 use crate::{metadata_from_clap_cli, LnInvoiceResponse};
 
@@ -128,7 +129,7 @@ pub enum ClientCmd {
         #[clap(long)]
         amount: BitcoinAmountOrAll,
         #[clap(long)]
-        address: bitcoin::Address,
+        address: bitcoin::Address<NetworkUnchecked>,
     },
     /// Upload the (encrypted) snapshot of mint notes to federation
     Backup {
@@ -550,7 +551,7 @@ pub async fn handle_command(
                 match update {
                     WithdrawState::Succeeded(txid) => {
                         return Ok(json!({
-                            "txid": txid.to_hex(),
+                            "txid": txid.encode_hex::<String>(),
                             "fees_sat": absolute_fees.to_sat(),
                         }));
                     }

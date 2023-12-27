@@ -4,14 +4,16 @@ use std::convert::{Infallible, TryInto};
 use std::time::Duration;
 
 use anyhow::{bail, format_err, Context};
+use bitcoin::absolute::LockTime;
+use bitcoin::address::NetworkUnchecked;
 use bitcoin::hashes::{sha256, Hash as BitcoinHash, HashEngine, Hmac, HmacEngine};
 use bitcoin::policy::DEFAULT_MIN_RELAY_TX_FEE;
 use bitcoin::secp256k1::{All, Secp256k1, Verification};
-use bitcoin::util::psbt::{Input, PartiallySignedTransaction};
-use bitcoin::util::sighash::SighashCache;
+use bitcoin::psbt::{Input, PartiallySignedTransaction};
+use bitcoin::sighash::{SighashCache, EcdsaSighashType};
 use bitcoin::{
-    Address, BlockHash, EcdsaSig, EcdsaSighashType, Network, PackedLockTime, Script, Sequence,
-    Transaction, TxIn, TxOut, Txid,
+    Address, BlockHash, Network, Sequence,
+    Transaction, TxIn, TxOut, Txid, ScriptBuf,
 };
 use common::config::WalletConfigConsensus;
 use common::db::{
@@ -650,7 +652,7 @@ impl ServerModule for Wallet {
             },
             api_endpoint! {
                 PEG_OUT_FEES_ENDPOINT,
-                async |module: &Wallet, context, params: (Address, u64)| -> Option<PegOutFees> {
+                async |module: &Wallet, context, params: (Address<NetworkUnchecked>, u64)| -> Option<PegOutFees> {
                     let (address, sats) = params;
                     let feerate = module.consensus_fee_rate(&mut context.dbtx().into_nc()).await;
 
@@ -659,7 +661,8 @@ impl ServerModule for Wallet {
 
                     let tx = module.offline_wallet().create_tx(
                         bitcoin::Amount::from_sat(sats),
-                        address.script_pubkey(),
+                        // TODO: DO NOT ASSUME THIS
+                        address.assume_checked().script_pubkey(),
                         vec![],
                         module.available_utxos(&mut context.dbtx().into_nc()).await,
                         feerate,
@@ -812,7 +815,7 @@ impl Wallet {
 
             if input
                 .partial_sigs
-                .insert(tweaked_peer_key.into(), EcdsaSig::sighash_all(*signature))
+                .insert(tweaked_peer_key.into(), bitcoin::ecdsa::Signature::sighash_all(*signature))
                 .is_some()
             {
                 // Should never happen since peers only sign a PSBT once
@@ -989,7 +992,7 @@ impl Wallet {
             }
 
             dbtx.insert_new_entry(
-                &BlockHashKey(BlockHash::from_inner(block_hash.into_inner())),
+                &BlockHashKey(BlockHash::from_byte_array(block_hash.to_byte_array())),
                 &(),
             )
             .await;
@@ -1165,12 +1168,13 @@ pub async fn broadcast_pending_tx(mut dbtx: DatabaseTransaction<'_>, rpc: &DynBi
 
     for PendingTransaction { tx, .. } in pending_tx {
         if !rbf_txids.contains(&tx.txid()) {
-            debug!(
-                tx = %tx.txid(),
-                weight = tx.weight(),
-                output = ?tx.output,
-                "Broadcasting peg-out",
-            );
+            // TODO: FIX ME
+            //debug!(
+            //    tx = %tx.txid(),
+            //    weight = tx.weight(),
+            //    output = ?tx.output,
+            //    "Broadcasting peg-out",
+            //);
             trace!(transaction = ?tx);
             rpc.submit_transaction(tx).await;
         }
@@ -1194,12 +1198,15 @@ impl<'a> StatelessWallet<'a> {
         network: Network,
     ) -> Result<(), WalletOutputError> {
         if let WalletOutputV0::PegOut(peg_out) = output {
+            /*
+            // TODO: When is the proper place to validate the network?
             if !peg_out.recipient.is_valid_for_network(network) {
                 return Err(WalletOutputError::WrongNetwork(
                     network,
                     peg_out.recipient.network,
                 ));
             }
+            */
         }
 
         // Validate the tx amount is over the dust limit
@@ -1249,7 +1256,7 @@ impl<'a> StatelessWallet<'a> {
     fn create_tx(
         &self,
         peg_out_amount: bitcoin::Amount,
-        destination: Script,
+        destination: ScriptBuf,
         mut included_utxos: Vec<(UTXOKey, SpendableUTXO)>,
         mut remaining_utxos: Vec<(UTXOKey, SpendableUTXO)>,
         mut fee_rate: Feerate,
@@ -1322,7 +1329,7 @@ impl<'a> StatelessWallet<'a> {
                 script_pubkey: change_script,
             },
         ];
-        let mut change_out = bitcoin::util::psbt::Output::default();
+        let mut change_out = bitcoin::psbt::Output::default();
         change_out
             .proprietary
             .insert(proprietary_tweak_key(), change_tweak.to_vec());
@@ -1340,7 +1347,7 @@ impl<'a> StatelessWallet<'a> {
 
         let transaction = Transaction {
             version: 2,
-            lock_time: PackedLockTime::ZERO,
+            lock_time: LockTime::ZERO,
             input: selected_utxos
                 .iter()
                 .map(|(utxo_key, _utxo)| TxIn {
@@ -1465,12 +1472,12 @@ impl<'a> StatelessWallet<'a> {
                     compressed: true,
                     inner: secp256k1::PublicKey::from_secret_key(self.secp, &tweaked_secret),
                 },
-                EcdsaSig::sighash_all(signature),
+                bitcoin::ecdsa::Signature::sighash_all(signature),
             );
         }
     }
 
-    fn derive_script(&self, tweak: &[u8]) -> Script {
+    fn derive_script(&self, tweak: &[u8]) -> ScriptBuf {
         struct CompressedPublicKeyTranslator<'t, 's, Ctx: Verification> {
             tweak: &'t [u8],
             secp: &'s Secp256k1<Ctx>,
@@ -1484,7 +1491,7 @@ impl<'a> StatelessWallet<'a> {
                 let hashed_tweak = {
                     let mut hasher = HmacEngine::<sha256::Hash>::new(&pk.key.serialize()[..]);
                     hasher.input(self.tweak);
-                    Hmac::from_engine(hasher).into_inner()
+                    Hmac::from_engine(hasher).to_byte_array()
                 };
 
                 Ok(CompressedPublicKey {

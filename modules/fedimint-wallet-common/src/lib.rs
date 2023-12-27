@@ -1,9 +1,8 @@
 use std::hash::Hasher;
 
-use bitcoin::hashes::hex::ToHex;
-use bitcoin::util::psbt::raw::ProprietaryKey;
-use bitcoin::util::psbt::PartiallySignedTransaction;
-use bitcoin::{Address, Amount, BlockHash, Network, Script, Transaction, Txid};
+use bitcoin::psbt::raw::ProprietaryKey;
+use bitcoin::psbt::PartiallySignedTransaction;
+use bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid, ScriptBuf};
 use config::WalletClientConfig;
 use fedimint_core::core::{Decoder, ModuleInstanceId, ModuleKind};
 use fedimint_core::encoding::{Decodable, Encodable};
@@ -11,6 +10,7 @@ use fedimint_core::module::{CommonModuleInit, ModuleCommon, ModuleConsensusVersi
 use fedimint_core::{
     extensible_associated_module_type, plugin_types_trait_impl_common, Feerate, PeerId,
 };
+use hex::ToHex;
 use impl_tools::autoimpl;
 use miniscript::Descriptor;
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,7 @@ pub struct PegOutSignatureItem {
 pub struct SpendableUTXO {
     #[serde(with = "::fedimint_core::encoding::as_hex")]
     pub tweak: [u8; 33],
-    #[serde(with = "bitcoin::util::amount::serde::as_sat")]
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: bitcoin::Amount,
 }
 
@@ -92,7 +92,7 @@ pub struct PendingTransaction {
     pub tx: Transaction,
     pub tweak: [u8; 33],
     pub change: bitcoin::Amount,
-    pub destination: Script,
+    pub destination: ScriptBuf,
     pub fees: PegOutFees,
     pub selected_utxos: Vec<(UTXOKey, SpendableUTXO)>,
     pub peg_out_amount: Amount,
@@ -108,7 +108,7 @@ impl Serialize for PendingTransaction {
         self.consensus_encode(&mut bytes).unwrap();
 
         if serializer.is_human_readable() {
-            serializer.serialize_str(&bytes.to_hex())
+            serializer.serialize_str(&bytes.encode_hex::<String>())
         } else {
             serializer.serialize_bytes(&bytes)
         }
@@ -123,7 +123,7 @@ pub struct UnsignedTransaction {
     pub signatures: Vec<(PeerId, PegOutSignatureItem)>,
     pub change: bitcoin::Amount,
     pub fees: PegOutFees,
-    pub destination: Script,
+    pub destination: ScriptBuf,
     pub selected_utxos: Vec<(UTXOKey, SpendableUTXO)>,
     pub peg_out_amount: Amount,
     pub rbf: Option<Rbf>,
@@ -138,7 +138,7 @@ impl Serialize for UnsignedTransaction {
         self.consensus_encode(&mut bytes).unwrap();
 
         if serializer.is_human_readable() {
-            serializer.serialize_str(&bytes.to_hex())
+            serializer.serialize_str(&bytes.encode_hex::<String>())
         } else {
             serializer.serialize_bytes(&bytes)
         }
@@ -164,12 +164,21 @@ impl PegOutFees {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Deserialize, Serialize, Encodable, Decodable)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Encodable, Decodable)]
 pub struct PegOut {
     pub recipient: bitcoin::Address,
-    #[serde(with = "bitcoin::util::amount::serde::as_sat")]
+    #[serde(with = "bitcoin::amount::serde::as_sat")]
     pub amount: bitcoin::Amount,
     pub fees: PegOutFees,
+}
+
+// TODO: FIX THIS
+impl<'de> Deserialize<'de> for PegOut {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de> {
+        todo!()
+    }
 }
 
 extensible_associated_module_type!(

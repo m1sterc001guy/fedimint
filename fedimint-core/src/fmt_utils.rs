@@ -1,5 +1,6 @@
 use std::{cmp, fmt, ops, thread_local};
 
+use hex::ToHex;
 use serde_json::Value;
 
 pub fn rust_log_full_enabled() -> bool {
@@ -42,9 +43,10 @@ pub struct AbbreviateHexBytes<'a>(pub &'a [u8]);
 impl<'a> fmt::Display for AbbreviateHexBytes<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.0.len() <= 64 || rust_log_full_enabled() {
-            bitcoin_hashes::hex::format_hex(self.0, f)?;
+            f.write_str(&self.0.encode_hex::<String>().as_str())?;
         } else {
-            bitcoin_hashes::hex::format_hex(&self.0[..64], f)?;
+            // TODO: FIX ME
+            //f.write_str(&self.0[..64].encode_hex::<String>().as_str());
             f.write_fmt(format_args!("-{}", self.0.len()))?;
         }
         Ok(())

@@ -24,13 +24,13 @@ anyhow = "1.0.66"
 async-trait = "0.1.73"
 base64 = "0.20.0"
 bip39 = { version = "2.0.0", features = ["rand"] }
-bitcoin = "0.29.2"
-bitcoin_hashes = "0.11.0"
+bitcoin = "0.30.2"
+bitcoin_hashes = "0.12.0"
 time = { version = "0.3.25", features = [ "formatting" ] }
 clap = { version = "4.1.6", features = ["derive", "std", "help", "usage", "error-context", "suggestions", "env" ], default-features = false }
 futures = "0.3.28"
 itertools = "0.12.0"
-lightning-invoice = { version = "0.26.0", features = [ "serde" ] }
+lightning-invoice = { version = "0.27.0", features = [ "serde" ] }
 fedimint-aead = { version = "0.3.0-alpha", path = "../crypto/aead" }
 fedimint-bip39 = { version = "0.3.0-alpha", path = "../fedimint-bip39" }
 fedimint-client = { version = "0.3.0-alpha", path = "../fedimint-client" }
@@ -44,6 +44,7 @@ fedimint-wallet-client = { version = "0.3.0-alpha", path = "../modules/fedimint-
 fedimint-logging = { version = "0.3.0-alpha", path = "../fedimint-logging" }
 fedimint-server = { version = "0.3.0-alpha", path = "../fedimint-server" }
 fs-lock = "0.1.0"
+hex = { version = "0.4.3", features = [ "serde"] }
 rand = "0.8"
 serde = { version = "1.0.149", features = [ "derive" ] }
 thiserror = "1.0.39"

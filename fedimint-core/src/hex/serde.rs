@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
-use bitcoin_hashes::hex::{FromHex, ToHex};
+use bitcoin_hashes::hex::FromHex;
+use hex::ToHex;
 use serde::de::Error;
 use serde::{Deserialize, Serializer};
 
@@ -9,7 +10,7 @@ pub fn serialize<S>(data: &[u8], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let hex: String = data.to_hex();
+    let hex: String = data.encode_hex::<String>();
     serializer.serialize_str(&hex)
 }
 

@@ -78,13 +78,13 @@ impl Decodable for secp256k1_zkp::schnorr::Signature {
     }
 }
 
-impl Encodable for bitcoin::KeyPair {
+impl Encodable for bitcoin::key::KeyPair {
     fn consensus_encode<W: Write>(&self, writer: &mut W) -> Result<usize, Error> {
         self.secret_bytes().consensus_encode(writer)
     }
 }
 
-impl Decodable for bitcoin::KeyPair {
+impl Decodable for bitcoin::key::KeyPair {
     fn consensus_decode<D: Read>(
         d: &mut D,
         modules: &ModuleDecoderRegistry,
@@ -118,7 +118,7 @@ mod tests {
     fn test_schnorr_pub_key() {
         let ctx = secp256k1_zkp::global::SECP256K1;
         let mut rng = rand::rngs::OsRng;
-        let sec_key = bitcoin::KeyPair::new(ctx, &mut rng);
+        let sec_key = bitcoin::key::KeyPair::new(ctx, &mut rng);
         let pub_key = sec_key.public_key();
         test_roundtrip(pub_key);
 

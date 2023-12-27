@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{bail, ensure, format_err, Context};
 use async_stream::stream;
-use bitcoin::{KeyPair, Network};
+use bitcoin::{key::KeyPair, Network};
 use bitcoin_hashes::{sha256, Hash};
 use db::{DbKeyPrefix, LightningGatewayKey, PaymentResult, PaymentResultKey};
 use fedimint_client::derivable_secret::ChildId;
@@ -420,10 +420,10 @@ impl LightningClientModule {
         // Copy the 32 byte payment hash and a 2 byte index to make every payment
         // attempt have a unique `OperationId`
         let mut bytes = [0; 34];
-        bytes[0..32].copy_from_slice(&payment_hash.into_inner());
+        bytes[0..32].copy_from_slice(&payment_hash.to_byte_array());
         bytes[32..34].copy_from_slice(&index.to_le_bytes());
         let hash: sha256::Hash = Hash::hash(&bytes);
-        OperationId(hash.into_inner())
+        OperationId(hash.to_byte_array())
     }
 
     // Ping gateway endpoint to verify that it is available before locking funds in
@@ -464,7 +464,7 @@ impl LightningClientModule {
     /// preimage.
     fn get_preimage_authentication(&self, payment_hash: &sha256::Hash) -> sha256::Hash {
         let mut bytes = [0; 64];
-        bytes[0..32].copy_from_slice(&payment_hash.into_inner());
+        bytes[0..32].copy_from_slice(&payment_hash.to_byte_array());
         bytes[32..64].copy_from_slice(&self.preimage_auth.secret_bytes());
         Hash::hash(&bytes)
     }
@@ -520,7 +520,7 @@ impl LightningClientModule {
         let contract_amount_msat = invoice_amount_msat + base_fee + margin_fee;
         let contract_amount = Amount::from_msats(contract_amount_msat);
 
-        let user_sk = bitcoin::KeyPair::new(&self.secp, &mut rng);
+        let user_sk = bitcoin::key::KeyPair::new(&self.secp, &mut rng);
 
         let preimage_auth = self.get_preimage_authentication(invoice.payment_hash());
         let payment_hash = *invoice.payment_hash();
@@ -725,7 +725,7 @@ impl LightningClientModule {
     )> {
         let payment_keypair = KeyPair::new(&self.secp, &mut rng);
         let preimage_key: [u8; 33] = payment_keypair.public_key().serialize();
-        let payment_hash = sha256::Hash::hash(&sha256::Hash::hash(&preimage_key));
+        let payment_hash = sha256::Hash::hash(sha256::Hash::hash(&preimage_key).as_byte_array());
 
         // Temporary lightning node pubkey
         let (node_secret_key, node_public_key) = self.secp.generate_keypair(&mut rng);
@@ -781,7 +781,7 @@ impl LightningClientModule {
         let invoice = invoice_builder
             .build_signed(|hash| self.secp.sign_ecdsa_recoverable(hash, &node_secret_key))?;
 
-        let operation_id = OperationId(invoice.payment_hash().into_inner());
+        let operation_id = OperationId(invoice.payment_hash().to_byte_array());
 
         let sm_invoice = invoice.clone();
         let sm_gen = Arc::new(move |txid: TransactionId, _input_idx: u64| {

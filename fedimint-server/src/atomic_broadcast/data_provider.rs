@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use bitcoin_hashes_12::sha256;
+use bitcoin_hashes::sha256;
 use fedimint_core::config::ALEPH_BFT_UNIT_BYTE_LIMIT;
 use fedimint_core::encoding::Encodable;
 use fedimint_core::epoch::ConsensusItem;

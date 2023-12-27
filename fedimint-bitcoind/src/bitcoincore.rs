@@ -44,7 +44,7 @@ impl BitcoinClient {
 impl IBitcoindRpc for BitcoinClient {
     async fn get_network(&self) -> anyhow::Result<Network> {
         let network = block_in_place(|| self.0.get_blockchain_info())?;
-        Ok(match network.chain.as_str() {
+        Ok(match network.chain.to_string().as_str() {
             "main" => Network::Bitcoin,
             "test" => Network::Testnet,
             "regtest" => Network::Regtest,

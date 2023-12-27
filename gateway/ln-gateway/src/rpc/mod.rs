@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 use bitcoin::{Address, Network, Txid};
-use bitcoin_hashes::hex::{FromHex, ToHex};
+use bitcoin_hashes::hex::FromHex;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::task::TaskGroup;
 use fedimint_core::{Amount, BitcoinAmountOrAll};
@@ -16,6 +16,8 @@ use futures::Future;
 use lightning_invoice::RoutingFees;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::oneshot;
+use bitcoin::address::NetworkUnchecked;
+use hex::ToHex;
 
 use crate::{Gateway, Result};
 
@@ -56,7 +58,7 @@ pub struct DepositAddressPayload {
 pub struct WithdrawPayload {
     pub federation_id: FederationId,
     pub amount: BitcoinAmountOrAll,
-    pub address: Address,
+    pub address: Address<NetworkUnchecked>,
 }
 
 /// Information about one of the feds we are connected to
@@ -140,7 +142,7 @@ impl_gateway_request_trait!(PayInvoicePayload, Preimage, GatewayRequest::PayInvo
 impl_gateway_request_trait!(BalancePayload, Amount, GatewayRequest::Balance);
 impl_gateway_request_trait!(
     DepositAddressPayload,
-    Address,
+    Address<NetworkUnchecked>,
     GatewayRequest::DepositAddress
 );
 impl_gateway_request_trait!(WithdrawPayload, Txid, GatewayRequest::Withdraw);
@@ -196,7 +198,7 @@ pub fn serde_hex_serialize<T: bitcoin::consensus::Encodable, S: Serializer>(
     T::consensus_encode(t, &mut bytes).map_err(serde::ser::Error::custom)?;
 
     if s.is_human_readable() {
-        s.serialize_str(&bytes.to_hex())
+        s.serialize_str(&bytes.encode_hex::<String>())
     } else {
         s.serialize_bytes(&bytes)
     }

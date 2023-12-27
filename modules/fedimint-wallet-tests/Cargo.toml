@@ -15,7 +15,7 @@ path = "tests/tests.rs"
 anyhow = "1.0.66"
 assert_matches = "1.5.0"
 async-trait = "0.1.73"
-bitcoin = "0.29.2"
+bitcoin = "0.30.2"
 erased-serde = "0.3"
 fedimint-bitcoind = { path = "../../fedimint-bitcoind" }
 fedimint-client = { path = "../../fedimint-client" }
@@ -30,6 +30,6 @@ fedimint-wallet-client = { path = "../fedimint-wallet-client" }
 fedimint-wallet-common = { path = "../fedimint-wallet-common" }
 fedimint-wallet-server = { path = "../fedimint-wallet-server" }
 futures = "0.3.28"
-miniscript = { version = "9.0.2" }
+miniscript = { version = "10.0.0" }
 tokio = { version = "1.26.0", features = ["sync"] }
 tracing = "0.1.37"

@@ -1,5 +1,5 @@
-use bitcoin_hashes::hex::ToHex;
 use clap::Parser;
+use hex::ToHex;
 use serde::Serialize;
 use tbs::dealer_keygen;
 
@@ -24,5 +24,5 @@ fn main() {
 
 fn to_hex<T: Serialize>(obj: &T) -> String {
     let bytes = bincode::serialize(obj).unwrap();
-    bytes.to_hex()
+    bytes.encode_hex::<String>()
 }

@@ -7,9 +7,9 @@ use std::str::FromStr;
 
 use anyhow::{bail, format_err, Context};
 use bitcoin::secp256k1;
-use bitcoin_hashes::hex::{format_hex, FromHex};
+use bitcoin_hashes::hex::FromHex;
 use bitcoin_hashes::sha256::{Hash as Sha256, HashEngine};
-use bitcoin_hashes::{hex, sha256};
+use bitcoin_hashes::sha256;
 use fedimint_core::cancellable::Cancelled;
 use fedimint_core::core::{ModuleInstanceId, ModuleKind};
 use fedimint_core::encoding::{DynRawFallback, Encodable};
@@ -17,6 +17,7 @@ use fedimint_core::module::registry::ModuleRegistry;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::{BitcoinHash, ModuleDecoderRegistry};
 use fedimint_logging::LOG_CORE;
+use hex::ToHex;
 use serde::de::DeserializeOwned;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -206,12 +207,27 @@ impl ClientConfig {
     Eq,
     Hash,
     PartialEq,
-    Encodable,
-    Decodable,
     Ord,
     PartialOrd,
 )]
 pub struct FederationId(pub sha256::Hash);
+
+impl Encodable for FederationId {
+    fn consensus_encode<W: std::io::Write>(&self, writer: &mut W) -> Result<usize, std::io::Error> {
+        writer.write(&self.0.to_byte_array())
+    }
+}
+
+impl Decodable for FederationId {
+    fn consensus_decode<R: std::io::Read>(
+        r: &mut R,
+        _modules: &ModuleDecoderRegistry,
+    ) -> Result<Self, crate::encoding::DecodeError> {
+        let mut bytes = [0; 32];
+        r.read_exact(&mut bytes).map_err(|e| crate::encoding::DecodeError::from_err(e))?;
+        Ok(FederationId::from_byte_array(bytes))
+    }
+}
 
 #[derive(
     Debug,
@@ -236,13 +252,13 @@ pub struct FederationIdPrefix([u8; 4]);
 
 impl Display for FederationIdPrefix {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        format_hex(&self.0, f)
+        f.write_str(&self.0.encode_hex::<String>().as_str())
     }
 }
 
 impl Display for FederationId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        format_hex(&self.0, f)
+        f.write_str(&self.0.encode_hex::<String>().as_str())
     }
 }
 
@@ -250,11 +266,11 @@ impl Display for FederationId {
 impl FederationId {
     /// Random dummy id for testing
     pub fn dummy() -> Self {
-        Self(sha256::Hash::from_inner([42; 32]))
+        Self(sha256::Hash::from_byte_array([42; 32]))
     }
 
     pub(crate) fn from_byte_array(bytes: [u8; 32]) -> Self {
-        Self(sha256::Hash::from_inner(bytes))
+        Self(sha256::Hash::from_byte_array(bytes))
     }
 
     pub fn to_prefix(&self) -> FederationIdPrefix {
@@ -274,7 +290,7 @@ impl FederationId {
         &self,
         secp: &secp256k1::Secp256k1<secp256k1_zkp::All>,
     ) -> anyhow::Result<secp256k1::PublicKey> {
-        let sk = secp256k1::SecretKey::from_slice(&self.0)?;
+        let sk = secp256k1::SecretKey::from_slice(&self.0.to_byte_array())?;
         Ok(secp256k1::PublicKey::from_secret_key(secp, &sk))
     }
 }
@@ -286,7 +302,7 @@ impl FromStr for FederationId {
         Ok(Self::from_byte_array(
             Vec::from_hex(s)?
                 .try_into()
-                .map_err(|bytes: Vec<u8>| hex::Error::InvalidLength(32, bytes.len()))?,
+                .map_err(|bytes: Vec<u8>| anyhow::anyhow!("InvalidLength. Expected 32 bytes, found: {}", bytes.len()))?
         ))
     }
 }
@@ -914,7 +930,8 @@ pub fn load_from_file<T: DeserializeOwned>(path: &Path) -> Result<T, anyhow::Err
 pub mod serde_binary_human_readable {
     use std::borrow::Cow;
 
-    use bitcoin_hashes::hex::{FromHex, ToHex};
+    use bitcoin_hashes::hex::FromHex;
+    use hex::ToHex;
     use serde::de::DeserializeOwned;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -922,7 +939,7 @@ pub mod serde_binary_human_readable {
         if s.is_human_readable() {
             let bytes =
                 bincode::serialize(x).map_err(|e| serde::ser::Error::custom(format!("{e:?}")))?;
-            s.serialize_str(&bytes.to_hex())
+            s.serialize_str(&bytes.encode_hex::<String>())
         } else {
             Serialize::serialize(x, s)
         }

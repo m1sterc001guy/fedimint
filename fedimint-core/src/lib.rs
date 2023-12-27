@@ -55,12 +55,9 @@ pub mod util;
 /// Atomic BFT unit containing consensus items
 pub mod session_outcome;
 
-hash_newtype!(
-    TransactionId,
-    Sha256,
-    32,
-    doc = "A transaction id for peg-ins, peg-outs and reissuances"
-);
+hash_newtype! {
+    pub struct TransactionId(Sha256);
+}
 
 #[derive(
     Debug,
@@ -129,7 +126,7 @@ impl Amount {
         if let Denomination::MilliSatoshi = denom {
             return Ok(Self::from_msats(s.parse()?));
         }
-        let btc_amt = bitcoin::util::amount::Amount::from_str_in(s, denom)?;
+        let btc_amt = bitcoin::amount::Amount::from_str_in(s, denom)?;
         Ok(Self::from(btc_amt))
     }
 
@@ -196,7 +193,7 @@ pub mod amount {
 pub enum BitcoinAmountOrAll {
     All,
     #[serde(untagged)]
-    Amount(#[serde(with = "bitcoin::util::amount::serde::as_sat")] bitcoin::Amount),
+    Amount(#[serde(with = "bitcoin::amount::serde::as_sat")] bitcoin::Amount),
 }
 
 impl FromStr for BitcoinAmountOrAll {
@@ -242,7 +239,7 @@ pub enum ParseAmountError {
     #[error("Error parsing string as integer: {0}")]
     NotANumber(#[from] ParseIntError),
     #[error("Error parsing string as a bitcoin amount: {0}")]
-    WrongBitcoinAmount(#[from] bitcoin::util::amount::ParseAmountError),
+    WrongBitcoinAmount(#[from] bitcoin::amount::ParseAmountError),
 }
 
 impl<T> NumPeers for BTreeMap<PeerId, T> {
@@ -467,7 +464,7 @@ impl Decodable for TransactionId {
     ) -> Result<Self, DecodeError> {
         let mut bytes = [0u8; 32];
         d.read_exact(&mut bytes).map_err(DecodeError::from_err)?;
-        Ok(TransactionId::from_inner(bytes))
+        Ok(TransactionId::from_byte_array(bytes))
     }
 }
 
