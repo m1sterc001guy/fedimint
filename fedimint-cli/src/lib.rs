@@ -520,6 +520,7 @@ impl FedimintCli {
         let mut client_builder = Client::builder(DatabaseSource::Fresh(db));
         client_builder.with_module_inits(self.module_inits.clone());
         client_builder.with_primary_module(1);
+        client_builder.migrate_database().await.map_err_cli_io()?;
 
         Ok(client_builder)
     }

@@ -13,7 +13,9 @@ use fedimint_client::transaction::{ClientInput, ClientOutput, TransactionBuilder
 use fedimint_client::DynGlobalClientContext;
 use fedimint_core::api::GlobalFederationApi;
 use fedimint_core::core::{Decoder, KeyPair, OperationId};
-use fedimint_core::db::{Database, DatabaseTransaction, IDatabaseTransactionOpsCoreTyped};
+use fedimint_core::db::{
+    Database, DatabaseTransaction, DatabaseVersion, IDatabaseTransactionOpsCoreTyped,
+};
 use fedimint_core::module::{
     ApiVersion, CommonModuleInit, ModuleCommon, ModuleInit, MultiApiVersion, TransactionItemAmount,
 };
@@ -349,6 +351,7 @@ impl ModuleInit for DummyClientInit {
 #[apply(async_trait_maybe_send!)]
 impl ClientModuleInit for DummyClientInit {
     type Module = DummyClientModule;
+    const DATABASE_VERSION: DatabaseVersion = DatabaseVersion(1);
 
     fn supported_api_versions(&self) -> MultiApiVersion {
         MultiApiVersion::try_from_iter([ApiVersion { major: 0, minor: 0 }])
