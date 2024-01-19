@@ -486,7 +486,8 @@ mod fedimint_migration_tests {
     use bitcoin_hashes::Hash;
     use fedimint_core::core::LEGACY_HARDCODED_INSTANCE_ID_LN;
     use fedimint_core::db::{
-        apply_migrations, DatabaseTransaction, IDatabaseTransactionOpsCoreTyped,
+        apply_migrations, DatabaseTransaction, DatabaseVersion, DatabaseVersionKey,
+        IDatabaseTransactionOpsCoreTyped,
     };
     use fedimint_core::encoding::Encodable;
     use fedimint_core::module::registry::ModuleDecoderRegistry;
@@ -513,6 +514,7 @@ mod fedimint_migration_tests {
         LightningOutputOutcomeV0,
     };
     use fedimint_ln_server::Lightning;
+    use fedimint_logging::TracingSetup;
     use fedimint_testing::db::{
         prepare_db_migration_snapshot, validate_migrations, BYTE_32, BYTE_33, BYTE_8, STRING_64,
     };
@@ -533,6 +535,9 @@ mod fedimint_migration_tests {
     /// database keys/values change - instead a new function should be added
     /// that creates a new database backup that can be tested.
     async fn create_server_db_with_v0_data(mut dbtx: DatabaseTransaction<'_>) {
+        dbtx.insert_new_entry(&DatabaseVersionKey, &DatabaseVersion(0))
+            .await;
+
         let contract_id = ContractId::from_str(STRING_64).unwrap();
         let amount = fedimint_core::Amount { msats: 1000 };
         let threshold_key = threshold_crypto::PublicKey::from(G1Projective::identity());
@@ -668,6 +673,8 @@ mod fedimint_migration_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_migrations() -> anyhow::Result<()> {
+        TracingSetup::default().init()?;
+
         validate_migrations(
             "lightning-server",
             |db| async move {

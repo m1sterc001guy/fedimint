@@ -596,11 +596,13 @@ mod fedimint_migration_tests {
     };
     use fedimint_core::core::LEGACY_HARDCODED_INSTANCE_ID_WALLET;
     use fedimint_core::db::{
-        apply_migrations, DatabaseTransaction, IDatabaseTransactionOpsCoreTyped,
+        apply_migrations, DatabaseTransaction, DatabaseVersion, DatabaseVersionKey,
+        IDatabaseTransactionOpsCoreTyped,
     };
     use fedimint_core::module::registry::ModuleDecoderRegistry;
     use fedimint_core::module::{CommonModuleInit, DynServerModuleInit};
     use fedimint_core::{BitcoinHash, Feerate, OutPoint, PeerId, ServerModule, TransactionId};
+    use fedimint_logging::TracingSetup;
     use fedimint_testing::db::{
         prepare_db_migration_snapshot, validate_migrations, BYTE_20, BYTE_32, BYTE_33,
     };
@@ -630,6 +632,9 @@ mod fedimint_migration_tests {
     /// database keys/values change - instead a new function should be added
     /// that creates a new database backup that can be tested.
     async fn create_server_db_with_v0_data(mut dbtx: DatabaseTransaction<'_>) {
+        dbtx.insert_new_entry(&DatabaseVersionKey, &DatabaseVersion(0))
+            .await;
+
         dbtx.insert_new_entry(&BlockHashKey(BlockHash::from_slice(&BYTE_32).unwrap()), &())
             .await;
 
@@ -796,6 +801,8 @@ mod fedimint_migration_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_migrations() -> anyhow::Result<()> {
+        TracingSetup::default().init()?;
+
         validate_migrations(
             "wallet-server",
             |db| async move {
