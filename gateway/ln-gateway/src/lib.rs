@@ -965,8 +965,13 @@ impl Gateway {
     }
 
     pub async fn handle_leave_federation(&mut self, payload: LeaveFedPayload) -> Result<()> {
-        // TODO: This should optimistically try to contact the federation to remove the
-        // registration record
+        let client = self.select_client(payload.federation_id).await?;
+        client
+            .value()
+            .get_first_module::<GatewayClientModule>()
+            .remove_gateway_registration(self.gateway_id)
+            .await;
+
         let _client_joining_lock = self.client_joining_lock.lock().await;
         self.remove_client(payload.federation_id, &_client_joining_lock)
             .await?;

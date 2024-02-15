@@ -381,6 +381,19 @@ impl GatewayClientModule {
         }
     }
 
+    pub async fn remove_gateway_registration(&self, gateway_id: secp256k1::PublicKey) {
+        let federation_id = self.client_ctx.get_config().global.federation_id();
+        if let Err(e) = self
+            .module_api
+            .remove_gateway_registration(gateway_id)
+            .await
+        {
+            warn!("Failed to remove gateway registration. FederationId: {federation_id} GatewayId: {gateway_id} Error: {e:?}");
+        } else {
+            info!("Successfully removed gateway {gateway_id} with federation {federation_id}",);
+        }
+    }
+
     /// Attempt fulfill HTLC by buying preimage from the federation
     pub async fn gateway_handle_intercepted_htlc(&self, htlc: Htlc) -> anyhow::Result<OperationId> {
         debug!("Handling intercepted HTLC {htlc:?}");

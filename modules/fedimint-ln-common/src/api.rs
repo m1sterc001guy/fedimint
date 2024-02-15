@@ -9,7 +9,7 @@ use fedimint_core::endpoint_constants::{
     ACCOUNT_ENDPOINT, AWAIT_ACCOUNT_ENDPOINT, AWAIT_BLOCK_HEIGHT_ENDPOINT, AWAIT_OFFER_ENDPOINT,
     AWAIT_OUTGOING_CONTRACT_CANCELLED_ENDPOINT, AWAIT_PREIMAGE_DECRYPTION, BLOCK_COUNT_ENDPOINT,
     GET_DECRYPTED_PREIMAGE_STATUS, LIST_GATEWAYS_ENDPOINT, OFFER_ENDPOINT,
-    REGISTER_GATEWAY_ENDPOINT,
+    REGISTER_GATEWAY_ENDPOINT, REMOVE_GATEWAY_REGISTRATION_ENDPOINT,
 };
 use fedimint_core::module::ApiRequestErased;
 use fedimint_core::query::UnionResponses;
@@ -63,6 +63,11 @@ pub trait LnFederationApi {
         &self,
         id: ContractId,
     ) -> FederationResult<OutgoingContractAccount>;
+
+    async fn remove_gateway_registration(
+        &self,
+        gateway_id: secp256k1::PublicKey,
+    ) -> FederationResult<()>;
 }
 
 #[apply(async_trait_maybe_send!)]
@@ -217,6 +222,17 @@ where
                 "WrongAccountType"
             ))),
         }
+    }
+
+    async fn remove_gateway_registration(
+        &self,
+        gateway_id: secp256k1::PublicKey,
+    ) -> FederationResult<()> {
+        self.request_current_consensus(
+            REMOVE_GATEWAY_REGISTRATION_ENDPOINT.to_string(),
+            ApiRequestErased::new(gateway_id),
+        )
+        .await
     }
 }
 

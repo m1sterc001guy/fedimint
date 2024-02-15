@@ -15,7 +15,7 @@ use fedimint_core::endpoint_constants::{
     ACCOUNT_ENDPOINT, AWAIT_ACCOUNT_ENDPOINT, AWAIT_BLOCK_HEIGHT_ENDPOINT, AWAIT_OFFER_ENDPOINT,
     AWAIT_OUTGOING_CONTRACT_CANCELLED_ENDPOINT, AWAIT_PREIMAGE_DECRYPTION, BLOCK_COUNT_ENDPOINT,
     GET_DECRYPTED_PREIMAGE_STATUS, LIST_GATEWAYS_ENDPOINT, OFFER_ENDPOINT,
-    REGISTER_GATEWAY_ENDPOINT,
+    REGISTER_GATEWAY_ENDPOINT, REMOVE_GATEWAY_REGISTRATION_ENDPOINT,
 };
 use fedimint_core::module::audit::Audit;
 use fedimint_core::module::{
@@ -943,6 +943,14 @@ impl ServerModule for Lightning {
                     Ok(())
                 }
             },
+            api_endpoint! {
+                REMOVE_GATEWAY_REGISTRATION_ENDPOINT,
+                ApiVersion::new(0, 0),
+                async |module: &Lightning, context, gateway_id: secp256k1::PublicKey| -> () {
+                    module.remove_gateway_registration(&mut context.dbtx().into_nc(), gateway_id).await;
+                    Ok(())
+                }
+            },
         ]
     }
 }
@@ -1172,6 +1180,14 @@ impl Lightning {
         for key in expired_gateway_keys {
             dbtx.remove_entry(&key).await;
         }
+    }
+
+    async fn remove_gateway_registration(
+        &self,
+        dbtx: &mut DatabaseTransaction<'_>,
+        gateway_id: secp256k1::PublicKey,
+    ) {
+        dbtx.remove_entry(&LightningGatewayKey(gateway_id)).await;
     }
 }
 
