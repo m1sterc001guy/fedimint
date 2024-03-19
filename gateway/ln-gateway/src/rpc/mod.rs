@@ -4,6 +4,7 @@ pub mod rpc_server;
 use std::collections::BTreeMap;
 
 use bitcoin::{Address, Network};
+use bitcoin_hashes::sha256;
 use fedimint_core::config::{ClientConfig, FederationId, JsonClientConfig};
 use fedimint_core::{Amount, BitcoinAmountOrAll};
 use fedimint_ln_common::{route_hints, serde_option_routing_fees};
@@ -92,4 +93,13 @@ pub struct SetConfigurationPayload {
     pub num_route_hints: Option<u32>,
     pub routing_fees: Option<String>,
     pub network: Option<Network>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateInvoicePayload {
+    pub payment_hash: sha256::Hash,
+    pub amount: Amount,
+    pub expiry_secs: u32,
+    pub description: String,
+    pub federation_id: FederationId,
 }

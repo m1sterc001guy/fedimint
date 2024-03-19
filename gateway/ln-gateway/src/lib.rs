@@ -25,6 +25,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use bitcoin::{Address, Network, Txid};
 use bitcoin_hashes::hex::ToHex;
+use bitcoin_hashes::{sha256, Hash};
 use clap::Parser;
 use client::GatewayClientBuilder;
 use db::{
@@ -40,7 +41,8 @@ use fedimint_core::core::{
     LEGACY_HARDCODED_INSTANCE_ID_WALLET,
 };
 use fedimint_core::db::{
-    apply_migrations_server, Database, DatabaseTransaction, IDatabaseTransactionOpsCoreTyped,
+    apply_migrations_server, Database, DatabaseTransaction, DatabaseValue,
+    IDatabaseTransactionOpsCoreTyped,
 };
 use fedimint_core::fmt_utils::OptStacktrace;
 use fedimint_core::module::CommonModuleInit;
@@ -61,7 +63,9 @@ use fedimint_wallet_client::{
 };
 use futures::stream::StreamExt;
 use gateway_lnrpc::intercept_htlc_response::Action;
-use gateway_lnrpc::{GetNodeInfoResponse, InterceptHtlcResponse};
+use gateway_lnrpc::{
+    CreateInvoiceRequest, GetNodeInfoResponse, InterceptHtlcRequest, InterceptHtlcResponse,
+};
 use lightning::{ILnRpcClient, LightningBuilder, LightningMode, LightningRpcError};
 use lightning_invoice::RoutingFees;
 use rand::rngs::OsRng;
@@ -77,14 +81,15 @@ use thiserror::Error;
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
-use crate::db::{get_gatewayd_database_migrations, FederationConfig, FederationIdKeyPrefix};
+use crate::db::{
+    get_gatewayd_database_migrations, FederationConfig, FederationIdKeyPrefix, PaymentHashKey,
+};
 use crate::gateway_lnrpc::intercept_htlc_response::Forward;
-use crate::lightning::cln::RouteHtlcStream;
-use crate::lightning::GatewayLightningBuilder;
+use crate::lightning::{GatewayLightningBuilder, RouteHtlcStream};
 use crate::rpc::rpc_server::run_webserver;
 use crate::rpc::{
-    BackupPayload, BalancePayload, ConnectFedPayload, DepositAddressPayload, RestorePayload,
-    WithdrawPayload,
+    BackupPayload, BalancePayload, ConnectFedPayload, CreateInvoicePayload, DepositAddressPayload,
+    RestorePayload, WithdrawPayload,
 };
 use crate::state_machine::GatewayExtPayStates;
 
@@ -598,6 +603,26 @@ impl Gateway {
         }
     }
 
+    async fn lookup_federation_id(
+        &self,
+        htlc_request: &InterceptHtlcRequest,
+    ) -> Option<FederationId> {
+        let scid_to_feds = self.scid_to_federation.read().await;
+        let federation_id = scid_to_feds.get(&htlc_request.short_channel_id);
+        if let Some(federation_id) = federation_id {
+            Some(federation_id.clone())
+        } else {
+            let mut dbtx = self.gateway_db.begin_transaction_nc().await;
+            let payment_hash = sha256::Hash::from_slice(&htlc_request.payment_hash)
+                .expect("Failed to lookup FederationId");
+            let federation_id = dbtx
+                .get_value(&PaymentHashKey(payment_hash))
+                .await
+                .expect("Failed to lookup Federation Id");
+            Some(federation_id)
+        }
+    }
+
     pub async fn handle_htlc_stream(&self, mut stream: RouteHtlcStream<'_>, handle: TaskHandle) {
         let GatewayState::Running { lightning_context } = self.state.read().await.clone() else {
             panic!("Gateway isn't in a running state")
@@ -612,13 +637,14 @@ impl Gateway {
                     if handle.is_shutting_down() {
                         break;
                     }
-                    let scid_to_feds = self.scid_to_federation.read().await;
-                    let federation_id = scid_to_feds.get(&htlc_request.short_channel_id);
+                    //let scid_to_feds = self.scid_to_federation.read().await;
+                    //let federation_id = scid_to_feds.get(&htlc_request.short_channel_id);
+                    let federation_id = self.lookup_federation_id(&htlc_request).await;
                     // Just forward the HTLC if we do not have a federation that
                     // corresponds to the short channel id
                     if let Some(federation_id) = federation_id {
                         let clients = self.clients.read().await;
-                        let client = clients.get(federation_id);
+                        let client = clients.get(&federation_id);
                         // Just forward the HTLC if we do not have a client that
                         // corresponds to the federation id
                         if let Some(client) = client {
@@ -1117,6 +1143,32 @@ impl Gateway {
         info!("Set GatewayConfiguration successfully.");
 
         Ok(())
+    }
+
+    async fn handle_create_invoice_msg(
+        &self,
+        create_invoice_payload: CreateInvoicePayload,
+    ) -> Result<String> {
+        let lightning_context = self.get_lightning_context().await?;
+        let invoice_response = lightning_context
+            .lnrpc
+            .create_invoice(CreateInvoiceRequest {
+                payment_hash: create_invoice_payload.payment_hash.to_vec(),
+                amount_msat: create_invoice_payload.amount.msats,
+                expiry: create_invoice_payload.expiry_secs,
+                description: create_invoice_payload.description,
+            })
+            .await?;
+
+        let mut dbtx = self.gateway_db.begin_transaction().await;
+        dbtx.insert_new_entry(
+            &PaymentHashKey(create_invoice_payload.payment_hash),
+            &create_invoice_payload.federation_id,
+        )
+        .await;
+        dbtx.commit_tx().await;
+
+        Ok(invoice_response.invoice)
     }
 
     /// Updates the routing fees for every federation configuration. Also

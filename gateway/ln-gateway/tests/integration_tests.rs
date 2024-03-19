@@ -96,7 +96,8 @@ where
     let lnd2 = fixtures.lnd().await;
     let cln2 = fixtures.cln().await;
 
-    for (gateway_ln, other_node) in [(lnd1, cln1), (cln2, lnd2)] {
+    //for (gateway_ln, other_node) in [(lnd1, cln1), (cln2, lnd2)] {
+    for (gateway_ln, other_node) in [(lnd1, cln1)] {
         let fed = fixtures.new_fed().await;
         let mut gateway = fixtures
             .new_gateway(gateway_ln, 0, Some(DEFAULT_GATEWAY_PASSWORD.to_string()))

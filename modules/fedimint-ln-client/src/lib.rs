@@ -59,6 +59,7 @@ use futures::StreamExt;
 use incoming::IncomingSmError;
 use lightning_invoice::{
     Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret, RouteHint, RouteHintHop, RoutingFees,
+    DEFAULT_EXPIRY_TIME,
 };
 use rand::{CryptoRng, Rng, RngCore};
 use secp256k1::{PublicKey, ThirtyTwoByteHash};
@@ -740,6 +741,7 @@ impl LightningClientModule {
         short_channel_id: u64,
         route_hints: Vec<fedimint_ln_common::route_hints::RouteHint>,
         network: Network,
+        gateway: &LightningGateway,
     ) -> anyhow::Result<(
         OperationId,
         Bolt11Invoice,
@@ -751,6 +753,44 @@ impl LightningClientModule {
         let preimage = sha256::Hash::hash(&preimage_key);
         let payment_hash = sha256::Hash::hash(&preimage);
 
+        let payload = CreateInvoicePayload {
+            payment_hash,
+            amount,
+            expiry_secs: expiry_time.unwrap_or(DEFAULT_EXPIRY_TIME) as u32,
+            description: "Description".to_string(),
+            federation_id: self.client_ctx.get_config().calculate_federation_id(),
+        };
+        let response = reqwest::Client::new()
+            .post(
+                gateway
+                    .api
+                    .join("create_invoice")
+                    .expect("'create_invoice' contains no invalid characters for a URL")
+                    .as_str(),
+            )
+            .json(&payload)
+            .send()
+            .await
+            // TODO: Fix this error
+            .map_err(|e| GatewayPayError::GatewayInternalError {
+                error_code: None,
+                error_message: e.to_string(),
+            })?;
+
+        let invoice = response
+            .text()
+            .await
+            // TODO: Fix this error
+            .map_err(|_| GatewayPayError::GatewayInternalError {
+                error_code: None,
+                error_message: "Error retrieving invoice from response".to_string(),
+            })?;
+        let length = invoice.len();
+        let invoice = invoice[1..length - 1].to_string();
+        let invoice = Bolt11Invoice::from_str(invoice.as_str())?;
+        tracing::info!("## GATEWAY INVOICE: {invoice}");
+
+        /*
         // Temporary lightning node pubkey
         let (node_secret_key, node_public_key) = self.secp.generate_keypair(&mut rng);
 
@@ -804,6 +844,7 @@ impl LightningClientModule {
 
         let invoice = invoice_builder
             .build_signed(|hash| self.secp.sign_ecdsa_recoverable(hash, &node_secret_key))?;
+        */
 
         let operation_id = OperationId(invoice.payment_hash().into_inner());
 
@@ -1329,7 +1370,7 @@ impl LightningClientModule {
         extra_meta: M,
         gateway: Option<LightningGateway>,
     ) -> anyhow::Result<(OperationId, Bolt11Invoice, [u8; 32])> {
-        let (src_node_id, short_channel_id, route_hints) = match gateway {
+        let (src_node_id, short_channel_id, route_hints) = match gateway.clone() {
             Some(current_gateway) => (
                 current_gateway.node_pub_key,
                 current_gateway.mint_channel_id,
@@ -1352,6 +1393,7 @@ impl LightningClientModule {
                 short_channel_id,
                 route_hints,
                 self.cfg.network,
+                &gateway.expect("No gateway provided"),
             )
             .await?;
         let tx = TransactionBuilder::new().with_output(self.client_ctx.make_client_output(output));
@@ -1573,4 +1615,13 @@ async fn set_payment_result(
         dbtx.insert_entry(&PaymentResultKey { payment_hash }, &payment_result)
             .await;
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateInvoicePayload {
+    pub payment_hash: sha256::Hash,
+    pub amount: Amount,
+    pub expiry_secs: u32,
+    pub description: String,
+    pub federation_id: FederationId,
 }

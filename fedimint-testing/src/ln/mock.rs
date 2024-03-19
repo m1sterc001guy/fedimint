@@ -15,11 +15,10 @@ use lightning_invoice::{
     SignedRawBolt11Invoice, DEFAULT_EXPIRY_TIME,
 };
 use ln_gateway::gateway_lnrpc::{
-    self, EmptyResponse, GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse,
-    PayInvoiceRequest, PayInvoiceResponse,
+    self, CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetNodeInfoResponse,
+    GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceRequest, PayInvoiceResponse,
 };
-use ln_gateway::lightning::cln::{HtlcResult, RouteHtlcStream};
-use ln_gateway::lightning::{ILnRpcClient, LightningRpcError};
+use ln_gateway::lightning::{HtlcResult, ILnRpcClient, LightningRpcError, RouteHtlcStream};
 use rand::rngs::OsRng;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -62,6 +61,7 @@ impl Default for FakeLightningTest {
 
 #[async_trait]
 impl LightningTest for FakeLightningTest {
+    // TODO: With create_invoice, is this necessary?
     async fn invoice(
         &self,
         amount: Amount,
@@ -162,5 +162,29 @@ impl ILnRpcClient for FakeLightningTest {
         _htlc: InterceptHtlcResponse,
     ) -> Result<EmptyResponse, LightningRpcError> {
         Ok(EmptyResponse {})
+    }
+
+    async fn create_invoice(
+        &self,
+        create_invoice_request: CreateInvoiceRequest,
+    ) -> Result<CreateInvoiceResponse, LightningRpcError> {
+        let ctx = bitcoin::secp256k1::Secp256k1::new();
+
+        let payment_hash = sha256::Hash::from_slice(&create_invoice_request.payment_hash)
+            .expect("Failed to lookup FederationId");
+        let invoice = InvoiceBuilder::new(Currency::Regtest)
+            .description("".to_string())
+            .payment_hash(payment_hash)
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(0)
+            .payment_secret(PaymentSecret([0; 32]))
+            .amount_milli_satoshis(create_invoice_request.amount_msat)
+            .expiry_time(Duration::from_secs(create_invoice_request.expiry as u64))
+            .build_signed(|m| ctx.sign_ecdsa_recoverable(m, &self.gateway_node_sec_key))
+            .unwrap();
+
+        Ok(CreateInvoiceResponse {
+            invoice: invoice.to_string(),
+        })
     }
 }

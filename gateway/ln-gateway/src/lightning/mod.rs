@@ -11,15 +11,19 @@ use fedimint_core::task::TaskGroup;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::Amount;
 use fedimint_ln_common::PrunedInvoice;
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use self::cln::{NetworkLnRpcClient, RouteHtlcStream};
+use self::cln::NetworkLnRpcClient;
 use self::lnd::GatewayLndClient;
 use crate::gateway_lnrpc::{
-    EmptyResponse, GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse,
-    PayInvoiceRequest, PayInvoiceResponse,
+    CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetNodeInfoResponse,
+    GetRouteHintsResponse, InterceptHtlcRequest, InterceptHtlcResponse, PayInvoiceRequest,
+    PayInvoiceResponse,
 };
+pub type HtlcResult = std::result::Result<InterceptHtlcRequest, tonic::Status>;
+pub type RouteHtlcStream<'a> = BoxStream<'a, HtlcResult>;
 
 pub const MAX_LIGHTNING_RETRIES: u32 = 10;
 
@@ -108,6 +112,11 @@ pub trait ILnRpcClient: Debug + Send + Sync {
         &self,
         htlc: InterceptHtlcResponse,
     ) -> Result<EmptyResponse, LightningRpcError>;
+
+    async fn create_invoice(
+        &self,
+        create_invoice_request: CreateInvoiceRequest,
+    ) -> Result<CreateInvoiceResponse, LightningRpcError>;
 }
 
 #[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]

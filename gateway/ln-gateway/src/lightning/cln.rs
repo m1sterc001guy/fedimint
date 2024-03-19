@@ -5,7 +5,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use fedimint_core::task::{sleep, TaskGroup};
 use fedimint_core::util::SafeUrl;
-use futures::stream::BoxStream;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
 use tracing::info;
@@ -13,12 +12,11 @@ use tracing::info;
 use super::{ILnRpcClient, LightningRpcError};
 use crate::gateway_lnrpc::gateway_lightning_client::GatewayLightningClient;
 use crate::gateway_lnrpc::{
-    EmptyRequest, EmptyResponse, GetNodeInfoResponse, GetRouteHintsRequest, GetRouteHintsResponse,
-    InterceptHtlcRequest, InterceptHtlcResponse, PayInvoiceRequest, PayInvoiceResponse,
+    CreateInvoiceRequest, CreateInvoiceResponse, EmptyRequest, EmptyResponse, GetNodeInfoResponse,
+    GetRouteHintsRequest, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceRequest,
+    PayInvoiceResponse,
 };
-use crate::lightning::MAX_LIGHTNING_RETRIES;
-pub type HtlcResult = std::result::Result<InterceptHtlcRequest, tonic::Status>;
-pub type RouteHtlcStream<'a> = BoxStream<'a, HtlcResult>;
+use crate::lightning::{RouteHtlcStream, MAX_LIGHTNING_RETRIES};
 
 /// An `ILnRpcClient` that wraps around `GatewayLightningClient` for
 /// convenience, and makes real RPC requests over the wire to a remote lightning
@@ -137,6 +135,20 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 failure_reason: status.message().to_string(),
             }
         })?;
+        Ok(res.into_inner())
+    }
+
+    async fn create_invoice(
+        &self,
+        create_invoice_request: CreateInvoiceRequest,
+    ) -> Result<CreateInvoiceResponse, LightningRpcError> {
+        let mut client = Self::connect(self.connection_url.clone()).await?;
+        let res = client
+            .create_invoice(create_invoice_request)
+            .await
+            .map_err(|status| LightningRpcError::FailedToGetInvoice {
+                failure_reason: status.message().to_string(),
+            })?;
         Ok(res.into_inner())
     }
 }

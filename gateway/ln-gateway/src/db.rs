@@ -21,6 +21,7 @@ pub enum DbKeyPrefix {
     GatewayPublicKey = 0x06,
     GatewayConfiguration = 0x07,
     PreimageAuthentication = 0x08,
+    PaymentHash = 0x09,
 }
 
 impl std::fmt::Display for DbKeyPrefix {
@@ -100,6 +101,20 @@ impl_db_lookup!(
     key = PreimageAuthentication,
     query_prefix = PreimageAuthenticationPrefix
 );
+
+#[derive(Debug, Encodable, Decodable)]
+pub struct PaymentHashKey(pub sha256::Hash);
+
+#[derive(Debug, Encodable, Decodable)]
+pub struct PaymentHashPrefix;
+
+impl_db_record!(
+    key = PaymentHashKey,
+    value = FederationId,
+    db_prefix = DbKeyPrefix::PaymentHash,
+);
+
+impl_db_lookup!(key = PaymentHashKey, query_prefix = PaymentHashPrefix);
 
 pub fn get_gatewayd_database_migrations() -> BTreeMap<DatabaseVersion, ServerMigrationFn> {
     BTreeMap::new()
@@ -230,6 +245,9 @@ mod fedimint_migration_tests {
                             let gateway_configuration = dbtx.get_value(&GatewayConfigurationKey).await;
                             ensure!(gateway_configuration.is_some(), "validate_migrations was not able to read GatewayConfiguration");
                             info!("Validated GatewayConfiguration");
+                        }
+                        DbKeyPrefix::PaymentHash => {
+                            todo!()
                         }
                     }
                 }

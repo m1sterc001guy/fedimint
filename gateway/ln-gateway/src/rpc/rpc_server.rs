@@ -14,8 +14,9 @@ use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::{error, instrument};
 
 use super::{
-    BackupPayload, BalancePayload, ConnectFedPayload, DepositAddressPayload, InfoPayload,
-    LeaveFedPayload, RestorePayload, SetConfigurationPayload, WithdrawPayload, V1_API_ENDPOINT,
+    BackupPayload, BalancePayload, ConnectFedPayload, CreateInvoicePayload, DepositAddressPayload,
+    InfoPayload, LeaveFedPayload, RestorePayload, SetConfigurationPayload, WithdrawPayload,
+    V1_API_ENDPOINT,
 };
 use crate::db::GatewayConfiguration;
 use crate::rpc::ConfigPayload;
@@ -55,6 +56,7 @@ fn v1_routes(config: Option<GatewayConfiguration>, gateway: Gateway) -> Router {
         // Public routes on gateway webserver
         let public_routes = Router::new()
             .route("/pay_invoice", post(pay_invoice))
+            .route("/create_invoice", post(create_invoice))
             .route("/id", get(get_gateway_id));
 
         // Authenticated, public routes used for gateway administration
@@ -221,4 +223,13 @@ async fn get_gateway_id(
     Extension(gateway): Extension<Gateway>,
 ) -> Result<impl IntoResponse, GatewayError> {
     Ok(Json(json!(gateway.gateway_id)))
+}
+
+#[instrument(skip_all, err)]
+async fn create_invoice(
+    Extension(gateway): Extension<Gateway>,
+    Json(payload): Json<CreateInvoicePayload>,
+) -> Result<impl IntoResponse, GatewayError> {
+    let invoice = gateway.handle_create_invoice_msg(payload).await?;
+    Ok(Json(json!(invoice)))
 }

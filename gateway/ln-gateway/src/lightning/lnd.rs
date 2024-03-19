@@ -13,6 +13,7 @@ use secp256k1::PublicKey;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
+use tonic_lnd::invoicesrpc::AddHoldInvoiceRequest;
 use tonic_lnd::lnrpc::failure::FailureCode;
 use tonic_lnd::lnrpc::payment::PaymentStatus;
 use tonic_lnd::lnrpc::{ChanInfoRequest, GetInfoRequest, ListChannelsRequest};
@@ -24,14 +25,15 @@ use tonic_lnd::tonic::Code;
 use tonic_lnd::{connect, Client as LndClient};
 use tracing::{debug, error, info, trace, warn};
 
-use super::cln::RouteHtlcStream;
 use super::{ILnRpcClient, LightningRpcError, MAX_LIGHTNING_RETRIES};
 use crate::gateway_lnrpc::get_route_hints_response::{RouteHint, RouteHintHop};
 use crate::gateway_lnrpc::intercept_htlc_response::{Action, Cancel, Forward, Settle};
 use crate::gateway_lnrpc::{
-    EmptyResponse, GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcRequest,
-    InterceptHtlcResponse, PayInvoiceRequest, PayInvoiceResponse,
+    CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetNodeInfoResponse,
+    GetRouteHintsResponse, InterceptHtlcRequest, InterceptHtlcResponse, PayInvoiceRequest,
+    PayInvoiceResponse,
 };
+use crate::lightning::RouteHtlcStream;
 
 type HtlcSubscriptionSender = mpsc::Sender<Result<InterceptHtlcRequest, Status>>;
 
@@ -730,6 +732,33 @@ impl ILnRpcClient for GatewayLndClient {
         Err(LightningRpcError::FailedToCompleteHtlc {
             failure_reason: "Gatewayd has not started to route HTLCs".to_string(),
         })
+    }
+
+    async fn create_invoice(
+        &self,
+        create_invoice_request: CreateInvoiceRequest,
+    ) -> Result<CreateInvoiceResponse, LightningRpcError> {
+        let mut client = Self::connect(
+            self.address.clone(),
+            self.tls_cert.clone(),
+            self.macaroon.clone(),
+        )
+        .await?;
+        let hold_invoice_response = client
+            .invoices()
+            .add_hold_invoice(AddHoldInvoiceRequest {
+                memo: create_invoice_request.description,
+                hash: create_invoice_request.payment_hash,
+                value_msat: create_invoice_request.amount_msat as i64,
+                expiry: create_invoice_request.expiry as i64,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| LightningRpcError::FailedToGetInvoice {
+                failure_reason: e.to_string(),
+            })?;
+        let invoice = hold_invoice_response.into_inner().payment_request;
+        Ok(CreateInvoiceResponse { invoice })
     }
 }
 
