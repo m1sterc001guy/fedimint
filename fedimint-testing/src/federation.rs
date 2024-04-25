@@ -142,16 +142,23 @@ impl FederationTest {
             let decoders = server_init.available_decoders(instances).unwrap();
             let db = Database::new(MemDatabase::new(), decoders);
 
-            let (consensus_server, consensus_api) = ConsensusServer::new_with(
-                config.clone(),
-                db.clone(),
-                server_init.clone(),
-                connections,
-                DelayCalculator::TEST_DEFAULT,
-                &task_group,
-            )
-            .await
-            .expect("Failed to init server");
+            let (consensus_server, consensus_api) = if num_offline != 0 {
+                ConsensusServer::new_with(
+                    config.clone(),
+                    db.clone(),
+                    server_init.clone(),
+                    connections,
+                    DelayCalculator::TEST_DEFAULT,
+                    &task_group,
+                )
+                .await
+                .expect("Failed to init server")
+            } else {
+                // Dont inject any un-reliability if no peers are offline
+                ConsensusServer::new(config.clone(), db.clone(), server_init.clone(), &task_group)
+                    .await
+                    .expect("Setting up consensus server")
+            };
 
             let api_handle = FedimintServer::spawn_consensus_api(consensus_api, false).await;
 
