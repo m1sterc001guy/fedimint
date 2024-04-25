@@ -14,6 +14,7 @@ use fedimint_client::module::init::{ClientModuleInit, ClientModuleInitArgs};
 use fedimint_client::module::recovery::NoModuleBackup;
 use fedimint_client::module::{ClientModule, IClientModule};
 use fedimint_client::sm::Context;
+use fedimint_client::ClientHandleArc;
 use fedimint_core::api::DynModuleApi;
 use fedimint_core::core::Decoder;
 use fedimint_core::db::{DatabaseTransaction, DatabaseVersion};
@@ -136,6 +137,7 @@ impl ClientModule for MetaClientModule {
     async fn handle_cli_command(
         &self,
         args: &[std::ffi::OsString],
+        _client: ClientHandleArc,
     ) -> anyhow::Result<serde_json::Value> {
         cli::handle_cli_command(self, args).await
     }

@@ -26,7 +26,9 @@ use self::init::ClientModuleInit;
 use crate::module::recovery::{DynModuleBackup, ModuleBackup};
 use crate::sm::{self, ActiveStateMeta, Context, DynContext, DynState, State};
 use crate::transaction::{ClientInput, ClientOutput, TransactionBuilder};
-use crate::{oplog, AddStateMachinesResult, ClientStrong, ClientWeak, TransactionUpdates};
+use crate::{
+    oplog, AddStateMachinesResult, ClientHandleArc, ClientStrong, ClientWeak, TransactionUpdates,
+};
 
 pub mod init;
 pub mod recovery;
@@ -490,6 +492,7 @@ pub trait ClientModule: Debug + MaybeSend + MaybeSync + 'static {
     async fn handle_cli_command(
         &self,
         _args: &[ffi::OsString],
+        _client: ClientHandleArc,
     ) -> anyhow::Result<serde_json::Value> {
         Err(anyhow::format_err!(
             "This module does not implement cli commands"
@@ -681,8 +684,11 @@ pub trait IClientModule: Debug {
 
     fn context(&self, instance: ModuleInstanceId) -> DynContext;
 
-    async fn handle_cli_command(&self, args: &[ffi::OsString])
-        -> anyhow::Result<serde_json::Value>;
+    async fn handle_cli_command(
+        &self,
+        args: &[ffi::OsString],
+        client: ClientHandleArc,
+    ) -> anyhow::Result<serde_json::Value>;
 
     fn input_amount(&self, input: &DynInput) -> Option<TransactionItemAmount>;
 
@@ -746,8 +752,9 @@ where
     async fn handle_cli_command(
         &self,
         args: &[ffi::OsString],
+        client: ClientHandleArc,
     ) -> anyhow::Result<serde_json::Value> {
-        <T as ClientModule>::handle_cli_command(self, args).await
+        <T as ClientModule>::handle_cli_command(self, args, client).await
     }
 
     fn input_amount(&self, input: &DynInput) -> Option<TransactionItemAmount> {

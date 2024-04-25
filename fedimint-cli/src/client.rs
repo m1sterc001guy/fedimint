@@ -608,7 +608,7 @@ pub async fn handle_command(
                 client
                     .get_module_client_dyn(module_instance_id)
                     .context("Module not found")?
-                    .handle_cli_command(&args)
+                    .handle_cli_command(&args, client.clone())
                     .await
             }
             None => {
