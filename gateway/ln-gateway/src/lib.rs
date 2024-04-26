@@ -64,7 +64,7 @@ use fedimint_ln_client::pay::PayInvoicePayload;
 use fedimint_ln_common::config::{GatewayFee, LightningClientConfig};
 use fedimint_ln_common::contracts::Preimage;
 use fedimint_ln_common::route_hints::RouteHint;
-use fedimint_ln_common::LightningCommonInit;
+use fedimint_ln_common::{CreateInvoicePayloadV1, LightningCommonInit};
 use fedimint_lnv2_client::api::LnFederationApi;
 use fedimint_lnv2_client::{CreateInvoicePayload, PaymentFee, PaymentInfo, SendPaymentPayload};
 use fedimint_mint_client::{MintClientInit, MintCommonInit};
@@ -306,6 +306,8 @@ pub struct Gateway {
 
     // The socket the gateway listens on.
     listen: SocketAddr,
+
+    payment_hashes: Arc<RwLock<BTreeMap<sha256::Hash, FederationId>>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -424,6 +426,7 @@ impl Gateway {
             client_joining_lock: Arc::new(Mutex::new(ClientsJoinLock)),
             versioned_api: gateway_parameters.versioned_api,
             listen: gateway_parameters.listen,
+            payment_hashes: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
 
@@ -636,6 +639,55 @@ impl Gateway {
 
                         continue;
                     }
+
+                    let hashes = self.payment_hashes.read().await;
+                    let h = sha256::Hash::from_slice(htlc_request.payment_hash.as_slice())
+                        .expect("Invalid payment hash");
+                    tracing::info!(?h, "Looking for payment hash...");
+                    if let Some(federation_id) = hashes.get(&h) {
+                        tracing::info!(?htlc_request.payment_hash, "Found registered payment hash");
+                        let clients = self.clients.read().await;
+                        let client = clients.get(federation_id);
+                        // Just forward the HTLC if we do not have a client that
+                        // corresponds to the federation id
+                        if let Some(client) = client {
+                            let cf = client
+                                .borrow()
+                                .with(|client| async {
+                                    let htlc = htlc_request.clone().try_into();
+                                    if let Ok(htlc) = htlc {
+                                        tracing::info!(?htlc_request.payment_hash, "Handling intercepted HTLC...");
+                                        match client
+                                            .get_first_module::<GatewayClientModule>()
+                                            .gateway_handle_intercepted_htlc(htlc)
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                return Some(ControlFlow::<(), ()>::Continue(()))
+                                            }
+                                            Err(e) => {
+                                                info!(
+                                                "Got error intercepting HTLC: {e:?}, will retry..."
+                                            )
+                                            }
+                                        }
+                                    } else {
+                                        info!("Got no HTLC result")
+                                    }
+                                    None
+                                })
+                                .await;
+                            if let Some(ControlFlow::Continue(())) = cf {
+                                continue;
+                            }
+                        } else {
+                            info!("Got no client result")
+                        }
+
+                        continue;
+                    }
+
+                    tracing::info!("Did not find registered payment hash, using legacy...");
 
                     let scid_to_feds = self.scid_to_federation.read().await;
                     let federation_id = scid_to_feds.get(&htlc_request.short_channel_id);
@@ -1714,6 +1766,27 @@ impl Gateway {
             .ok();
 
         Ok(module.subscribe_send(operation_id, payload.contract).await)
+    }
+
+    async fn create_invoice_v1(
+        &mut self,
+        payload: CreateInvoicePayloadV1,
+    ) -> anyhow::Result<Bolt11Invoice> {
+        let invoice = self
+            .create_invoice_via_lnrpc_v2(
+                payload.payment_hash,
+                payload.invoice_amount,
+                payload.description.clone(),
+                payload.expiry_time,
+            )
+            .await
+            .map_err(|e| anyhow!(e))?;
+
+        let mut hashes = self.payment_hashes.write().await;
+        hashes.insert(payload.payment_hash, payload.federation_id);
+        tracing::info!(?payload.payment_hash, ?payload.federation_id, "Inserted payment hash");
+
+        Ok(invoice)
     }
 
     async fn create_invoice_v2(

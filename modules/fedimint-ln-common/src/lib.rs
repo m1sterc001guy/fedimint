@@ -737,3 +737,12 @@ pub fn create_gateway_remove_message(
     message_preimage.append(&mut challenge.consensus_encode_to_vec());
     Message::from_hashed_data::<sha256::Hash>(message_preimage.as_slice())
 }
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, Decodable, Encodable)]
+pub struct CreateInvoicePayloadV1 {
+    pub federation_id: fedimint_core::config::FederationId,
+    pub payment_hash: sha256::Hash,
+    pub invoice_amount: Amount,
+    pub description: String,
+    pub expiry_time: u32,
+}

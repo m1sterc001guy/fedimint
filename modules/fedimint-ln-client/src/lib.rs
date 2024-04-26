@@ -7,7 +7,6 @@ pub mod pay;
 pub mod receive;
 
 use std::collections::BTreeMap;
-use std::iter::once;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,7 +42,7 @@ use fedimint_core::module::{
 };
 use fedimint_core::task::{timeout, MaybeSend, MaybeSync};
 use fedimint_core::util::update_merge::UpdateMerge;
-use fedimint_core::util::{retry, FibonacciBackoff};
+use fedimint_core::util::{retry, FibonacciBackoff, SafeUrl};
 use fedimint_core::{
     apply, async_trait_maybe_send, push_db_pair_items, runtime, Amount, OutPoint, TransactionId,
 };
@@ -57,8 +56,8 @@ use fedimint_ln_common::contracts::{
     PreimageKey,
 };
 use fedimint_ln_common::{
-    ContractOutput, LightningClientContext, LightningCommonInit, LightningGateway,
-    LightningGatewayAnnouncement, LightningGatewayRegistration, LightningInput,
+    ContractOutput, CreateInvoicePayloadV1, LightningClientContext, LightningCommonInit,
+    LightningGateway, LightningGatewayAnnouncement, LightningGatewayRegistration, LightningInput,
     LightningModuleTypes, LightningOutput, LightningOutputV0,
 };
 use fedimint_logging::LOG_CLIENT_MODULE_LN;
@@ -778,6 +777,29 @@ impl LightningClientModule {
         }
     }
 
+    async fn fetch_invoice(
+        &self,
+        gateway_api: SafeUrl,
+        payload: CreateInvoicePayloadV1,
+    ) -> anyhow::Result<Result<Bolt11Invoice, String>> {
+        reqwest::Client::new()
+            .post(
+                gateway_api
+                    .join("create_invoice_v1")
+                    .expect("'create_invoice' contains no invalid characters for a URL")
+                    .as_str(),
+            )
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Unreachable: {e:?}"))?
+            //.map_err(|e| GatewayError::Unreachable(e.to_string()))?
+            .json::<Result<Bolt11Invoice, String>>()
+            .await
+            .map_err(|e| anyhow::anyhow!("InvalidJsonResponse: {e:?}"))
+        //.map_err(|e| GatewayError::InvalidJsonResponse(e.to_string()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn create_lightning_receive_output<'a>(
         &'a self,
@@ -790,6 +812,7 @@ impl LightningClientModule {
         short_channel_id: u64,
         route_hints: Vec<fedimint_ln_common::route_hints::RouteHint>,
         network: Network,
+        gateway_api: SafeUrl,
     ) -> anyhow::Result<(
         OperationId,
         Bolt11Invoice,
@@ -800,6 +823,7 @@ impl LightningClientModule {
         let preimage = sha256::Hash::hash(&preimage_key);
         let payment_hash = sha256::Hash::hash(&preimage);
 
+        /*
         // Temporary lightning node pubkey
         let (node_secret_key, node_public_key) = self.secp.generate_keypair(&mut rng);
 
@@ -853,6 +877,28 @@ impl LightningClientModule {
 
         let invoice = invoice_builder
             .build_signed(|hash| self.secp.sign_ecdsa_recoverable(hash, &node_secret_key))?;
+        */
+
+        let federation_id = self
+            .client_ctx
+            .get_config()
+            .global
+            .calculate_federation_id();
+
+        let invoice = self
+            .fetch_invoice(
+                gateway_api,
+                CreateInvoicePayloadV1 {
+                    federation_id,
+                    payment_hash,
+                    invoice_amount: amount,
+                    description: "".to_string(),
+                    expiry_time: expiry_time.unwrap_or(DEFAULT_INVOICE_EXPIRY_TIME.as_secs())
+                        as u32,
+                },
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!("Error: {e:?}"))?;
 
         let operation_id = OperationId(invoice.payment_hash().into_inner());
 
@@ -1416,7 +1462,7 @@ impl LightningClientModule {
         gateway: Option<LightningGateway>,
     ) -> anyhow::Result<(OperationId, Bolt11Invoice, [u8; 32])> {
         let gateway_id = gateway.as_ref().map(|g| g.gateway_id);
-        let (src_node_id, short_channel_id, route_hints) = match gateway {
+        let (src_node_id, short_channel_id, route_hints) = match gateway.clone() {
             Some(current_gateway) => (
                 current_gateway.node_pub_key,
                 current_gateway.mint_channel_id,
@@ -1444,6 +1490,7 @@ impl LightningClientModule {
                 short_channel_id,
                 route_hints,
                 self.cfg.network,
+                gateway.expect("Needs a gateway").api,
             )
             .await?;
         let tx = TransactionBuilder::new().with_output(self.client_ctx.make_client_output(output));

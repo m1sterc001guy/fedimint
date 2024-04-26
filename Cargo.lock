@@ -2137,6 +2137,7 @@ dependencies = [
  "fedimint-testing",
  "lightning-invoice",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

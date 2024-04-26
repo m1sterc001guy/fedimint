@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use bitcoin_hashes::{sha256, Hash};
 use clap::Parser;
 use cln_plugin::{options, Builder, Plugin};
 use cln_rpc::model;
@@ -15,6 +16,7 @@ use fedimint_core::task::TaskGroup;
 use fedimint_core::util::handle_version_hash_command;
 use fedimint_core::{fedimint_build_code_version_env, Amount};
 use hex::ToHex;
+use lightning_invoice::{Currency, Description, InvoiceBuilder, PaymentSecret};
 use ln_gateway::envs::FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV;
 use ln_gateway::gateway_lnrpc::gateway_lightning_server::{
     GatewayLightning, GatewayLightningServer,
@@ -26,7 +28,9 @@ use ln_gateway::gateway_lnrpc::{
     GetRouteHintsRequest, GetRouteHintsResponse, InterceptHtlcRequest, InterceptHtlcResponse,
     PayInvoiceRequest, PayInvoiceResponse,
 };
-use secp256k1::PublicKey;
+use rand::rngs::OsRng;
+use rand::Rng;
+use secp256k1::{All, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{stdin, stdout};
@@ -507,11 +511,73 @@ impl GatewayLightning for ClnRpcService {
 
     async fn create_invoice(
         &self,
-        _create_invoice_request: tonic::Request<CreateInvoiceRequest>,
+        create_invoice_request: tonic::Request<CreateInvoiceRequest>,
     ) -> Result<tonic::Response<CreateInvoiceResponse>, Status> {
-        Err(Status::internal(
-            "Invoice creation is not implemented for CLN",
-        ))
+        let CreateInvoiceRequest {
+            payment_hash,
+            amount_msat,
+            expiry,
+            description,
+        } = create_invoice_request.into_inner();
+
+        let payment_hash = sha256::Hash::from_slice(&payment_hash)
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        let secp: Secp256k1<All> = Secp256k1::gen_new();
+        let duration_since_epoch = fedimint_core::time::duration_since_epoch();
+
+        let invoice = InvoiceBuilder::new(Currency::Regtest)
+            .amount_milli_satoshis(amount_msat)
+            .invoice_description(lightning_invoice::Bolt11InvoiceDescription::Direct(
+                &Description::new(description).expect("Description is valid"),
+            ))
+            .payment_hash(payment_hash)
+            .payment_secret(PaymentSecret(OsRng.gen()))
+            .duration_since_epoch(duration_since_epoch)
+            .min_final_cltv_expiry_delta(18)
+            //.payee_pub_key(node_public_key)
+            .expiry_time(Duration::from_secs(expiry.into()))
+            .build_signed(|m| secp.sign_ecdsa_recoverable(m, &SecretKey::new(&mut OsRng)))
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        /*
+        let invoice = InvoiceBuilder::new(Currency::Regtest)
+            .amount_milli_satoshis(amount_msat)
+            .payment_hash(payment_hash)
+            .description(description)
+            .payment_secret(PaymentSecret([0; 32]))
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(18)
+            .expiry_time(Duration::from_secs(expiry.into()))
+            // CLN `SignInvoice` requires a BOLT11 string to sign the invoice, but the final signature is ignored, so just sign with a random key
+            .build_signed(|m| secp.sign_ecdsa_recoverable(m, &SecretKey::new(&mut OsRng)))
+            .map_err(|e| Status::internal(e.to_string()))?;
+        */
+
+        let invstring = invoice.to_string();
+
+        let response = self
+            .rpc_client()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .call(cln_rpc::Request::SignInvoice(
+                model::requests::SigninvoiceRequest { invstring },
+            ))
+            .await
+            .map(|response| match response {
+                cln_rpc::Response::SignInvoice(model::responses::SigninvoiceResponse {
+                    bolt11,
+                    ..
+                }) => Ok(CreateInvoiceResponse { invoice: bolt11 }),
+                _ => Err(ClnExtensionError::RpcWrongResponse),
+            })
+            .map_err(|e| {
+                error!("cln invoice returned error {e:?}");
+                tonic::Status::internal(e.to_string())
+            })?
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        Ok(tonic::Response::new(response))
     }
 }
 
@@ -579,25 +645,40 @@ impl ClnHtlcInterceptor {
 
         let htlc_expiry = payload.htlc.cltv_expiry;
 
-        if payload.onion.short_channel_id.is_none() {
-            // This is a HTLC terminating at the gateway node. DO NOT intercept
+        let short_channel_id = match payload.onion.short_channel_id {
+            Some(scid) => Self::convert_short_channel_id(&scid),
+            None => Ok(0),
+        };
+
+        if let Err(err) = short_channel_id {
+            error!("Error parsing short channel id: {err:?}");
             return serde_json::json!({ "result": "continue" });
         }
 
-        let short_channel_id = match Self::convert_short_channel_id(
-            payload.onion.short_channel_id.unwrap().as_str(),
-        ) {
-            Ok(scid) => scid,
-            Err(_) => return serde_json::json!({ "result": "continue" }),
-        };
+        let short_channel_id = short_channel_id.unwrap();
+        //if payload.onion.short_channel_id.is_none() {
+        // This is a HTLC terminating at the gateway node. DO NOT intercept
+        //    return serde_json::json!({ "result": "continue" });
+        //}
+
+        //let short_channel_id = match Self::convert_short_channel_id(
+        //    payload.onion.short_channel_id.unwrap().as_str(),
+        //) {
+        //    Ok(scid) => scid,
+        //    Err(_) => return serde_json::json!({ "result": "continue" }),
+        //};
 
         info!(?short_channel_id, "Intercepted htlc with SCID");
+
+        // TODO: We need to check if there's a registered invoice with the payment_hash
+        // and only contact the gateway if there is no registered invoice.
 
         // Clone the sender to avoid holding the lock while sending the HTLC
         let sender = self.sender.lock().await.clone();
         if let Some(sender) = sender {
             let payment_hash = payload.htlc.payment_hash.to_vec();
 
+            tracing::info!("Getting incoming short channel id...");
             let incoming_chan_id =
                 match Self::convert_short_channel_id(payload.htlc.short_channel_id.as_str()) {
                     Ok(scid) => scid,
@@ -605,6 +686,7 @@ impl ClnHtlcInterceptor {
                     Err(_) => return serde_json::json!({ "result": "continue" }),
                 };
 
+            tracing::info!("Sending to gateway...");
             let htlc_ret = match sender
                 .send(Ok(InterceptHtlcRequest {
                     payment_hash: payment_hash.clone(),

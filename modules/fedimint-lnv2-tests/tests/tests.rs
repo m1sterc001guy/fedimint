@@ -288,6 +288,42 @@ async fn direct_swap() -> anyhow::Result<()> {
     .await
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn can_receive_external_payment() -> anyhow::Result<()> {
+    let fixtures = fixtures();
+
+    let fed = fixtures.new_fed().await;
+    let cln = fixtures.cln().await;
+    let mut gateway = fixtures
+        .new_gateway(cln, 0, Some(DEFAULT_GATEWAY_PASSWORD.to_string()))
+        .await;
+    gateway.connect_fed(&fed).await;
+    print_liquidity(&gateway, fed.id()).await;
+
+    let info = gateway.gateway.handle_get_info().await?;
+
+    let gateway_api = gateway.gateway.versioned_api.clone();
+
+    let client_receive = fed.new_client().await;
+    let (invoice, receive_op) = client_receive
+        .get_first_module::<LightningClientModule>()
+        .receive(gateway_api.clone(), Amount::from_sats(100))
+        .await?;
+
+    //let lnd = fixtures.lnd().await;
+    //lnd.pay(PayInvoiceRequest { invoice: (), max_delay: (), max_fee_msat: (),
+    // payment_hash: () });
+
+    tracing::info!(
+        "Gateway Node Pubkey: {}",
+        info.lightning_pub_key
+            .expect("Should have lightning pubkey")
+    );
+    tracing::info!("INVOICE: {invoice}");
+
+    Ok(())
+}
+
 async fn verify_payment_success(
     client_send: Arc<ClientHandle>,
     send_op: OperationId,

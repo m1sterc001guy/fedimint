@@ -10,6 +10,7 @@ use bitcoin_hashes::{sha256, Hash};
 use fedimint_core::config::FederationId;
 use fedimint_core::task::TaskGroup;
 use fedimint_ln_client::pay::PayInvoicePayload;
+use fedimint_ln_common::CreateInvoicePayloadV1;
 use fedimint_lnv2_client::{CreateInvoicePayload, SendPaymentPayload};
 use hex::ToHex;
 use serde_json::{json, Value};
@@ -143,7 +144,8 @@ fn v1_routes(gateway: Gateway) -> Router {
         // These routes are for next generation lightning
         .route("/payment_info", post(payment_info_v2))
         .route("/send_payment", post(send_payment_v2))
-        .route("/create_invoice", post(create_invoice_v2));
+        .route("/create_invoice", post(create_invoice_v2))
+        .route("/create_invoice_v1", post(create_invoice_v1));
 
     // Authenticated, public routes used for gateway administration
     let always_authenticated_routes = Router::new()
@@ -341,6 +343,16 @@ async fn create_invoice_v2(
 ) -> Json<Value> {
     Json(json!(gateway
         .create_invoice_v2(payload)
+        .await
+        .map_err(|e| e.to_string())))
+}
+
+async fn create_invoice_v1(
+    Extension(mut gateway): Extension<Gateway>,
+    Json(payload): Json<CreateInvoicePayloadV1>,
+) -> Json<Value> {
+    Json(json!(gateway
+        .create_invoice_v1(payload)
         .await
         .map_err(|e| e.to_string())))
 }
