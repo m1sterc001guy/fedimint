@@ -690,45 +690,47 @@ impl Gateway {
                     tracing::info!("Did not find registered payment hash, using legacy...");
 
                     let scid_to_feds = self.scid_to_federation.read().await;
-                    let federation_id = scid_to_feds.get(&htlc_request.short_channel_id);
-                    // Just forward the HTLC if we do not have a federation that
-                    // corresponds to the short channel id
-                    if let Some(federation_id) = federation_id {
-                        let clients = self.clients.read().await;
-                        let client = clients.get(federation_id);
-                        // Just forward the HTLC if we do not have a client that
-                        // corresponds to the federation id
-                        if let Some(client) = client {
-                            let cf = client
-                                .borrow()
-                                .with(|client| async {
-                                    let htlc = htlc_request.clone().try_into();
-                                    if let Ok(htlc) = htlc {
-                                        match client
-                                            .get_first_module::<GatewayClientModule>()
-                                            .gateway_handle_intercepted_htlc(htlc)
-                                            .await
-                                        {
-                                            Ok(_) => {
-                                                return Some(ControlFlow::<(), ()>::Continue(()))
+                    if let Some(short_channel_id) = htlc_request.short_channel_id {
+                        let federation_id = scid_to_feds.get(&short_channel_id);
+                        // Just forward the HTLC if we do not have a federation that
+                        // corresponds to the short channel id
+                        if let Some(federation_id) = federation_id {
+                            let clients = self.clients.read().await;
+                            let client = clients.get(federation_id);
+                            // Just forward the HTLC if we do not have a client that
+                            // corresponds to the federation id
+                            if let Some(client) = client {
+                                let cf = client
+                                    .borrow()
+                                    .with(|client| async {
+                                        let htlc = htlc_request.clone().try_into();
+                                        if let Ok(htlc) = htlc {
+                                            match client
+                                                .get_first_module::<GatewayClientModule>()
+                                                .gateway_handle_intercepted_htlc(htlc)
+                                                .await
+                                            {
+                                                Ok(_) => {
+                                                    return Some(ControlFlow::<(), ()>::Continue(()))
+                                                }
+                                                Err(e) => {
+                                                    info!(
+                                                    "Got error intercepting HTLC: {e:?}, will retry..."
+                                                )
+                                                }
                                             }
-                                            Err(e) => {
-                                                info!(
-                                                "Got error intercepting HTLC: {e:?}, will retry..."
-                                            )
-                                            }
+                                        } else {
+                                            info!("Got no HTLC result")
                                         }
-                                    } else {
-                                        info!("Got no HTLC result")
-                                    }
-                                    None
-                                })
-                                .await;
-                            if let Some(ControlFlow::Continue(())) = cf {
-                                continue;
+                                        None
+                                    })
+                                    .await;
+                                if let Some(ControlFlow::Continue(())) = cf {
+                                    continue;
+                                }
+                            } else {
+                                info!("Got no client result")
                             }
-                        } else {
-                            info!("Got no client result")
                         }
                     }
 

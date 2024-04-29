@@ -174,7 +174,7 @@ impl GatewayLndClient {
                         incoming_amount_msat: htlc.incoming_amount_msat,
                         outgoing_amount_msat: htlc.outgoing_amount_msat,
                         incoming_expiry: htlc.incoming_expiry,
-                        short_channel_id: htlc.outgoing_requested_chan_id,
+                        short_channel_id: Some(htlc.outgoing_requested_chan_id),
                         incoming_chan_id: incoming_circuit_key.chan_id,
                         htlc_id: incoming_circuit_key.htlc_id,
                     };

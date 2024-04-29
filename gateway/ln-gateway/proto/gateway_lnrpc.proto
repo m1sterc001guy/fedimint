@@ -102,7 +102,7 @@ message InterceptHtlcRequest {
 
   // The short channel id of the HTLC.
   // Use this value to confirm relevance of the intercepted HTLC
-  uint64 short_channel_id = 10;
+  optional uint64 short_channel_id = 10;
 
   // The id of the incoming channel
   uint64 incoming_chan_id = 12;

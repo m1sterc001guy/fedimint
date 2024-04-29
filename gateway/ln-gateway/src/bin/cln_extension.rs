@@ -535,24 +535,9 @@ impl GatewayLightning for ClnRpcService {
             .payment_secret(PaymentSecret(OsRng.gen()))
             .duration_since_epoch(duration_since_epoch)
             .min_final_cltv_expiry_delta(18)
-            //.payee_pub_key(node_public_key)
             .expiry_time(Duration::from_secs(expiry.into()))
             .build_signed(|m| secp.sign_ecdsa_recoverable(m, &SecretKey::new(&mut OsRng)))
             .map_err(|e| Status::internal(e.to_string()))?;
-
-        /*
-        let invoice = InvoiceBuilder::new(Currency::Regtest)
-            .amount_milli_satoshis(amount_msat)
-            .payment_hash(payment_hash)
-            .description(description)
-            .payment_secret(PaymentSecret([0; 32]))
-            .current_timestamp()
-            .min_final_cltv_expiry_delta(18)
-            .expiry_time(Duration::from_secs(expiry.into()))
-            // CLN `SignInvoice` requires a BOLT11 string to sign the invoice, but the final signature is ignored, so just sign with a random key
-            .build_signed(|m| secp.sign_ecdsa_recoverable(m, &SecretKey::new(&mut OsRng)))
-            .map_err(|e| Status::internal(e.to_string()))?;
-        */
 
         let invstring = invoice.to_string();
 
@@ -646,32 +631,21 @@ impl ClnHtlcInterceptor {
         let htlc_expiry = payload.htlc.cltv_expiry;
 
         let short_channel_id = match payload.onion.short_channel_id {
-            Some(scid) => Self::convert_short_channel_id(&scid),
-            None => Ok(0),
+            Some(scid) => {
+                if let Ok(short_channel_id) = Self::convert_short_channel_id(&scid) {
+                    Some(short_channel_id)
+                } else {
+                    return serde_json::json!({ "result": "continue" });
+                }
+            }
+            None => {
+                // This HTLC terminates at the gateway node. Ask gatewayd if there is a preimage
+                // available (for LNv2)
+                None
+            }
         };
 
-        if let Err(err) = short_channel_id {
-            error!("Error parsing short channel id: {err:?}");
-            return serde_json::json!({ "result": "continue" });
-        }
-
-        let short_channel_id = short_channel_id.unwrap();
-        //if payload.onion.short_channel_id.is_none() {
-        // This is a HTLC terminating at the gateway node. DO NOT intercept
-        //    return serde_json::json!({ "result": "continue" });
-        //}
-
-        //let short_channel_id = match Self::convert_short_channel_id(
-        //    payload.onion.short_channel_id.unwrap().as_str(),
-        //) {
-        //    Ok(scid) => scid,
-        //    Err(_) => return serde_json::json!({ "result": "continue" }),
-        //};
-
         info!(?short_channel_id, "Intercepted htlc with SCID");
-
-        // TODO: We need to check if there's a registered invoice with the payment_hash
-        // and only contact the gateway if there is no registered invoice.
 
         // Clone the sender to avoid holding the lock while sending the HTLC
         let sender = self.sender.lock().await.clone();
