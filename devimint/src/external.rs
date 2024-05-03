@@ -1,5 +1,5 @@
 use std::ops::{ControlFlow, Deref as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -323,18 +323,27 @@ pub struct Lightningd {
 }
 
 impl Lightningd {
-    pub async fn new(process_mgr: &ProcessManager, bitcoind: Bitcoind) -> Result<Self> {
-        let cln_dir = &process_mgr.globals.FM_CLN_DIR;
+    pub async fn new(
+        process_mgr: &ProcessManager,
+        bitcoind: Bitcoind,
+        cln_dir: &PathBuf,
+        port: u16,
+    ) -> Result<Self> {
+        //let cln_dir = &process_mgr.globals.FM_CLN_DIR;
         let conf = format!(
             include_str!("cfg/lightningd.conf"),
-            port = process_mgr.globals.FM_PORT_CLN,
+            //port = process_mgr.globals.FM_PORT_CLN,
+            port = port,
             bitcoin_rpcport = process_mgr.globals.FM_PORT_BTC_RPC,
         );
-        write_overwrite_async(process_mgr.globals.FM_CLN_DIR.join("config"), conf).await?;
+        //write_overwrite_async(process_mgr.globals.FM_CLN_DIR.join("config"),
+        // conf).await?;
+        write_overwrite_async(cln_dir.join("config"), conf).await?;
         // workaround: will crash on start if it gets a bad response from
         // bitcoind
         bitcoind.poll_ready().await?;
-        let process = Lightningd::start(process_mgr, cln_dir).await?;
+        let is_gateway = port == process_mgr.globals.FM_PORT_CLN;
+        let process = Lightningd::start(process_mgr, cln_dir, is_gateway).await?;
 
         let socket_cln = cln_dir.join("regtest/lightning-rpc");
         poll("lightningd", || async {
@@ -352,22 +361,41 @@ impl Lightningd {
         })
     }
 
-    pub async fn start(process_mgr: &ProcessManager, cln_dir: &Path) -> Result<ProcessHandle> {
-        let extension_path = cmd!("which", GATEWAY_CLN_EXTENSION)
-            .out_string()
-            .await
-            .context("gateway-cln-extension not on path")?;
-        let btc_dir = utf8(&process_mgr.globals.FM_BTC_DIR);
-        let cmd = cmd!(
-            crate::util::Lightningd,
-            "--dev-fast-gossip",
-            "--dev-bitcoind-poll=1",
-            format!("--lightning-dir={}", utf8(cln_dir)),
-            format!("--bitcoin-datadir={btc_dir}"),
-            "--plugin={extension_path}"
-        );
+    pub async fn start(
+        process_mgr: &ProcessManager,
+        cln_dir: &Path,
+        is_gateway: bool,
+    ) -> Result<ProcessHandle> {
+        if is_gateway {
+            let extension_path = cmd!("which", GATEWAY_CLN_EXTENSION)
+                .out_string()
+                .await
+                .context("gateway-cln-extension not on path")?;
+            let btc_dir = utf8(&process_mgr.globals.FM_BTC_DIR);
+            let cmd = cmd!(
+                crate::util::Lightningd,
+                "--experimental-offers",
+                "--dev-fast-gossip",
+                "--dev-bitcoind-poll=1",
+                format!("--lightning-dir={}", utf8(cln_dir)),
+                format!("--bitcoin-datadir={btc_dir}"),
+                "--plugin={extension_path}"
+            );
 
-        process_mgr.spawn_daemon("lightningd", cmd).await
+            process_mgr.spawn_daemon("lightningd", cmd).await
+        } else {
+            let btc_dir = utf8(&process_mgr.globals.FM_BTC_DIR);
+            let cmd = cmd!(
+                crate::util::Lightningd,
+                "--experimental-offers",
+                "--dev-fast-gossip",
+                "--dev-bitcoind-poll=1",
+                format!("--lightning-dir={}", utf8(cln_dir)),
+                format!("--bitcoin-datadir={btc_dir}"),
+            );
+
+            process_mgr.spawn_daemon("lightningd2", cmd).await
+        }
     }
 
     pub async fn request<R>(&self, request: R) -> Result<R::Response>
@@ -852,6 +880,7 @@ impl Esplora {
 pub struct ExternalDaemons {
     pub bitcoind: Bitcoind,
     pub cln: Lightningd,
+    pub cln2: Lightningd,
     pub lnd: Lnd,
     pub electrs: Electrs,
     pub esplora: Esplora,
@@ -860,8 +889,19 @@ pub struct ExternalDaemons {
 pub async fn external_daemons(process_mgr: &ProcessManager) -> Result<ExternalDaemons> {
     let start_time = fedimint_core::time::now();
     let bitcoind = Bitcoind::new(process_mgr, false).await?;
-    let (cln, lnd, electrs, esplora) = tokio::try_join!(
-        Lightningd::new(process_mgr, bitcoind.clone()),
+    let (cln, cln2, lnd, electrs, esplora) = tokio::try_join!(
+        Lightningd::new(
+            process_mgr,
+            bitcoind.clone(),
+            &process_mgr.globals.FM_CLN_DIR,
+            process_mgr.globals.FM_PORT_CLN
+        ),
+        Lightningd::new(
+            process_mgr,
+            bitcoind.clone(),
+            &process_mgr.globals.FM_CLN2_DIR,
+            process_mgr.globals.FM_PORT_CLN2
+        ),
         Lnd::new(process_mgr, bitcoind.clone()),
         Electrs::new(process_mgr, bitcoind.clone()),
         Esplora::new(process_mgr, bitcoind.clone()),
@@ -877,6 +917,7 @@ pub async fn external_daemons(process_mgr: &ProcessManager) -> Result<ExternalDa
     Ok(ExternalDaemons {
         bitcoind,
         cln,
+        cln2,
         lnd,
         electrs,
         esplora,

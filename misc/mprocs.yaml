@@ -16,6 +16,8 @@ procs:
     shell: tail -n +0 -F $FM_LOGS_DIR/gatewayd-lnd.log
   cln:
     shell: tail -n +0 -F $FM_LOGS_DIR/lightningd.log
+  cln2:
+    shell: tail -n +0 -F $FM_LOGS_DIR/lightningd2.log
   lnd:
     shell: tail -n +0 -F $FM_LOGS_DIR/lnd.log
   bitcoind:

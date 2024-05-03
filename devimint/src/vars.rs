@@ -108,6 +108,7 @@ declare_vars! {
         FM_PORT_BTC_ZMQ_PUB_RAW_BLOCK: u16 = port_alloc(1)?; env: "FM_PORT_BTC_ZMQ_PUB_RAW_BLOCK";
         FM_PORT_BTC_ZMQ_PUB_RAW_TX: u16 = port_alloc(1)?; env: "FM_PORT_BTC_ZMQ_PUB_RAW_TX";
         FM_PORT_CLN: u16 = port_alloc(1)?; env: "FM_PORT_CLN";
+        FM_PORT_CLN2: u16 = port_alloc(1)?; env: "FM_PORT_CLN2";
         FM_PORT_LND_LISTEN: u16 = port_alloc(1)?; env: "FM_PORT_LND_LISTEN";
         FM_PORT_LND_RPC: u16 = port_alloc(1)?; env: "FM_PORT_LND_RPC";
         FM_PORT_LND_REST: u16 = port_alloc(1)?; env: "FM_PORT_LND_REST";
@@ -122,6 +123,7 @@ declare_vars! {
         FM_PORT_FAUCET: u16 = 15243u16; env: "FM_PORT_FAUCET";
 
         FM_CLN_DIR: PathBuf = mkdir(FM_TEST_DIR.join("cln")).await?; env: "FM_CLN_DIR";
+        FM_CLN2_DIR: PathBuf = mkdir(FM_TEST_DIR.join("cln2")).await?; env: "FM_CLN2_DIR";
         FM_LND_DIR: PathBuf = mkdir(FM_TEST_DIR.join("lnd")).await?; env: "FM_LND_DIR";
         FM_BTC_DIR: PathBuf = mkdir(FM_TEST_DIR.join("bitcoin")).await?; env: "FM_BTC_DIR";
         FM_DATA_DIR: PathBuf = FM_TEST_DIR.clone(); env: "FM_DATA_DIR";
@@ -150,6 +152,9 @@ declare_vars! {
         FM_LIGHTNING_CLI: String = f!("{lightning_cli} --network regtest --lightning-dir={lightning_dir}",
             lightning_cli = crate::util::get_lightning_cli_path().join(" "),
             lightning_dir = utf8(&FM_CLN_DIR)); env: "FM_LIGHTNING_CLI";
+        FM_LIGHTNING2_CLI: String = f!("{lightning_cli} --network regtest --lightning-dir={lightning_dir}",
+            lightning_cli = crate::util::get_lightning_cli_path().join(" "),
+            lightning_dir = utf8(&FM_CLN2_DIR)); env: "FM_LIGHTNING2_CLI";
         FM_LNCLI: String = f!("{lncli} -n regtest --lnddir={lnddir} --rpcserver=localhost:{FM_PORT_LND_RPC}",
             lncli = crate::util::get_lncli_path().join(" "),
             lnddir = utf8(&FM_LND_DIR)); env: "FM_LNCLI";

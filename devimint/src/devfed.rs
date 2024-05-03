@@ -17,6 +17,7 @@ use crate::LightningNode;
 pub struct DevFed {
     pub bitcoind: Bitcoind,
     pub cln: Lightningd,
+    pub cln2: Lightningd,
     pub lnd: Lnd,
     pub fed: Federation,
     pub gw_cln: Gatewayd,
@@ -37,6 +38,7 @@ type JitArc<T> = JitTryAnyhow<Arc<T>>;
 pub struct DevJitFed {
     bitcoind: JitArc<Bitcoind>,
     cln: JitArc<Lightningd>,
+    cln2: JitArc<Lightningd>,
     lnd: JitArc<Lnd>,
     fed: JitArc<Federation>,
     gw_cln: JitArc<Gatewayd>,
@@ -71,8 +73,28 @@ impl DevJitFed {
             let bitcoind = bitcoind.clone();
             move || async move {
                 Ok(Arc::new(
-                    Lightningd::new(&process_mgr, bitcoind.get_try().await?.deref().clone())
-                        .await?,
+                    Lightningd::new(
+                        &process_mgr,
+                        bitcoind.get_try().await?.deref().clone(),
+                        &process_mgr.globals.FM_CLN_DIR,
+                        process_mgr.globals.FM_PORT_CLN,
+                    )
+                    .await?,
+                ))
+            }
+        });
+        let cln2 = JitTry::new_try({
+            let process_mgr = process_mgr.to_owned();
+            let bitcoind = bitcoind.clone();
+            move || async move {
+                Ok(Arc::new(
+                    Lightningd::new(
+                        &process_mgr,
+                        bitcoind.get_try().await?.deref().clone(),
+                        &process_mgr.globals.FM_CLN2_DIR,
+                        process_mgr.globals.FM_PORT_CLN2,
+                    )
+                    .await?,
                 ))
             }
         });
@@ -203,6 +225,7 @@ impl DevJitFed {
         Ok(DevJitFed {
             bitcoind,
             cln,
+            cln2,
             lnd,
             fed,
             gw_cln,
@@ -225,6 +248,9 @@ impl DevJitFed {
     }
     pub async fn cln(&self) -> anyhow::Result<&Lightningd> {
         Ok(self.cln.get_try().await?.deref())
+    }
+    pub async fn cln2(&self) -> anyhow::Result<&Lightningd> {
+        Ok(self.cln2.get_try().await?.deref())
     }
     pub async fn lnd(&self) -> anyhow::Result<&Lnd> {
         Ok(self.lnd.get_try().await?.deref())
@@ -297,6 +323,7 @@ impl DevJitFed {
         Ok(DevFed {
             bitcoind: self.bitcoind().await?.to_owned(),
             cln: self.cln().await?.to_owned(),
+            cln2: self.cln2().await?.to_owned(),
             lnd: self.lnd().await?.to_owned(),
             fed: self.fed().await?.to_owned(),
             gw_cln: self.gw_cln().await?.to_owned(),
