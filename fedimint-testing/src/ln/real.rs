@@ -13,8 +13,8 @@ use fedimint_logging::LOG_TEST;
 use lightning_invoice::Bolt11Invoice;
 use ln_gateway::gateway_lnrpc::{
     CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetFundingAddressResponse,
-    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceRequest,
-    PayInvoiceResponse,
+    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayBolt12Request,
+    PayInvoiceRequest, PayInvoiceResponse,
 };
 use ln_gateway::lightning::cln::{NetworkLnRpcClient, RouteHtlcStream};
 use ln_gateway::lightning::lnd::GatewayLndClient;
@@ -115,6 +115,13 @@ impl ILnRpcClient for ClnLightningTest {
         invoice: PayInvoiceRequest,
     ) -> Result<PayInvoiceResponse, LightningRpcError> {
         self.lnrpc.pay(invoice).await
+    }
+
+    async fn pay_bolt12(
+        &self,
+        _bolt12: PayBolt12Request,
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        todo!()
     }
 
     async fn route_htlcs<'a>(
@@ -307,6 +314,13 @@ impl ILnRpcClient for LndLightningTest {
         invoice: PayInvoiceRequest,
     ) -> Result<PayInvoiceResponse, LightningRpcError> {
         self.lnrpc.pay(invoice).await
+    }
+
+    async fn pay_bolt12(
+        &self,
+        _bolt12: PayBolt12Request,
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        todo!()
     }
 
     async fn route_htlcs<'a>(

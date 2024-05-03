@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn, Instrument};
 
 use super::{GatewayClientContext, GatewayClientStateMachines, GatewayExtReceiveStates};
 use crate::db::{FederationIdKey, PreimageAuthentication};
-use crate::gateway_lnrpc::{PayInvoiceRequest, PayInvoiceResponse};
+use crate::gateway_lnrpc::{PayBolt12Request, PayInvoiceRequest, PayInvoiceResponse};
 use crate::lightning::LightningRpcError;
 use crate::state_machine::GatewayClientModule;
 use crate::{GatewayState, RoutingFees};
@@ -389,13 +389,6 @@ impl GatewayPayInvoice {
         debug!("Buying preimage over lightning for contract {contract:?}");
         let payment_data = buy_preimage.payment_data.clone();
 
-        let max_delay = buy_preimage.max_delay;
-        let max_fee = buy_preimage.max_send_amount
-            - buy_preimage
-                .payment_data
-                .amount()
-                .expect("We already checked that an amount was supplied");
-
         let lightning_context = match context.gateway.get_lightning_context().await {
             Ok(lightning_context) => lightning_context,
             Err(error) => {
@@ -403,8 +396,16 @@ impl GatewayPayInvoice {
             }
         };
 
-        let payment_result = match buy_preimage.payment_data {
+        let payment_result = match buy_preimage.clone().payment_data {
             PaymentData::Invoice(invoice) => {
+                let max_delay = buy_preimage.max_delay;
+
+                let max_fee = buy_preimage.max_send_amount
+                    - buy_preimage
+                        .payment_data
+                        .amount()
+                        .expect("We already checked that an amount was supplied");
+
                 lightning_context
                     .lnrpc
                     .pay(PayInvoiceRequest {
@@ -416,9 +417,33 @@ impl GatewayPayInvoice {
                     .await
             }
             PaymentData::PrunedInvoice(invoice) => {
+                let max_fee = buy_preimage.max_send_amount
+                    - buy_preimage
+                        .payment_data
+                        .amount()
+                        .expect("We already checked that an amount was supplied");
+
                 lightning_context
                     .lnrpc
                     .pay_private(invoice, buy_preimage.max_delay, max_fee)
+                    .await
+            }
+            PaymentData::Bolt12(offer, amount) => {
+                let max_delay = buy_preimage.max_delay;
+
+                let max_fee = buy_preimage.max_send_amount
+                    - buy_preimage
+                        .payment_data
+                        .amount()
+                        .expect("We already checked that an amount was supplied");
+                lightning_context
+                    .lnrpc
+                    .pay_bolt12(PayBolt12Request {
+                        offer,
+                        amount_msats: amount.msats,
+                        max_delay,
+                        max_fee_msat: max_fee.msats,
+                    })
                     .await
             }
         };

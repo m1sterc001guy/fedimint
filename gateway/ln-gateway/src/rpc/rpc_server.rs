@@ -140,6 +140,7 @@ fn v1_routes(gateway: Gateway) -> Router {
     // Public routes on gateway webserver
     let public_routes = Router::new()
         .route("/pay_invoice", post(pay_invoice))
+        .route("/pay_bolt12", post(pay_bolt12))
         .route("/id", get(get_gateway_id))
         // These routes are for next generation lightning
         .route("/payment_info", post(payment_info_v2))
@@ -260,6 +261,15 @@ async fn withdraw(
 
 #[instrument(skip_all, err, fields(?payload))]
 async fn pay_invoice(
+    Extension(gateway): Extension<Gateway>,
+    Json(payload): Json<PayInvoicePayload>,
+) -> Result<impl IntoResponse, GatewayError> {
+    let preimage = gateway.handle_pay_invoice_msg(payload).await?;
+    Ok(Json(json!(preimage.0.encode_hex::<String>())))
+}
+
+#[instrument(skip_all, err, fields(?payload))]
+async fn pay_bolt12(
     Extension(gateway): Extension<Gateway>,
     Json(payload): Json<PayInvoicePayload>,
 ) -> Result<impl IntoResponse, GatewayError> {

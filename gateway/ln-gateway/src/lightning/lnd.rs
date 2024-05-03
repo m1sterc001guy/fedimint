@@ -38,7 +38,7 @@ use crate::gateway_lnrpc::intercept_htlc_response::{Action, Cancel, Forward, Set
 use crate::gateway_lnrpc::{
     CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetFundingAddressResponse,
     GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcRequest, InterceptHtlcResponse,
-    PayInvoiceRequest, PayInvoiceResponse,
+    PayBolt12Request, PayInvoiceRequest, PayInvoiceResponse,
 };
 
 type HtlcSubscriptionSender = mpsc::Sender<Result<InterceptHtlcRequest, Status>>;
@@ -536,6 +536,13 @@ impl ILnRpcClient for GatewayLndClient {
             }
         };
         Ok(PayInvoiceResponse { preimage })
+    }
+
+    async fn pay_bolt12(
+        &self,
+        _bolt12: PayBolt12Request,
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        todo!()
     }
 
     /// Returns true if the lightning backend supports payments without full

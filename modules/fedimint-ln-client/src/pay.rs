@@ -64,7 +64,9 @@ pub struct LightningPayCommon {
     pub contract: OutgoingContractData,
     pub gateway_fee: Amount,
     pub preimage_auth: sha256::Hash,
-    pub invoice: lightning_invoice::Bolt11Invoice,
+    pub invoice: Option<lightning_invoice::Bolt11Invoice>,
+    pub bolt12: Option<(String, Amount)>,
+    pub payment_hash: sha256::Hash,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
@@ -219,11 +221,16 @@ impl LightningPayCreatedOutgoingLnContract {
             Ok(timelock) => {
                 // Success case: funding transaction is accepted
                 let common = old_state.common.clone();
-                let payload = if gateway.supports_private_payments {
-                    PayInvoicePayload::new_pruned(common.clone())
+                let payload = if let Some((_, amount)) = old_state.common.clone().bolt12 {
+                    PayInvoicePayload::new_bolt12(common.clone(), amount)
                 } else {
-                    PayInvoicePayload::new(common.clone())
+                    if gateway.supports_private_payments {
+                        PayInvoicePayload::new_pruned(common.clone())
+                    } else {
+                        PayInvoicePayload::new(common.clone())
+                    }
                 };
+
                 LightningPayStateMachine {
                     common: old_state.common,
                     state: LightningPayStates::Funded(LightningPayFunded {
@@ -275,7 +282,8 @@ impl LightningPayFunded {
         let payload = self.payload.clone();
         let contract_id = self.payload.contract_id;
         let timelock = self.timelock;
-        let payment_hash = *common.invoice.payment_hash();
+        //let payment_hash = *common.invoice.payment_hash();
+        let payment_hash = common.payment_hash;
         vec![StateTransition::new(
             Self::gateway_pay_invoice(gateway, payload, context),
             move |dbtx, result, old_state| {
@@ -556,7 +564,7 @@ impl PayInvoicePayload {
             contract_id: common.contract.contract_account.contract.contract_id(),
             federation_id: common.federation_id,
             preimage_auth: common.preimage_auth,
-            payment_data: PaymentData::Invoice(common.invoice),
+            payment_data: PaymentData::Invoice(common.invoice.expect("Invoice is None")),
         }
     }
 
@@ -566,8 +574,21 @@ impl PayInvoicePayload {
             federation_id: common.federation_id,
             preimage_auth: common.preimage_auth,
             payment_data: PaymentData::PrunedInvoice(
-                common.invoice.try_into().expect("Invoice has amount"),
+                common
+                    .invoice
+                    .expect("Invoice is None")
+                    .try_into()
+                    .expect("Invoice has amount"),
             ),
+        }
+    }
+
+    fn new_bolt12(common: LightningPayCommon, amount: Amount) -> Self {
+        Self {
+            contract_id: common.contract.contract_account.contract.contract_id(),
+            federation_id: common.federation_id,
+            preimage_auth: common.preimage_auth,
+            payment_data: PaymentData::Bolt12(common.bolt12.expect("Need BOLT12 offer").0, amount),
         }
     }
 }
@@ -579,6 +600,7 @@ impl PayInvoicePayload {
 pub enum PaymentData {
     Invoice(Bolt11Invoice),
     PrunedInvoice(PrunedInvoice),
+    Bolt12(String, Amount), // Contains the offer
 }
 
 impl PaymentData {
@@ -588,6 +610,7 @@ impl PaymentData {
                 invoice.amount_milli_satoshis().map(Amount::from_msats)
             }
             PaymentData::PrunedInvoice(PrunedInvoice { amount, .. }) => Some(*amount),
+            PaymentData::Bolt12(_offer, _amount) => panic!("Cannot get amount from string"),
         }
     }
 
@@ -598,6 +621,7 @@ impl PaymentData {
                 .cloned()
                 .unwrap_or_else(|| invoice.recover_payee_pub_key()),
             PaymentData::PrunedInvoice(PrunedInvoice { destination, .. }) => *destination,
+            PaymentData::Bolt12(_offer, _amount) => panic!("Cannot get destination from string"),
         }
     }
 
@@ -605,6 +629,7 @@ impl PaymentData {
         match self {
             PaymentData::Invoice(invoice) => *invoice.payment_hash(),
             PaymentData::PrunedInvoice(PrunedInvoice { payment_hash, .. }) => *payment_hash,
+            PaymentData::Bolt12(_offer, _amount) => panic!("Cannot get payment hash from string"),
         }
     }
 
@@ -614,6 +639,7 @@ impl PaymentData {
                 invoice.route_hints().into_iter().map(Into::into).collect()
             }
             PaymentData::PrunedInvoice(PrunedInvoice { route_hints, .. }) => route_hints.clone(),
+            PaymentData::Bolt12(_offer, _amount) => panic!("Cannot get route hints from string"),
         }
     }
 
@@ -631,6 +657,7 @@ impl PaymentData {
             PaymentData::PrunedInvoice(PrunedInvoice {
                 expiry_timestamp, ..
             }) => *expiry_timestamp,
+            PaymentData::Bolt12(_offer, _amount) => panic!("Cannot get expiry from string"),
         }
     }
 }

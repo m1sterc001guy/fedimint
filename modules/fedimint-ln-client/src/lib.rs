@@ -12,7 +12,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, ensure, format_err, Context};
+use anyhow::{anyhow, bail, format_err, Context};
 use api::LnFederationApi;
 use async_stream::stream;
 use bitcoin::hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
@@ -63,7 +63,7 @@ use fedimint_logging::LOG_CLIENT_MODULE_LN;
 use futures::{Future, FutureExt, StreamExt};
 use incoming::IncomingSmError;
 use lightning_invoice::{
-    Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret, RouteHint, RouteHintHop, RoutingFees,
+    Bolt11Invoice, InvoiceBuilder, PaymentSecret, RouteHint, RouteHintHop, RoutingFees,
 };
 use pay::PayInvoicePayload;
 use rand::rngs::OsRng;
@@ -233,7 +233,7 @@ fn invoice_routes_back_to_federation(
 #[serde(rename_all = "snake_case")]
 pub struct LightningOperationMetaPay {
     pub out_point: OutPoint,
-    pub invoice: Bolt11Invoice,
+    pub invoice: Option<Bolt11Invoice>,
     pub fee: Amount,
     pub change: Vec<OutPoint>,
     pub is_internal_payment: bool,
@@ -515,22 +515,23 @@ impl LightningClientModule {
     async fn create_outgoing_output<'a, 'b>(
         &'a self,
         operation_id: OperationId,
-        invoice: Bolt11Invoice,
+        invoice: Option<Bolt11Invoice>,
         gateway: LightningGateway,
         fed_id: FederationId,
         mut rng: impl RngCore + CryptoRng + 'a,
+        offer: Option<(String, Amount)>,
     ) -> anyhow::Result<(
         ClientOutput<LightningOutputV0, LightningClientStateMachines>,
         ContractId,
     )> {
-        let federation_currency: Currency = self.cfg.network.into();
-        let invoice_currency = invoice.currency();
-        ensure!(
-            federation_currency == invoice_currency,
-            "Invalid invoice currency: expected={:?}, got={:?}",
-            federation_currency,
-            invoice_currency
-        );
+        //let federation_currency: Currency = self.cfg.network.into();
+        //let invoice_currency = invoice.currency();
+        //ensure!(
+        //    federation_currency == invoice_currency,
+        //    "Invalid invoice currency: expected={:?}, got={:?}",
+        //    federation_currency,
+        //    invoice_currency
+        //);
 
         // Do not create the funding transaction if the gateway is not currently
         // available
@@ -546,19 +547,26 @@ impl LightningClientModule {
         let absolute_timelock = consensus_count + OUTGOING_LN_CONTRACT_TIMELOCK - 1;
 
         // Compute amount to lock in the outgoing contract
-        let invoice_amount = Amount::from_msats(
-            invoice
-                .amount_milli_satoshis()
-                .context("MissingInvoiceAmount")?,
-        );
+        let invoice_amount = if let Some((_, amount)) = offer.clone() {
+            amount
+        } else {
+            Amount::from_msats(
+                invoice
+                    .clone()
+                    .expect("Need invoice for BOLT11")
+                    .amount_milli_satoshis()
+                    .context("MissingInvoiceAmount")?,
+            )
+        };
 
         let gateway_fee = gateway.fees.to_amount(&invoice_amount);
         let contract_amount = invoice_amount + gateway_fee;
 
         let user_sk = KeyPair::new(&self.secp, &mut rng);
 
-        let preimage_auth = self.get_preimage_authentication(invoice.payment_hash());
-        let payment_hash = *invoice.payment_hash();
+        let r: [u8; 32] = rand::thread_rng().gen();
+        let payment_hash = sha256::Hash::hash(&r);
+        let preimage_auth = self.get_preimage_authentication(&payment_hash);
         let contract = OutgoingContract {
             hash: payment_hash,
             gateway_key: gateway.gateway_redeem_key,
@@ -576,6 +584,7 @@ impl LightningClientModule {
         };
 
         let contract_id = contract.contract_id();
+        let invoice = invoice.clone();
         let sm_gen = Arc::new(move |funding_txid: TransactionId, _input_idx: u64| {
             vec![LightningClientStateMachines::LightningPay(
                 LightningPayStateMachine {
@@ -586,6 +595,8 @@ impl LightningClientModule {
                         gateway_fee,
                         preimage_auth,
                         invoice: invoice.clone(),
+                        bolt12: offer.clone(),
+                        payment_hash,
                     },
                     state: LightningPayStates::CreatedOutgoingLnContract(
                         LightningPayCreatedOutgoingLnContract {
@@ -958,6 +969,147 @@ impl LightningClientModule {
             .await
     }
 
+    pub async fn pay_bolt12<M: Serialize + MaybeSend + MaybeSync>(
+        &self,
+        maybe_gateway: Option<LightningGateway>,
+        offer: String,
+        amount: Amount,
+        extra_meta: M,
+    ) -> anyhow::Result<OutgoingLightningPayment> {
+        //let mut dbtx = self.client_ctx.module_db().begin_transaction().await;
+        let maybe_gateway_id = maybe_gateway.as_ref().map(|g| g.gateway_id);
+        //let prev_payment_result = self
+        //    .get_prev_payment_result(invoice.payment_hash(), &mut dbtx.to_ref_nc())
+        //    .await;
+
+        //if let Some(completed_payment) = prev_payment_result.completed_payment {
+        //    return Ok(completed_payment);
+        //}
+
+        // Verify that no previous payment attempt is still running
+        //let prev_operation_id =
+        //    self.get_payment_operation_id(invoice.payment_hash(),
+        // prev_payment_result.index); if self.client_ctx.
+        // has_active_states(prev_operation_id).await {    return Err(anyhow!("
+        // Previous payment attempt still in progress. Previous Operation Id:
+        // {prev_operation_id}"));
+        //}
+
+        //let next_index = prev_payment_result.index + 1;
+        //let operation_id = self.get_payment_operation_id(invoice.payment_hash(),
+        // next_index);
+
+        //let new_payment_result = PaymentResult {
+        //    index: next_index,
+        //    completed_payment: None,
+        //};
+
+        //dbtx.insert_entry(
+        //    &PaymentResultKey {
+        //        payment_hash: *invoice.payment_hash(),
+        //    },
+        //    &new_payment_result,
+        //)
+        //.await;
+
+        /*
+        let markers = self.client_ctx.get_internal_payment_markers()?;
+
+        let mut is_internal_payment = invoice_has_internal_payment_markers(&invoice, markers);
+        if !is_internal_payment {
+            let gateways = dbtx
+                .find_by_prefix(&LightningGatewayKeyPrefix)
+                .await
+                .map(|(_, gw)| gw.info)
+                .collect::<Vec<_>>()
+                .await;
+            is_internal_payment = invoice_routes_back_to_federation(&invoice, gateways);
+        }
+        */
+
+        let operation_id = OperationId::new_random();
+        let gateway = maybe_gateway.context("No LN gateway available")?;
+        //let (output, contract_id) = {
+        let (pay_type, client_output, contract_id) = {
+            let (output, contract_id) = self
+                .create_outgoing_output(
+                    operation_id,
+                    None,
+                    gateway,
+                    self.client_ctx
+                        .get_config()
+                        .global
+                        .calculate_federation_id(),
+                    rand::rngs::OsRng,
+                    Some((offer, amount)),
+                )
+                .await?;
+            (PayType::Lightning(operation_id), output, contract_id)
+        };
+
+        // Verify that no other outgoing contract exists or the value is empty
+        if let Ok(Some(contract)) = self.module_api.fetch_contract(contract_id).await {
+            if contract.amount.msats != 0 {
+                anyhow::bail!("Funded contract already exists. ContractId: {contract_id}");
+            }
+        }
+
+        // TODO: return fee from create_outgoing_output or even let user supply
+        // it/bounds for it
+        let fee = match &client_output.output {
+            LightningOutputV0::Contract(contract) => {
+                let fee_msat = contract
+                    .amount
+                    .msats
+                    .checked_sub(amount.msats)
+                    .expect("Contract amount should be greater or equal than invoice amount");
+                Amount::from_msats(fee_msat)
+            }
+            _ => unreachable!("User client will only create contract outputs on spend"),
+        };
+
+        let output = self.client_ctx.make_client_output(ClientOutput {
+            output: LightningOutput::V0(client_output.output),
+            amount: client_output.amount,
+            state_machines: client_output.state_machines,
+        });
+
+        let tx = TransactionBuilder::new().with_output(output);
+        let extra_meta =
+            serde_json::to_value(extra_meta).context("Failed to serialize extra meta")?;
+        let operation_meta_gen = |txid, change| LightningOperationMeta {
+            variant: LightningOperationMetaVariant::Pay(LightningOperationMetaPay {
+                out_point: OutPoint { txid, out_idx: 0 },
+                invoice: None,
+                fee,
+                change,
+                is_internal_payment: false,
+                contract_id,
+                gateway_id: maybe_gateway_id,
+            }),
+            extra_meta: extra_meta.clone(),
+        };
+
+        // Write the new payment index into the database, fail the payment if the commit
+        // to the database fails.
+        //dbtx.commit_tx_result().await?;
+
+        self.client_ctx
+            .finalize_and_submit_transaction(
+                operation_id,
+                LightningCommonInit::KIND.as_str(),
+                operation_meta_gen,
+                tx,
+            )
+            .await?;
+
+        Ok(OutgoingLightningPayment {
+            payment_type: pay_type,
+            contract_id,
+            fee,
+        })
+    }
+
     /// Pays a LN invoice with our available funds using the supplied `gateway`
     /// if one was provided and the invoice is not an internal one. If none is
     /// supplied only internal payments are possible.
@@ -1026,13 +1178,14 @@ impl LightningClientModule {
             let (output, contract_id) = self
                 .create_outgoing_output(
                     operation_id,
-                    invoice.clone(),
+                    Some(invoice.clone()),
                     gateway,
                     self.client_ctx
                         .get_config()
                         .global
                         .calculate_federation_id(),
                     rand::rngs::OsRng,
+                    None,
                 )
                 .await?;
             (PayType::Lightning(operation_id), output, contract_id)
@@ -1075,7 +1228,7 @@ impl LightningClientModule {
         let operation_meta_gen = |txid, change| LightningOperationMeta {
             variant: LightningOperationMetaVariant::Pay(LightningOperationMetaPay {
                 out_point: OutPoint { txid, out_idx: 0 },
-                invoice: invoice.clone(),
+                invoice: Some(invoice.clone()),
                 fee,
                 change,
                 is_internal_payment,

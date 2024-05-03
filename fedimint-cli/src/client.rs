@@ -139,6 +139,13 @@ pub enum ClientCmd {
         #[clap(long, default_value = "false")]
         force_internal: bool,
     },
+    PayBolt12 {
+        offer: String,
+
+        amount: Amount,
+
+        gateway_id: Option<secp256k1::PublicKey>,
+    },
     /// Wait for a lightning payment to complete
     AwaitLnPay { operation_id: OperationId },
     /// List registered gateways
@@ -440,6 +447,31 @@ pub async fn handle_command(
                     .await?
                     .context("expected a response")?)
             }
+        }
+        ClientCmd::PayBolt12 {
+            offer,
+            amount,
+            gateway_id,
+        } => {
+            let lightning_module = client.get_first_module::<LightningClientModule>();
+            let ln_gateway = lightning_module.get_gateway(gateway_id, false).await?;
+
+            let lightning_module = client.get_first_module::<LightningClientModule>();
+            let OutgoingLightningPayment {
+                payment_type,
+                contract_id,
+                fee,
+            } = lightning_module
+                .pay_bolt12(ln_gateway, offer, amount, ())
+                .await?;
+            let operation_id = payment_type.operation_id();
+            info!("Gateway fee: {fee}, payment operation id: {operation_id}");
+
+            Ok(client
+                .get_first_module::<LightningClientModule>()
+                .wait_for_ln_payment(payment_type, contract_id, false)
+                .await?
+                .context("expected a response")?)
         }
         ClientCmd::AwaitLnPay { operation_id } => {
             let lightning_module = client.get_first_module::<LightningClientModule>();

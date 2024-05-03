@@ -16,8 +16,8 @@ use lightning_invoice::{
 };
 use ln_gateway::gateway_lnrpc::{
     self, CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetFundingAddressResponse,
-    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceRequest,
-    PayInvoiceResponse,
+    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayBolt12Request,
+    PayInvoiceRequest, PayInvoiceResponse,
 };
 use ln_gateway::lightning::cln::{HtlcResult, RouteHtlcStream};
 use ln_gateway::lightning::{ChannelInfo, ILnRpcClient, LightningRpcError};
@@ -139,6 +139,13 @@ impl ILnRpcClient for FakeLightningTest {
         Ok(PayInvoiceResponse {
             preimage: [0; 32].to_vec(),
         })
+    }
+
+    async fn pay_bolt12(
+        &self,
+        _bolt12: PayBolt12Request,
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        todo!()
     }
 
     async fn route_htlcs<'a>(

@@ -29,7 +29,7 @@ use ln_gateway::gateway_lnrpc::{
     ConnectToPeerRequest, CreateInvoiceRequest, CreateInvoiceResponse, EmptyRequest, EmptyResponse,
     GetFundingAddressResponse, GetNodeInfoResponse, GetRouteHintsRequest, GetRouteHintsResponse,
     InterceptHtlcRequest, InterceptHtlcResponse, ListActiveChannelsResponse, OpenChannelRequest,
-    PayInvoiceRequest, PayInvoiceResponse,
+    PayBolt12Request, PayInvoiceRequest, PayInvoiceResponse,
 };
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -385,6 +385,84 @@ impl GatewayLightning for ClnRpcService {
             max_fee_msat,
             payment_hash: _,
         } = request.into_inner();
+
+        let outcome = self
+            .rpc_client()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .call(cln_rpc::Request::Pay(model::requests::PayRequest {
+                bolt11: invoice,
+                amount_msat: None,
+                label: None,
+                riskfactor: None,
+                retry_for: None,
+                maxdelay: Some(max_delay as u16),
+                exemptfee: None,
+                localinvreqid: None,
+                exclude: None,
+                maxfee: Some(cln_rpc::primitives::Amount::from_msat(max_fee_msat)),
+                maxfeepercent: None,
+                description: None,
+            }))
+            .await
+            .map(|response| match response {
+                cln_rpc::Response::Pay(model::responses::PayResponse {
+                    payment_preimage, ..
+                }) => Ok(PayInvoiceResponse {
+                    preimage: payment_preimage.to_vec(),
+                }),
+                _ => Err(ClnExtensionError::RpcWrongResponse),
+            })
+            .map_err(|e| {
+                error!("cln pay rpc returned error {:?}", e);
+                tonic::Status::internal(e.to_string())
+            })?
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        Ok(tonic::Response::new(outcome))
+    }
+
+    async fn pay_bolt12(
+        &self,
+        request: tonic::Request<PayBolt12Request>,
+    ) -> Result<tonic::Response<PayInvoiceResponse>, tonic::Status> {
+        let PayBolt12Request {
+            offer,
+            max_delay,
+            max_fee_msat,
+            amount_msats,
+        } = request.into_inner();
+
+        let invoice = self
+            .rpc_client()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .call(cln_rpc::Request::FetchInvoice(
+                model::requests::FetchinvoiceRequest {
+                    offer,
+                    amount_msat: Some(cln_rpc::primitives::Amount::from_msat(amount_msats)),
+                    timeout: None,
+                    quantity: None,
+                    recurrence_counter: None,
+                    recurrence_start: None,
+                    recurrence_label: None,
+                    payer_note: None,
+                },
+            ))
+            .await
+            .map(|response| match response {
+                cln_rpc::Response::FetchInvoice(model::responses::FetchinvoiceResponse {
+                    invoice,
+                    changes: _,
+                    next_period: _,
+                }) => Ok(invoice),
+                _ => Err(ClnExtensionError::RpcWrongResponse),
+            })
+            .map_err(|e| {
+                error!("cln fetchinvoice rpc returned error {:?}", e);
+                tonic::Status::internal(e.to_string())
+            })?
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
         let outcome = self
             .rpc_client()

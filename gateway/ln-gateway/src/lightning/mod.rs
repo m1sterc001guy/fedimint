@@ -21,8 +21,8 @@ use crate::envs::{
 };
 use crate::gateway_lnrpc::{
     CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetFundingAddressResponse,
-    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceRequest,
-    PayInvoiceResponse,
+    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayBolt12Request,
+    PayInvoiceRequest, PayInvoiceResponse,
 };
 
 pub const MAX_LIGHTNING_RETRIES: u32 = 10;
@@ -90,6 +90,11 @@ pub trait ILnRpcClient: Debug + Send + Sync {
             failure_reason: "Private payments not supported".to_string(),
         })
     }
+
+    async fn pay_bolt12(
+        &self,
+        bolt12: PayBolt12Request,
+    ) -> Result<PayInvoiceResponse, LightningRpcError>;
 
     /// Returns true if the lightning backend supports payments without full
     /// invoices. If this returns true, then [`ILnRpcClient::pay_private`] has

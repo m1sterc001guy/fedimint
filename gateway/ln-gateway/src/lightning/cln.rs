@@ -15,8 +15,8 @@ use crate::gateway_lnrpc::gateway_lightning_client::GatewayLightningClient;
 use crate::gateway_lnrpc::{
     ConnectToPeerRequest, CreateInvoiceRequest, CreateInvoiceResponse, EmptyRequest, EmptyResponse,
     GetFundingAddressResponse, GetNodeInfoResponse, GetRouteHintsRequest, GetRouteHintsResponse,
-    InterceptHtlcRequest, InterceptHtlcResponse, OpenChannelRequest, PayInvoiceRequest,
-    PayInvoiceResponse,
+    InterceptHtlcRequest, InterceptHtlcResponse, OpenChannelRequest, PayBolt12Request,
+    PayInvoiceRequest, PayInvoiceResponse,
 };
 use crate::lightning::MAX_LIGHTNING_RETRIES;
 pub type HtlcResult = std::result::Result<InterceptHtlcRequest, tonic::Status>;
@@ -103,6 +103,22 @@ impl ILnRpcClient for NetworkLnRpcClient {
         let res =
             client
                 .pay_invoice(req)
+                .await
+                .map_err(|status| LightningRpcError::FailedPayment {
+                    failure_reason: status.message().to_string(),
+                })?;
+        Ok(res.into_inner())
+    }
+
+    async fn pay_bolt12(
+        &self,
+        bolt12: PayBolt12Request,
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        let req = Request::new(bolt12);
+        let mut client = self.connect().await?;
+        let res =
+            client
+                .pay_bolt12(req)
                 .await
                 .map_err(|status| LightningRpcError::FailedPayment {
                     failure_reason: status.message().to_string(),
