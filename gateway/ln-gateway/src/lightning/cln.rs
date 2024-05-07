@@ -3,8 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use fedimint_core::encoding::Encodable;
 use fedimint_core::task::{sleep, TaskGroup};
 use fedimint_core::util::SafeUrl;
+use fedimint_core::Amount;
+use fedimint_ln_common::PrunedInvoice;
 use futures::stream::BoxStream;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
@@ -94,11 +97,26 @@ impl ILnRpcClient for NetworkLnRpcClient {
         Ok(res.into_inner())
     }
 
-    async fn pay(
+    async fn pay_private(
         &self,
-        invoice: PayInvoiceRequest,
+        invoice: PrunedInvoice,
+        max_delay: u64,
+        max_fee: Amount,
     ) -> Result<PayInvoiceResponse, LightningRpcError> {
-        let req = Request::new(invoice);
+        let pay_invoice_request = PayInvoiceRequest {
+            max_delay,
+            max_fee_msat: max_fee.msats,
+            pruned_invoice: Some(crate::gateway_lnrpc::PrunedInvoice {
+                amount_msat: invoice.amount.msats,
+                destination: invoice.destination.consensus_encode_to_vec(),
+                destination_features: invoice.destination_features,
+                payment_hash: invoice.payment_hash.consensus_encode_to_vec(),
+                payment_secret: invoice.payment_secret.to_vec(),
+                min_final_cltv_delta: invoice.min_final_cltv_delta,
+                expiry_timestamp: invoice.expiry_timestamp,
+            }),
+        };
+        let req = Request::new(pay_invoice_request);
         let mut client = self.connect().await?;
         let res =
             client

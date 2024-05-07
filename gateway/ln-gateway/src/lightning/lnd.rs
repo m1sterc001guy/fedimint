@@ -38,7 +38,7 @@ use crate::gateway_lnrpc::intercept_htlc_response::{Action, Cancel, Forward, Set
 use crate::gateway_lnrpc::{
     CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetFundingAddressResponse,
     GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcRequest, InterceptHtlcResponse,
-    PayInvoiceRequest, PayInvoiceResponse,
+    PayInvoiceResponse,
 };
 
 type HtlcSubscriptionSender = mpsc::Sender<Result<InterceptHtlcRequest, Status>>;
@@ -395,17 +395,6 @@ impl ILnRpcClient for GatewayLndClient {
         Ok(GetRouteHintsResponse { route_hints })
     }
 
-    async fn pay(
-        &self,
-        _request: PayInvoiceRequest,
-    ) -> Result<PayInvoiceResponse, LightningRpcError> {
-        error!("LND supports private payments, legacy `pay` should not be used.");
-        Err(LightningRpcError::FailedPayment {
-            failure_reason: "LND supports private payments, legacy `pay` should not be used."
-                .to_string(),
-        })
-    }
-
     async fn pay_private(
         &self,
         invoice: PrunedInvoice,
@@ -536,12 +525,6 @@ impl ILnRpcClient for GatewayLndClient {
             }
         };
         Ok(PayInvoiceResponse { preimage })
-    }
-
-    /// Returns true if the lightning backend supports payments without full
-    /// invoices
-    fn supports_private_payments(&self) -> bool {
-        true
     }
 
     async fn route_htlcs<'a>(

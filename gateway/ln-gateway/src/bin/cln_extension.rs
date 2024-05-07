@@ -11,7 +11,9 @@ use bitcoin_hashes::{sha256, Hash};
 use clap::Parser;
 use cln_plugin::{options, Builder, Plugin};
 use cln_rpc::model;
+use cln_rpc::model::requests::SendpayRoute;
 use cln_rpc::primitives::ShortChannelId;
+use fedimint_core::db::DatabaseValue;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::handle_version_hash_command;
 use fedimint_core::{fedimint_build_code_version_env, Amount};
@@ -380,6 +382,103 @@ impl GatewayLightning for ClnRpcService {
         request: tonic::Request<PayInvoiceRequest>,
     ) -> Result<tonic::Response<PayInvoiceResponse>, tonic::Status> {
         let PayInvoiceRequest {
+            max_delay,
+            max_fee_msat,
+            pruned_invoice,
+        } = request.into_inner();
+
+        let pruned_invoice = pruned_invoice.expect("Pruned Invoice needs to be supplied");
+
+        let route = self
+            .rpc_client()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .call(cln_rpc::Request::GetRoute(
+                model::requests::GetrouteRequest {
+                    id: PublicKey::from_slice(&pruned_invoice.destination)
+                        .expect("Should parse public key"),
+                    amount_msat: cln_rpc::primitives::Amount::from_msat(pruned_invoice.amount_msat),
+                    riskfactor: 0,
+                    cltv: Some(pruned_invoice.min_final_cltv_delta as u32),
+                    fromid: None,
+                    fuzzpercent: None,
+                    exclude: None,
+                    maxhops: None,
+                },
+            ))
+            .await
+            .map(|response| match response {
+                cln_rpc::Response::GetRoute(model::responses::GetrouteResponse { route }) => {
+                    Ok(route
+                        .into_iter()
+                        .map(|r| SendpayRoute {
+                            amount_msat: r.amount_msat,
+                            id: r.id,
+                            delay: r.delay as u16,
+                            channel: r.channel,
+                        })
+                        .collect::<Vec<_>>())
+                }
+                _ => Err(ClnExtensionError::RpcWrongResponse),
+            })
+            .map_err(|e| {
+                error!("cln get route rpc returned error {:?}", e);
+                tonic::Status::internal(e.to_string())
+            })?
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        let payment = self
+            .rpc_client()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .call(cln_rpc::Request::SendPay(model::requests::SendpayRequest {
+                route,
+                payment_hash: sha256::Hash::from_slice(&pruned_invoice.payment_hash)
+                    .expect("Parsing payment hash doesnt fail"),
+                label: None,
+                amount_msat: Some(cln_rpc::primitives::Amount::from_msat(
+                    pruned_invoice.amount_msat,
+                )),
+                bolt11: None,
+                payment_secret: Some(
+                    cln_rpc::primitives::Secret::try_from(pruned_invoice.payment_secret)
+                        .expect("Secret parsing should not fail"),
+                ),
+                partid: None,
+                localinvreqid: None,
+                groupid: None,
+            }))
+            .await
+            .map(|response| match response {
+                cln_rpc::Response::SendPay(model::responses::SendpayResponse {
+                    created_index,
+                    updated_index,
+                    id,
+                    groupid,
+                    payment_hash,
+                    status,
+                    amount_msat,
+                    destination,
+                    created_at,
+                    completed_at,
+                    amount_sent_msat,
+                    label,
+                    partid,
+                    bolt11,
+                    bolt12,
+                    payment_preimage,
+                    message,
+                }) => Ok(()),
+                _ => Err(ClnExtensionError::RpcWrongResponse),
+            })
+            .map_err(|e| {
+                error!("cln send pay rpc returned error {:?}", e);
+                tonic::Status::internal(e.to_string())
+            })?
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        /*
+        let PayInvoiceRequest {
             invoice,
             max_delay,
             max_fee_msat,
@@ -420,6 +519,9 @@ impl GatewayLightning for ClnRpcService {
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
         Ok(tonic::Response::new(outcome))
+        */
+
+        todo!()
     }
 
     type RouteHtlcsStream = ReceiverStream<Result<InterceptHtlcRequest, Status>>;

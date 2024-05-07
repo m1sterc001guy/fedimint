@@ -9,12 +9,12 @@ use cln_rpc::{model, ClnRpc, Request, Response};
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::Amount;
+use fedimint_ln_common::PrunedInvoice;
 use fedimint_logging::LOG_TEST;
 use lightning_invoice::Bolt11Invoice;
 use ln_gateway::gateway_lnrpc::{
     CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetFundingAddressResponse,
-    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceRequest,
-    PayInvoiceResponse,
+    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceResponse,
 };
 use ln_gateway::lightning::cln::{NetworkLnRpcClient, RouteHtlcStream};
 use ln_gateway::lightning::lnd::GatewayLndClient;
@@ -110,11 +110,13 @@ impl ILnRpcClient for ClnLightningTest {
         self.lnrpc.routehints(num_route_hints).await
     }
 
-    async fn pay(
+    async fn pay_private(
         &self,
-        invoice: PayInvoiceRequest,
+        invoice: PrunedInvoice,
+        max_delay: u64,
+        max_fee: Amount,
     ) -> Result<PayInvoiceResponse, LightningRpcError> {
-        self.lnrpc.pay(invoice).await
+        self.lnrpc.pay_private(invoice, max_delay, max_fee).await
     }
 
     async fn route_htlcs<'a>(
@@ -302,11 +304,13 @@ impl ILnRpcClient for LndLightningTest {
         self.lnrpc.routehints(num_route_hints).await
     }
 
-    async fn pay(
+    async fn pay_private(
         &self,
-        invoice: PayInvoiceRequest,
+        invoice: PrunedInvoice,
+        max_delay: u64,
+        max_fee: Amount,
     ) -> Result<PayInvoiceResponse, LightningRpcError> {
-        self.lnrpc.pay(invoice).await
+        self.lnrpc.pay_private(invoice, max_delay, max_fee).await
     }
 
     async fn route_htlcs<'a>(

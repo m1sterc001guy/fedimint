@@ -21,8 +21,7 @@ use crate::envs::{
 };
 use crate::gateway_lnrpc::{
     CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse, GetFundingAddressResponse,
-    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceRequest,
-    PayInvoiceResponse,
+    GetNodeInfoResponse, GetRouteHintsResponse, InterceptHtlcResponse, PayInvoiceResponse,
 };
 
 pub const MAX_LIGHTNING_RETRIES: u32 = 10;
@@ -71,32 +70,15 @@ pub trait ILnRpcClient: Debug + Send + Sync {
         num_route_hints: usize,
     ) -> Result<GetRouteHintsResponse, LightningRpcError>;
 
-    /// Attempt to pay an invoice using the lightning node
-    async fn pay(
-        &self,
-        invoice: PayInvoiceRequest,
-    ) -> Result<PayInvoiceResponse, LightningRpcError>;
-
     /// Attempt to pay an invoice using the lightning node using a
     /// [`PrunedInvoice`], increasing the user's privacy by not sending the
     /// invoice description to the gateway.
     async fn pay_private(
         &self,
-        _invoice: PrunedInvoice,
-        _max_delay: u64,
-        _max_fee: Amount,
-    ) -> Result<PayInvoiceResponse, LightningRpcError> {
-        Err(LightningRpcError::FailedPayment {
-            failure_reason: "Private payments not supported".to_string(),
-        })
-    }
-
-    /// Returns true if the lightning backend supports payments without full
-    /// invoices. If this returns true, then [`ILnRpcClient::pay_private`] has
-    /// to be implemented.
-    fn supports_private_payments(&self) -> bool {
-        false
-    }
+        invoice: PrunedInvoice,
+        max_delay: u64,
+        max_fee: Amount,
+    ) -> Result<PayInvoiceResponse, LightningRpcError>;
 
     /// Consumes the current client and returns a stream of intercepted HTLCs
     /// and a new client. `complete_htlc` must be called for all successfully

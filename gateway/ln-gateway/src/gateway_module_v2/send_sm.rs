@@ -15,7 +15,6 @@ use lightning_invoice::Bolt11Invoice;
 use secp256k1::KeyPair;
 use serde::{Deserialize, Serialize};
 
-use crate::gateway_lnrpc::PayInvoiceRequest;
 use crate::gateway_module_v2::{GatewayClientContextV2, GatewayClientModuleV2};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
@@ -169,34 +168,22 @@ impl SendStateMachine {
 
         let max_fee = contract.amount - min_contract_amount;
 
-        if lightning_context.lnrpc.supports_private_payments() {
-            lightning_context
-                .lnrpc
-                .pay_private(
-                    PrunedInvoice::try_from(invoice).expect("Invoice has amount"),
-                    max_delay,
-                    max_fee,
-                )
-                .await
-        } else {
-            lightning_context
-                .lnrpc
-                .pay(PayInvoiceRequest {
-                    invoice: invoice.to_string(),
-                    max_delay,
-                    max_fee_msat: max_fee.msats,
-                    payment_hash: invoice.payment_hash().to_byte_array().to_vec(),
-                })
-                .await
-        }
-        .map(|response| {
-            response
-                .preimage
-                .as_slice()
-                .try_into()
-                .expect("Preimage is 32 bytes")
-        })
-        .map_err(|e| Cancelled::LightningRpcError(e.to_string()))
+        lightning_context
+            .lnrpc
+            .pay_private(
+                PrunedInvoice::try_from(invoice).expect("Invoice has amount"),
+                max_delay,
+                max_fee,
+            )
+            .await
+            .map(|response| {
+                response
+                    .preimage
+                    .as_slice()
+                    .try_into()
+                    .expect("Preimage is 32 bytes")
+            })
+            .map_err(|e| Cancelled::LightningRpcError(e.to_string()))
     }
 
     async fn transition_send_payment(

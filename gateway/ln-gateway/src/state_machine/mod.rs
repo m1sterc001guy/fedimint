@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::ensure;
 use async_stream::stream;
 use bitcoin_hashes::{sha256, Hash};
 use fedimint_api_client::api::DynModuleApi;
@@ -247,7 +246,7 @@ impl GatewayClientModule {
                 route_hints,
                 fees,
                 gateway_id: self.gateway.gateway_id,
-                supports_private_payments: lightning_context.lnrpc.supports_private_payments(),
+                supports_private_payments: true, // deprecated
             },
             ttl,
             vetted: false,
@@ -520,8 +519,10 @@ impl GatewayClientModule {
         pay_invoice_payload: PayInvoicePayload,
     ) -> anyhow::Result<OperationId> {
         let payload = pay_invoice_payload.clone();
-        let lightning_context = self.gateway.get_lightning_context().await?;
+        //let lightning_context = self.gateway.get_lightning_context().await?;
 
+        // TODO: Change this check so that it is always `PrunedInvoice`
+        /*
         if matches!(
             pay_invoice_payload.payment_data,
             PaymentData::PrunedInvoice { .. }
@@ -531,6 +532,7 @@ impl GatewayClientModule {
                 "Private payments are not supported by the lightning node"
             );
         }
+        */
 
         self.client_ctx
             .module_autocommit(

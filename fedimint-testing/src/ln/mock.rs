@@ -9,6 +9,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::BoxStream;
 use fedimint_core::Amount;
+use fedimint_ln_common::PrunedInvoice;
 use fedimint_logging::LOG_TEST;
 use lightning_invoice::{
     Bolt11Invoice, Bolt11InvoiceDescription, Currency, Description, InvoiceBuilder, PaymentSecret,
@@ -118,6 +119,7 @@ impl ILnRpcClient for FakeLightningTest {
         })
     }
 
+    /*
     async fn pay(
         &self,
         invoice: PayInvoiceRequest,
@@ -139,6 +141,19 @@ impl ILnRpcClient for FakeLightningTest {
         Ok(PayInvoiceResponse {
             preimage: [0; 32].to_vec(),
         })
+
+        // TODO: Need new mechanism for failing payments in tests
+        todo!()
+    }
+    */
+
+    async fn pay_private(
+        &self,
+        _invoice: PrunedInvoice,
+        _max_delay: u64,
+        _max_fee: Amount,
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        todo!()
     }
 
     async fn route_htlcs<'a>(

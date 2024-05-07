@@ -71,17 +71,32 @@ message GetNodeInfoResponse {
 }
 
 message PayInvoiceRequest {
-  // Bolt11 invoice
-  string invoice = 1;
-
   // The maximum delay, in blocks, that the payment route can be locked for
   uint64 max_delay = 2;
 
   // The maximum fee, in millisats, that will be paid as a lightning routing fee
   uint64 max_fee_msat = 3;
 
-  // The hash of the payment
+  // The parameters for making the payment
+  PrunedInvoice pruned_invoice = 5;
+}
+
+message PrunedInvoice {
+  uint64 amount_msat = 1;
+
+  bytes destination = 2;
+
+  bytes destination_features = 3;
+
   bytes payment_hash = 4;
+
+  bytes payment_secret = 5;
+
+  // TODO: Add Route hints
+
+  uint64 min_final_cltv_delta = 7;
+
+  uint64 expiry_timestamp = 8;
 }
 
 message PayInvoiceResponse {
