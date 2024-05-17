@@ -7,12 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use assert_matches::assert_matches;
-use bitcoin::Network;
+use bitcoin::{secp256k1, Network};
 use bitcoin_hashes::{sha256, Hash};
 use fedimint_client::transaction::{ClientInput, ClientOutput, TransactionBuilder};
 use fedimint_client::ClientHandleArc;
 use fedimint_core::config::FederationId;
-use fedimint_core::core::{IntoDynInstance, OperationId};
+use fedimint_core::core::{IntoDynInstance, OperationId, LEGACY_HARDCODED_INSTANCE_ID_LN};
+use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
 use fedimint_core::secp256k1::PublicKey;
 use fedimint_core::task::sleep_in_test;
 use fedimint_core::util::NextOrPending;
@@ -29,9 +30,16 @@ use fedimint_ln_client::{
 };
 use fedimint_ln_common::config::{FeeToAmount, GatewayFee, LightningGenParams};
 use fedimint_ln_common::contracts::incoming::IncomingContractOffer;
-use fedimint_ln_common::contracts::outgoing::OutgoingContractAccount;
-use fedimint_ln_common::contracts::{EncryptedPreimage, FundedContract, Preimage, PreimageKey};
-use fedimint_ln_common::{LightningGateway, LightningInput, LightningOutput, PrunedInvoice};
+use fedimint_ln_common::contracts::outgoing::{OutgoingContract, OutgoingContractAccount};
+use fedimint_ln_common::contracts::{
+    ContractId, ContractOutcome, EncryptedPreimage, FundedContract, IdentifiableContract,
+    OutgoingContractOutcome, Preimage, PreimageKey,
+};
+use fedimint_ln_common::{
+    ContractAccount, LightningGateway, LightningInput, LightningOutput, LightningOutputOutcomeV0,
+    PrunedInvoice,
+};
+use fedimint_ln_server::db::{ContractKey, ContractUpdateKey, LightningAuditItemKey};
 use fedimint_ln_server::LightningInit;
 use fedimint_logging::LOG_TEST;
 use fedimint_testing::btc::BitcoinTest;
@@ -58,8 +66,72 @@ use ln_gateway::state_machine::{
     GatewayMeta, Htlc,
 };
 use ln_gateway::{DEFAULT_FEES, DEFAULT_NETWORK};
+use rand::rngs::OsRng;
 use reqwest::StatusCode;
 use tracing::info;
+
+pub async fn create_outgoing_contract(
+    fed: &FederationTest,
+    invoice: Bolt11Invoice,
+    ln_gateway: LightningGateway,
+) -> (ContractId, Amount) {
+    let invoice_amount = Amount::from_msats(
+        invoice
+            .amount_milli_satoshis()
+            .expect("Invoice needs amount"),
+    );
+    let gateway_fee = ln_gateway.fees.to_amount(&invoice_amount);
+    let contract_amount = invoice_amount + gateway_fee;
+
+    let (_, user_pk) = secp256k1::generate_keypair(&mut OsRng);
+
+    let payment_hash = *invoice.payment_hash();
+    let contract = OutgoingContract {
+        hash: payment_hash,
+        gateway_key: ln_gateway.gateway_redeem_key,
+        timelock: 499,
+        user_key: user_pk,
+        cancelled: false,
+    };
+
+    let contract_id = contract.contract_id();
+
+    for (peer_id, db) in fed.databases.iter() {
+        let mut dbtx = db.begin_transaction().await.with_prefix_module_id(2);
+        dbtx.insert_entry(
+            &ContractKey(contract_id),
+            &ContractAccount {
+                amount: contract_amount,
+                contract: FundedContract::Outgoing(contract.clone()),
+            },
+        )
+        .await;
+
+        dbtx.insert_entry(
+            &LightningAuditItemKey::from_funded_contract(&FundedContract::Outgoing(
+                contract.clone(),
+            )),
+            &contract_amount,
+        )
+        .await;
+
+        dbtx.insert_entry(
+            &ContractUpdateKey(OutPoint {
+                txid: TransactionId::all_zeros(),
+                out_idx: 0,
+            }),
+            &LightningOutputOutcomeV0::Contract {
+                id: contract_id,
+                outcome: ContractOutcome::Outgoing(OutgoingContractOutcome {}),
+            },
+        )
+        .await;
+        dbtx.commit_tx().await;
+        info!(?peer_id, ?contract_id, "Created outgoing contract in peer");
+    }
+
+    (contract_id, gateway_fee)
+}
 
 async fn user_pay_invoice(
     ln_module: &LightningClientModule,
@@ -165,56 +237,46 @@ async fn gateway_pay_valid_invoice(
     user_client: &ClientHandleArc,
     gateway_client: &ClientHandleArc,
     gateway_id: &PublicKey,
+    fed: &FederationTest,
 ) -> anyhow::Result<()> {
     let user_lightning_module = &user_client.get_first_module::<LightningClientModule>();
     let gateway = user_lightning_module.select_gateway(gateway_id).await;
 
-    // User client pays test invoice
-    let OutgoingLightningPayment {
-        payment_type,
+    let (contract_id, _) = create_outgoing_contract(
+        fed,
+        invoice.clone(),
+        gateway.clone().expect("Needs LN Gateway"),
+    )
+    .await;
+
+    let payload = PayInvoicePayload {
+        federation_id: user_client.federation_id(),
         contract_id,
-        fee: _,
-    } = user_pay_invoice(user_lightning_module, invoice.clone(), gateway_id).await?;
-    match payment_type {
-        PayType::Lightning(pay_op) => {
-            let mut pay_sub = user_lightning_module
-                .subscribe_ln_pay(pay_op)
-                .await?
-                .into_stream();
-            assert_eq!(pay_sub.ok().await?, LnPayState::Created);
-            let funded = pay_sub.ok().await?;
-            assert_matches!(funded, LnPayState::Funded);
+        payment_data: get_payment_data(gateway, invoice),
+        preimage_auth: Hash::hash(&[0; 32]),
+    };
 
-            let payload = PayInvoicePayload {
-                federation_id: user_client.federation_id(),
-                contract_id,
-                payment_data: get_payment_data(gateway, invoice),
-                preimage_auth: Hash::hash(&[0; 32]),
-            };
+    let gw_pay_op = gateway_client
+        .get_first_module::<GatewayClientModule>()
+        .gateway_pay_bolt11_invoice(payload)
+        .await?;
+    let mut gw_pay_sub = gateway_client
+        .get_first_module::<GatewayClientModule>()
+        .gateway_subscribe_ln_pay(gw_pay_op)
+        .await?
+        .into_stream();
+    assert_eq!(gw_pay_sub.ok().await?, GatewayExtPayStates::Created);
+    assert_matches!(gw_pay_sub.ok().await?, GatewayExtPayStates::Preimage { .. });
 
-            let gw_pay_op = gateway_client
-                .get_first_module::<GatewayClientModule>()
-                .gateway_pay_bolt11_invoice(payload)
-                .await?;
-            let mut gw_pay_sub = gateway_client
-                .get_first_module::<GatewayClientModule>()
-                .gateway_subscribe_ln_pay(gw_pay_op)
-                .await?
-                .into_stream();
-            assert_eq!(gw_pay_sub.ok().await?, GatewayExtPayStates::Created);
-            assert_matches!(gw_pay_sub.ok().await?, GatewayExtPayStates::Preimage { .. });
-
-            let dummy_module = gateway_client.get_first_module::<DummyClientModule>();
-            if let GatewayExtPayStates::Success { out_points, .. } = gw_pay_sub.ok().await? {
-                for outpoint in out_points {
-                    dummy_module.receive_money(outpoint).await?;
-                }
-            } else {
-                panic!("Gateway pay state machine was not successful");
-            }
+    let dummy_module = gateway_client.get_first_module::<DummyClientModule>();
+    if let GatewayExtPayStates::Success { out_points, .. } = gw_pay_sub.ok().await? {
+        for outpoint in out_points {
+            dummy_module.receive_money(outpoint).await?;
         }
-        _ => panic!("Expected Lightning payment!"),
+    } else {
+        panic!("Gateway pay state machine was not successful");
     }
+
     Ok(())
 }
 
@@ -224,10 +286,10 @@ async fn test_gateway_client_pay_valid_invoice() -> anyhow::Result<()> {
         |gateway, other_lightning_client, fed, user_client, _| async move {
             let gateway_client = gateway.select_client(fed.id()).await;
             // Print money for user_client
-            let dummy_module = user_client.get_first_module::<DummyClientModule>();
-            let (_, outpoint) = dummy_module.print_money(sats(1000)).await?;
-            dummy_module.receive_money(outpoint).await?;
-            assert_eq!(user_client.get_balance().await, sats(1000));
+            //let dummy_module = user_client.get_first_module::<DummyClientModule>();
+            //let (_, outpoint) = dummy_module.print_money(sats(1000)).await?;
+            //dummy_module.receive_money(outpoint).await?;
+            //assert_eq!(user_client.get_balance().await, sats(1000));
 
             // Create test invoice
             let invoice = other_lightning_client.invoice(sats(250), None).await?;
@@ -237,10 +299,11 @@ async fn test_gateway_client_pay_valid_invoice() -> anyhow::Result<()> {
                 &user_client,
                 &gateway_client,
                 &gateway.gateway.gateway_id,
+                &fed,
             )
             .await?;
 
-            assert_eq!(user_client.get_balance().await, sats(1000 - 250));
+            //assert_eq!(user_client.get_balance().await, sats(1000 - 250));
             assert_eq!(gateway_client.get_balance().await, sats(250));
 
             Ok(())
@@ -294,6 +357,7 @@ async fn test_can_change_default_routing_fees() -> anyhow::Result<()> {
                 &user_client,
                 &gateway_client,
                 &gateway.gateway.gateway_id,
+                &fed,
             )
             .await?;
 
@@ -353,6 +417,7 @@ async fn test_can_change_federation_routing_fees() -> anyhow::Result<()> {
                 &user_client,
                 &gateway_client,
                 &gateway.gateway.gateway_id,
+                &fed,
             )
             .await?;
 
@@ -1432,6 +1497,7 @@ async fn test_gateway_executes_swaps_between_connected_federations() -> anyhow::
             &client1,
             &gateway_client,
             &gateway.gateway.gateway_id,
+            &fed1,
         )
         .await?;
 

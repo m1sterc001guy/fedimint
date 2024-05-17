@@ -300,7 +300,7 @@ impl GatewayPayInvoice {
         payment_data: PaymentData,
         federation_id: FederationId,
     ) -> Result<(OutgoingContractAccount, PaymentParameters), OutgoingPaymentError> {
-        debug!("Await payment parameters for outgoing contract {contract_id:?}");
+        info!("Await payment parameters for outgoing contract {contract_id:?}");
         let account = global_context
             .module_api()
             .wait_contract(contract_id)
@@ -311,6 +311,7 @@ impl GatewayPayInvoice {
                 error_type: OutgoingPaymentErrorType::OutgoingContractDoesNotExist { contract_id },
             })?;
 
+        info!("Wait contract done, contract exists...");
         if let FundedContract::Outgoing(contract) = account.contract {
             let outgoing_contract_account = OutgoingContractAccount {
                 amount: account.amount,
@@ -329,7 +330,7 @@ impl GatewayPayInvoice {
                     },
                 })?;
 
-            debug!("Consensus block count: {consensus_block_count:?} for outgoing contract {contract_id:?}");
+            info!("Consensus block count: {consensus_block_count:?} for outgoing contract {contract_id:?}");
             if consensus_block_count.is_none() {
                 return Err(OutgoingPaymentError {
                     contract_id,
@@ -351,6 +352,7 @@ impl GatewayPayInvoice {
                 })?;
             let routing_fees = config.fees;
 
+            info!("Validating outgoing account...");
             let payment_parameters = Self::validate_outgoing_account(
                 &outgoing_contract_account,
                 context.redeem_key,
@@ -368,7 +370,7 @@ impl GatewayPayInvoice {
                     error_type: OutgoingPaymentErrorType::InvalidOutgoingContract { error: e },
                 }
             })?;
-            debug!("Got payment parameters: {payment_parameters:?} for contract {contract_id:?}");
+            info!("Got payment parameters: {payment_parameters:?} for contract {contract_id:?}");
             return Ok((outgoing_contract_account, payment_parameters));
         }
 

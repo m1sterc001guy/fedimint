@@ -35,6 +35,7 @@ pub struct FederationTest {
     server_init: ServerModuleInitRegistry,
     client_init: ClientModuleInitRegistry,
     primary_client: ModuleInstanceId,
+    pub databases: BTreeMap<PeerId, Database>,
     _task: TaskGroup,
 }
 
@@ -199,6 +200,7 @@ impl FederationTestBuilder {
             ServerConfig::trusted_dealer_gen(&params, self.server_init.clone(), self.version_hash);
 
         let task_group = TaskGroup::new();
+        let mut databases = BTreeMap::new();
         for (peer_id, config) in configs.clone() {
             if u16::from(peer_id) >= self.num_peers - self.num_offline {
                 continue;
@@ -209,6 +211,7 @@ impl FederationTestBuilder {
             let db = Database::new(MemDatabase::new(), decoders);
             let module_init_registry = self.server_init.clone();
             let subgroup = task_group.make_subgroup();
+            databases.insert(peer_id, db.clone());
 
             task_group.spawn("fedimintd", move |_| async move {
                 consensus::run(config.clone(), db.clone(), module_init_registry, &subgroup)
@@ -246,6 +249,7 @@ impl FederationTestBuilder {
             server_init: self.server_init,
             client_init: self.client_init,
             primary_client: self.primary_client,
+            databases,
             _task: task_group,
         }
     }
