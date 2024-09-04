@@ -64,15 +64,10 @@ function gateway_reboot_test() {
 }
 export -f gateway_reboot_test
 
-function gateway_config_test_lnd() {
-  fm-run-test "${FUNCNAME[0]}" ./scripts/tests/gateway-module-test.sh config-test lnd
+function gateway_test() {
+  fm-run-test "${FUNCNAME[0]}" ./scripts/tests/gateway-module-test.sh
 }
-export -f gateway_config_test_lnd
-
-function gateway_config_test_cln() {
-  fm-run-test "${FUNCNAME[0]}" ./scripts/tests/gateway-module-test.sh config-test cln
-}
-export -f gateway_config_test_cln
+export -f gateway_test
 
 function latency_test_reissue() {
   fm-run-test "${FUNCNAME[0]}" ./scripts/tests/latency-test.sh reissue
@@ -294,8 +289,7 @@ tests_to_run_in_parallel+=(
   "reconnect_test"
   "lightning_reconnect_test"
   "gateway_reboot_test"
-  "gateway_config_test_cln"
-  "gateway_config_test_lnd"
+  "gateway_test"
   "lnv2_module"
   "devimint_cli_test"
   "devimint_cli_test_single"

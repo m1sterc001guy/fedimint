@@ -10,4 +10,5 @@ add_target_dir_to_path
 make_fm_test_marker
 
 
-devimint gateway-reboot-test
+#devimint gateway-reboot-test
+gateway-tests backup-restore-test
