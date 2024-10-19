@@ -274,8 +274,24 @@ pub struct InterceptPaymentRequest {
     pub payment_hash: crate::sha256::Hash,
     pub amount_msat: u64,
     pub expiry: u32,
+    pub incoming_chan_id: u64,
     pub short_channel_id: Option<u64>,
     pub htlc_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InterceptPaymentResponse {
+    pub incoming_chan_id: u64,
+    pub htlc_id: u64,
+    pub payment_hash: crate::sha256::Hash,
+    pub action: PaymentAction,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum PaymentAction {
+    Settle(Preimage),
+    Cancel,
+    Forward,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

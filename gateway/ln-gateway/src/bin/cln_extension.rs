@@ -26,6 +26,7 @@ use fedimint_ln_common::contracts::Preimage;
 use fedimint_ln_common::route_hints::{RouteHint, RouteHintHop};
 use fedimint_ln_common::PrunedInvoice;
 use futures_util::stream::StreamExt;
+use hex::ToHex;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 use ln_gateway::envs::{FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV, FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2};
 use ln_gateway::gateway_lnrpc::create_invoice_request::Description;
@@ -42,11 +43,11 @@ use ln_gateway::gateway_lnrpc::{
     WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
 use ln_gateway::rpc::extension_endpoints::{
-    CLN_INFO_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT,
-    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_COMPLETE_PAYMENT_ENDPOINT, CLN_INFO_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT,
+    CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
-use ln_gateway::rpc::InterceptPaymentRequest;
+use ln_gateway::rpc::{InterceptPaymentRequest, PaymentAction};
 use rand::rngs::OsRng;
 use rand::Rng;
 use reqwest::StatusCode;
@@ -154,6 +155,7 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_ROUTE_HTLCS_ENDPOINT, get(cln_route_htlcs))
         .route(CLN_PAY_INVOICE_ENDPOINT, get(cln_pay_invoice))
         .route(CLN_PAY_PRUNED_INVOICE_ENDPOINT, get(cln_pay_pruned_invoice))
+        .route(CLN_COMPLETE_PAYMENT_ENDPOINT, get(cln_complete_payment))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -463,6 +465,63 @@ async fn cln_route_htlcs(
     let body = Body::from_stream(receiver_stream);
 
     Ok(body)
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_complete_payment(
+    Extension(interceptor): Extension<Arc<ClnHtlcInterceptor>>,
+    Json(payload): Json<ln_gateway::rpc::InterceptPaymentResponse>,
+) -> Result<Json<()>, ClnExtensionError> {
+    let ln_gateway::rpc::InterceptPaymentResponse {
+        action,
+        incoming_chan_id,
+        htlc_id,
+        ..
+    } = payload;
+
+    if let Some(outcome) = interceptor
+        .outcomes
+        .lock()
+        .await
+        .remove(&(incoming_chan_id, htlc_id))
+    {
+        // Translate action request into a cln rpc response for
+        // `htlc_accepted` event
+        let htlca_res = match action {
+            PaymentAction::Settle(preimage) => {
+                serde_json::json!({ "result": "resolve", "payment_key": preimage.0.encode_hex::<String>() })
+            }
+            PaymentAction::Cancel => {
+                // Simply forward the HTLC so that a "NoRoute" error response is returned.
+                serde_json::json!({ "result": "continue" })
+            }
+            PaymentAction::Forward => {
+                serde_json::json!({ "result": "continue" })
+            }
+        };
+
+        // Send translated response to the HTLC interceptor for submission
+        // to the cln rpc
+        match outcome.send(htlca_res) {
+            Ok(_) => {}
+            Err(e) => {
+                error!(
+                    "Failed to send htlc_accepted response to interceptor: {:?}",
+                    e
+                );
+                return Err(ClnExtensionError::RpcWrongResponse);
+            }
+        };
+    } else {
+        error!(
+            ?incoming_chan_id,
+            ?htlc_id,
+            "No interceptor reference found for this processed htlc",
+        );
+        return Err(ClnExtensionError::RpcWrongResponse);
+    }
+    Ok(Json(()))
 }
 
 // TODO: upstream these structs to cln-plugin
@@ -1153,7 +1212,7 @@ impl GatewayLightning for ClnRpcService {
 
         Ok(tonic::Response::new(ReceiverStream::new(gatewayd_receiver)))
         */
-        todo!()
+        unimplemented!("Going to be deleted")
     }
 
     async fn complete_htlc(
@@ -1230,7 +1289,7 @@ impl GatewayLightning for ClnRpcService {
         }
         Ok(tonic::Response::new(EmptyResponse {}))
         */
-        todo!()
+        unimplemented!("Going to be deleted")
     }
 
     async fn create_invoice(
@@ -1688,18 +1747,6 @@ fn scid_to_u64(scid: ShortChannelId) -> u64 {
     scid_num
 }
 
-// BOLT 4: https://github.com/lightning/bolts/blob/master/04-onion-routing.md#failure-messages
-// 16399 error code reports unknown payment details.
-//
-// TODO: We should probably use a more specific error code based on htlc
-// processing fail reason
-fn htlc_processing_failure() -> serde_json::Value {
-    serde_json::json!({
-        "result": "fail",
-        "failure_message": "1639"
-    })
-}
-
 type HtlcInterceptionSender = mpsc::Sender<InterceptPaymentRequest>;
 type HtlcOutcomeSender = oneshot::Sender<serde_json::Value>;
 
@@ -1767,6 +1814,7 @@ impl ClnHtlcInterceptor {
                     amount_msat: payload.onion.forward_msat.msats,
                     expiry: htlc_expiry,
                     short_channel_id,
+                    incoming_chan_id,
                     htlc_id: payload.htlc.id,
                 })
                 .await
