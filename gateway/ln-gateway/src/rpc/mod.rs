@@ -13,6 +13,7 @@ use fedimint_core::{secp256k1, Amount, BitcoinAmountOrAll};
 use fedimint_ln_common::config::parse_routing_fees;
 use fedimint_ln_common::contracts::Preimage;
 use fedimint_ln_common::route_hints::RouteHint;
+use fedimint_ln_common::PrunedInvoice;
 use fedimint_mint_client::OOBNotes;
 use lightning_invoice::{Bolt11Invoice, RoutingFees};
 use serde::{Deserialize, Serialize};
@@ -298,4 +299,11 @@ pub struct PayInvoiceRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PayInvoiceResponse {
     pub preimage: Preimage,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PayPrunedInvoiceRequest {
+    pub pruned_invoice: Option<PrunedInvoice>,
+    pub max_delay: u64,
+    pub max_fee_msat: u64,
 }

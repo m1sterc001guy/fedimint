@@ -24,6 +24,7 @@ use fedimint_core::util::handle_version_hash_command;
 use fedimint_core::{fedimint_build_code_version_env, Amount};
 use fedimint_ln_common::contracts::Preimage;
 use fedimint_ln_common::route_hints::{RouteHint, RouteHintHop};
+use fedimint_ln_common::PrunedInvoice;
 use futures_util::stream::StreamExt;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 use ln_gateway::envs::{FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV, FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2};
@@ -38,10 +39,11 @@ use ln_gateway::gateway_lnrpc::{
     GetLnOnchainAddressResponse, GetNodeInfoResponse, GetRouteHintsRequest, GetRouteHintsResponse,
     InterceptHtlcRequest, InterceptHtlcResponse, ListActiveChannelsResponse, OpenChannelRequest,
     OpenChannelResponse, PayInvoiceRequest, PayInvoiceResponse, PayPrunedInvoiceRequest,
-    PrunedInvoice, WithdrawOnchainRequest, WithdrawOnchainResponse,
+    WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
 use ln_gateway::rpc::extension_endpoints::{
-    CLN_INFO_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_INFO_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT,
+    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::InterceptPaymentRequest;
@@ -151,6 +153,7 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_ROUTE_HINTS_ENDPOINT, post(cln_route_hints))
         .route(CLN_ROUTE_HTLCS_ENDPOINT, get(cln_route_htlcs))
         .route(CLN_PAY_INVOICE_ENDPOINT, get(cln_pay_invoice))
+        .route(CLN_PAY_PRUNED_INVOICE_ENDPOINT, get(cln_pay_pruned_invoice))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -329,6 +332,114 @@ async fn cln_pay_invoice(
         })??;
 
     Ok(Json(outcome))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_pay_pruned_invoice(
+    Extension(cln_service): Extension<ClnRpcService>,
+    Json(payload): Json<ln_gateway::rpc::PayPrunedInvoiceRequest>,
+) -> Result<Json<ln_gateway::rpc::PayInvoiceResponse>, ClnExtensionError> {
+    let ln_gateway::rpc::PayPrunedInvoiceRequest {
+        pruned_invoice,
+        max_delay,
+        max_fee_msat,
+    } = payload;
+
+    let pruned_invoice = pruned_invoice.ok_or_else(|| ClnExtensionError::RpcWrongResponse)?;
+    let payment_hash = pruned_invoice.payment_hash;
+
+    let mut excluded_nodes = vec![];
+
+    let payment_future = async {
+        let mut route_attempt = 0;
+
+        // TODO: Fix returned errors here
+        loop {
+            let route = cln_service
+                .get_route(
+                    pruned_invoice.clone(),
+                    ROUTE_RISK_FACTOR,
+                    excluded_nodes.clone(),
+                )
+                .await?;
+
+            // Verify `max_delay` is greater than the worst case timeout for the payment
+            // failure in blocks
+            let delay = route
+                .first()
+                .ok_or_else(|| ClnExtensionError::RpcWrongResponse)?
+                .delay;
+            if max_delay < delay.into() {
+                return Err(ClnExtensionError::RpcWrongResponse);
+            }
+
+            // Verify the total fee is less than `max_fee_msat`
+            let first_hop_amount = route
+                .first()
+                .ok_or_else(|| ClnExtensionError::RpcWrongResponse)?
+                .amount_msat;
+            let last_hop_amount = route
+                .last()
+                .ok_or_else(|| ClnExtensionError::RpcWrongResponse)?
+                .amount_msat;
+            let fee = first_hop_amount - last_hop_amount;
+            if max_fee_msat < fee.msat() {
+                return Err(ClnExtensionError::RpcWrongResponse);
+            }
+
+            debug!(
+                ?route_attempt,
+                ?payment_hash,
+                ?route,
+                "Attempting payment with route"
+            );
+            match cln_service
+                .pay_with_route(pruned_invoice.clone(), payment_hash, route.clone())
+                .await
+            {
+                Ok(preimage) => {
+                    let response = ln_gateway::rpc::PayInvoiceResponse {
+                        preimage: Preimage(preimage.try_into().expect("Failed to parse preimage")),
+                    };
+                    return Ok(Json(response));
+                }
+                Err(ClnExtensionError::FailedPayment { erring_node }) => {
+                    error!(
+                        ?route_attempt,
+                        ?payment_hash,
+                        ?erring_node,
+                        "Pruned invoice payment attempt failure"
+                    );
+                    excluded_nodes.push(erring_node);
+                }
+                Err(e) => {
+                    error!(
+                        ?route_attempt,
+                        ?payment_hash,
+                        ?e,
+                        "Permanent Pruned invoice payment attempt failure"
+                    );
+                    return Err(e);
+                }
+            }
+
+            route_attempt += 1;
+        }
+    };
+
+    match timeout(PAYMENT_TIMEOUT_DURATION, payment_future).await {
+        Ok(preimage) => preimage,
+        Err(elapsed) => {
+            error!(
+                ?PAYMENT_TIMEOUT_DURATION,
+                ?elapsed,
+                ?payment_hash,
+                "Payment exceeded max attempt duration"
+            );
+            Err(ClnExtensionError::RpcWrongResponse)
+        }
+    }
 }
 
 #[instrument(skip_all, err)]
@@ -520,9 +631,10 @@ impl ClnRpcService {
             .await?
             .call(cln_rpc::Request::GetRoute(
                 model::requests::GetrouteRequest {
-                    id: PublicKey::from_slice(&pruned_invoice.destination)
-                        .expect("Should parse public key"),
-                    amount_msat: cln_rpc::primitives::Amount::from_msat(pruned_invoice.amount_msat),
+                    id: pruned_invoice.destination,
+                    amount_msat: cln_rpc::primitives::Amount::from_msat(
+                        pruned_invoice.amount.msats,
+                    ),
                     riskfactor,
                     cltv: Some(pruned_invoice.min_final_cltv_delta as u32),
                     fromid: None,
@@ -556,11 +668,11 @@ impl ClnRpcService {
         route: Vec<SendpayRoute>,
     ) -> Result<Vec<u8>, ClnExtensionError> {
         let payment_secret = Some(
-            cln_rpc::primitives::Secret::try_from(pruned_invoice.payment_secret)
+            cln_rpc::primitives::Secret::try_from(pruned_invoice.payment_secret.to_vec())
                 .map_err(ClnExtensionError::Error)?,
         );
         let amount_msat = Some(cln_rpc::primitives::Amount::from_msat(
-            pruned_invoice.amount_msat,
+            pruned_invoice.amount.msats,
         ));
 
         info!(
@@ -898,8 +1010,9 @@ impl GatewayLightning for ClnRpcService {
 
     async fn pay_pruned_invoice(
         &self,
-        request: tonic::Request<PayPrunedInvoiceRequest>,
+        _request: tonic::Request<PayPrunedInvoiceRequest>,
     ) -> Result<tonic::Response<PayInvoiceResponse>, tonic::Status> {
+        /*
         let PayPrunedInvoiceRequest {
             pruned_invoice,
             max_delay,
@@ -1019,6 +1132,8 @@ impl GatewayLightning for ClnRpcService {
                 )))
             }
         }
+        */
+        unimplemented!("Going to be deleted")
     }
 
     type RouteHtlcsStream = ReceiverStream<Result<InterceptHtlcRequest, Status>>;
