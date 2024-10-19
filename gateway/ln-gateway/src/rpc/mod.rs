@@ -382,3 +382,17 @@ pub struct CloseChannelsWithPeerRequest {
 pub struct CloseChannelsWithPeerResponse {
     pub num_channels_closed: u32,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ListActiveChannelsResponse {
+    pub channels: Vec<ChannelInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChannelInfo {
+    pub remote_pubkey: PublicKey,
+    pub channel_size_sats: u64,
+    pub outbound_liquidity_sats: u64,
+    pub inbound_liquidity_sats: u64,
+    pub short_channel_id: u64,
+}

@@ -32,7 +32,6 @@ use ln_gateway::envs::{FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV, FM_CLN_EXTENSION_LIS
 use ln_gateway::gateway_lnrpc::gateway_lightning_server::{
     GatewayLightning, GatewayLightningServer,
 };
-use ln_gateway::gateway_lnrpc::list_active_channels_response::ChannelInfo;
 use ln_gateway::gateway_lnrpc::{
     CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
     CreateInvoiceResponse, EmptyRequest, EmptyResponse, GetBalancesResponse,
@@ -43,9 +42,10 @@ use ln_gateway::gateway_lnrpc::{
 };
 use ln_gateway::rpc::extension_endpoints::{
     CLN_CLOSE_CHANNELS_WITH_PEER_ENDPOINT, CLN_COMPLETE_PAYMENT_ENDPOINT,
-    CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT, CLN_LN_ONCHAIN_ADDRESS_ENDPOINT,
-    CLN_OPEN_CHANNEL_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT,
-    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT, CLN_WITHDRAW_ONCHAIN_ENDPOINT,
+    CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT, CLN_LIST_ACTIVE_CHANNELS_ENDPOINT,
+    CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_OPEN_CHANNEL_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT,
+    CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_WITHDRAW_ONCHAIN_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
@@ -167,6 +167,10 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(
             CLN_CLOSE_CHANNELS_WITH_PEER_ENDPOINT,
             post(cln_close_channels_with_peer),
+        )
+        .route(
+            CLN_LIST_ACTIVE_CHANNELS_ENDPOINT,
+            get(cln_list_active_channels),
         )
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
@@ -800,6 +804,64 @@ async fn cln_close_channels_with_peer(
 
     Ok(Json(ln_gateway::rpc::CloseChannelsWithPeerResponse {
         num_channels_closed: channels_with_peer.len() as u32,
+    }))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_list_active_channels(
+    Extension(cln_service): Extension<ClnRpcService>,
+) -> Result<Json<ln_gateway::rpc::ListActiveChannelsResponse>, ClnExtensionError> {
+    let channels = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::ListPeerChannels(
+            model::requests::ListpeerchannelsRequest { id: None },
+        ))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::ListPeerChannels(model::responses::ListpeerchannelsResponse {
+                channels,
+            }) => Ok(channels
+                .into_iter()
+                .filter_map(|channel| {
+                    if matches!(
+                        channel.state,
+                        model::responses::ListpeerchannelsChannelsState::CHANNELD_NORMAL
+                    ) {
+                        Some(ln_gateway::rpc::ChannelInfo {
+                            remote_pubkey: channel.peer_id,
+                            channel_size_sats: channel
+                                .total_msat
+                                .map(|value| value.msat() / 1000)
+                                .unwrap_or(0),
+                            outbound_liquidity_sats: channel
+                                .spendable_msat
+                                .map(|value| value.msat() / 1000)
+                                .unwrap_or(0),
+                            inbound_liquidity_sats: channel
+                                .receivable_msat
+                                .map(|value| value.msat() / 1000)
+                                .unwrap_or(0),
+                            short_channel_id: match channel.short_channel_id {
+                                Some(scid) => scid_to_u64(scid),
+                                None => return None,
+                            },
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()),
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln listchannels rpc returned error {:?}", e);
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    Ok(Json(ln_gateway::rpc::ListActiveChannelsResponse {
+        channels,
     }))
 }
 
@@ -1881,6 +1943,7 @@ impl GatewayLightning for ClnRpcService {
         &self,
         _request: tonic::Request<EmptyRequest>,
     ) -> Result<tonic::Response<ListActiveChannelsResponse>, Status> {
+        /*
         let channels = self
             .rpc_client()
             .await
@@ -1934,6 +1997,8 @@ impl GatewayLightning for ClnRpcService {
         Ok(tonic::Response::new(ListActiveChannelsResponse {
             channels,
         }))
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn get_balances(
