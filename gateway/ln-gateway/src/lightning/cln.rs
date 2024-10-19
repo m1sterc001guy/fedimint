@@ -9,6 +9,9 @@ use fedimint_core::task::{sleep, TaskGroup};
 use fedimint_core::util::SafeUrl;
 use fedimint_core::{secp256k1, Amount, BitcoinAmountOrAll};
 use fedimint_ln_common::PrunedInvoice;
+use reqwest::Method;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
 use tracing::info;
@@ -18,11 +21,12 @@ use crate::gateway_lnrpc::gateway_lightning_client::GatewayLightningClient;
 use crate::gateway_lnrpc::{
     self, CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
     CreateInvoiceResponse, EmptyRequest, EmptyResponse, GetBalancesResponse,
-    GetLnOnchainAddressResponse, GetNodeInfoResponse, GetRouteHintsRequest, GetRouteHintsResponse,
+    GetLnOnchainAddressResponse, GetRouteHintsRequest, GetRouteHintsResponse,
     InterceptHtlcResponse, OpenChannelRequest, OpenChannelResponse, PayInvoiceResponse,
     PayPrunedInvoiceRequest, WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
 use crate::lightning::MAX_LIGHTNING_RETRIES;
+use crate::rpc::extension_endpoints::CLN_INFO_ENDPOINT;
 
 /// An `ILnRpcClient` that wraps around `GatewayLightningClient` for
 /// convenience, and makes real RPC requests over the wire to a remote lightning
@@ -31,6 +35,7 @@ use crate::lightning::MAX_LIGHTNING_RETRIES;
 #[derive(Debug)]
 pub struct NetworkLnRpcClient {
     connection_url: SafeUrl,
+    client: reqwest::Client,
 }
 
 impl NetworkLnRpcClient {
@@ -41,6 +46,7 @@ impl NetworkLnRpcClient {
         );
         NetworkLnRpcClient {
             connection_url: url,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -65,19 +71,49 @@ impl NetworkLnRpcClient {
 
         Ok(client)
     }
+
+    async fn call<P: Serialize, T: DeserializeOwned>(
+        &self,
+        method: Method,
+        url: SafeUrl,
+        payload: Option<P>,
+    ) -> Result<T, reqwest::Error> {
+        let mut builder = self.client.request(method, url.clone().to_unsafe());
+        if let Some(payload) = payload {
+            builder = builder
+                .json(&payload)
+                .header(reqwest::header::CONTENT_TYPE, "application/json");
+        }
+
+        let response = builder.send().await?;
+        response.json::<T>().await
+    }
+
+    async fn call_get<T: DeserializeOwned>(&self, url: SafeUrl) -> Result<T, reqwest::Error> {
+        self.call(Method::GET, url, None::<()>).await
+    }
+
+    async fn call_post<P: Serialize, T: DeserializeOwned>(
+        &self,
+        url: SafeUrl,
+        payload: P,
+    ) -> Result<T, reqwest::Error> {
+        self.call(Method::POST, url, Some(payload)).await
+    }
 }
 
 #[async_trait]
 impl ILnRpcClient for NetworkLnRpcClient {
-    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError> {
-        let req = Request::new(EmptyRequest {});
-        let mut client = self.connect().await?;
-        let res = client.get_node_info(req).await.map_err(|status| {
-            LightningRpcError::FailedToGetNodeInfo {
-                failure_reason: status.message().to_string(),
-            }
-        })?;
-        Ok(res.into_inner())
+    async fn info(&self) -> Result<crate::rpc::GetNodeInfoResponse, LightningRpcError> {
+        let url = self
+            .connection_url
+            .join(CLN_INFO_ENDPOINT)
+            .expect("invalid base url");
+        self.call_get(url)
+            .await
+            .map_err(|e| LightningRpcError::FailedToGetNodeInfo {
+                failure_reason: e.to_string(),
+            })
     }
 
     async fn routehints(

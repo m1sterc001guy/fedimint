@@ -18,9 +18,8 @@ use lightning_invoice::{
 };
 use ln_gateway::gateway_lnrpc::{
     self, CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse,
-    EmptyResponse, GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse,
-    GetRouteHintsResponse, InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse,
-    WithdrawOnchainResponse,
+    EmptyResponse, GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse, WithdrawOnchainResponse,
 };
 use ln_gateway::lightning::{
     ChannelInfo, HtlcResult, ILnRpcClient, LightningRpcError, RouteHtlcStream,
@@ -118,9 +117,9 @@ impl FakeLightningTest {
 
 #[async_trait]
 impl ILnRpcClient for FakeLightningTest {
-    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError> {
-        Ok(GetNodeInfoResponse {
-            pub_key: self.gateway_node_pub_key.serialize().to_vec(),
+    async fn info(&self) -> Result<ln_gateway::rpc::GetNodeInfoResponse, LightningRpcError> {
+        Ok(ln_gateway::rpc::GetNodeInfoResponse {
+            pub_key: self.gateway_node_pub_key,
             alias: "FakeLightningNode".to_string(),
             network: "regtest".to_string(),
             block_height: 0,

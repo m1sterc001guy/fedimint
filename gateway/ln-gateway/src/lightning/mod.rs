@@ -32,9 +32,8 @@ use crate::envs::{
 };
 use crate::gateway_lnrpc::{
     CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse, GetRouteHintsResponse,
-    InterceptHtlcRequest, InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse,
-    WithdrawOnchainResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse, InterceptHtlcRequest,
+    InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse, WithdrawOnchainResponse,
 };
 
 pub const MAX_LIGHTNING_RETRIES: u32 = 10;
@@ -97,7 +96,7 @@ pub struct LightningContext {
 #[async_trait]
 pub trait ILnRpcClient: Debug + Send + Sync {
     /// Get the public key and alias of the lightning node
-    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError>;
+    async fn info(&self) -> Result<crate::rpc::GetNodeInfoResponse, LightningRpcError>;
 
     /// Get route hints to the lightning node
     async fn routehints(
@@ -231,22 +230,18 @@ impl dyn ILnRpcClient {
     pub async fn parsed_node_info(
         &self,
     ) -> std::result::Result<(PublicKey, String, Network, u32, bool), LightningRpcError> {
-        let GetNodeInfoResponse {
+        let crate::rpc::GetNodeInfoResponse {
             pub_key,
             alias,
             network,
             block_height,
             synced_to_chain,
         } = self.info().await?;
-        let node_pub_key =
-            PublicKey::from_slice(&pub_key).map_err(|e| LightningRpcError::InvalidMetadata {
-                failure_reason: format!("Invalid node pubkey {e}"),
-            })?;
         let network =
             Network::from_str(&network).map_err(|e| LightningRpcError::InvalidMetadata {
                 failure_reason: format!("Invalid network {network}: {e}"),
             })?;
-        Ok((node_pub_key, alias, network, block_height, synced_to_chain))
+        Ok((pub_key, alias, network, block_height, synced_to_chain))
     }
 }
 

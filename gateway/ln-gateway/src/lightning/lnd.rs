@@ -48,9 +48,8 @@ use crate::gateway_lnrpc::get_route_hints_response::{RouteHint, RouteHintHop};
 use crate::gateway_lnrpc::intercept_htlc_response::{Action, Cancel, Forward, Settle};
 use crate::gateway_lnrpc::{
     CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse, GetRouteHintsResponse,
-    InterceptHtlcRequest, InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse,
-    WithdrawOnchainResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse, InterceptHtlcRequest,
+    InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse, WithdrawOnchainResponse,
 };
 
 type HtlcSubscriptionSender = mpsc::Sender<Result<InterceptHtlcRequest, Status>>;
@@ -647,7 +646,7 @@ impl fmt::Debug for GatewayLndClient {
 
 #[async_trait]
 impl ILnRpcClient for GatewayLndClient {
-    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError> {
+    async fn info(&self) -> Result<crate::rpc::GetNodeInfoResponse, LightningRpcError> {
         let mut client = self.connect().await?;
         let info = client
             .lightning()
@@ -681,8 +680,8 @@ impl ILnRpcClient for GatewayLndClient {
         }
         .to_string();
 
-        return Ok(GetNodeInfoResponse {
-            pub_key: pub_key.serialize().to_vec(),
+        return Ok(crate::rpc::GetNodeInfoResponse {
+            pub_key,
             alias: info.alias,
             network,
             block_height: info.block_height,
