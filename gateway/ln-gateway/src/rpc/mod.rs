@@ -342,3 +342,8 @@ pub enum InvoiceDescription {
 pub struct CreateInvoiceResponse {
     pub invoice: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetLnOnchainAddressResponse {
+    pub address: String,
+}

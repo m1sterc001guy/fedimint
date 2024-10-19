@@ -43,8 +43,8 @@ use ln_gateway::gateway_lnrpc::{
 };
 use ln_gateway::rpc::extension_endpoints::{
     CLN_COMPLETE_PAYMENT_ENDPOINT, CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT,
-    CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT,
-    CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT,
+    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
@@ -153,10 +153,14 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_INFO_ENDPOINT, get(cln_info))
         .route(CLN_ROUTE_HINTS_ENDPOINT, post(cln_route_hints))
         .route(CLN_ROUTE_HTLCS_ENDPOINT, get(cln_route_htlcs))
-        .route(CLN_PAY_INVOICE_ENDPOINT, get(cln_pay_invoice))
-        .route(CLN_PAY_PRUNED_INVOICE_ENDPOINT, get(cln_pay_pruned_invoice))
-        .route(CLN_COMPLETE_PAYMENT_ENDPOINT, get(cln_complete_payment))
-        .route(CLN_CREATE_INVOICE_ENDPOINT, get(cln_create_invoice))
+        .route(CLN_PAY_INVOICE_ENDPOINT, post(cln_pay_invoice))
+        .route(
+            CLN_PAY_PRUNED_INVOICE_ENDPOINT,
+            post(cln_pay_pruned_invoice),
+        )
+        .route(CLN_COMPLETE_PAYMENT_ENDPOINT, post(cln_complete_payment))
+        .route(CLN_CREATE_INVOICE_ENDPOINT, post(cln_create_invoice))
+        .route(CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, get(cln_ln_onchain_address))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -602,6 +606,37 @@ async fn cln_create_invoice(
         })??;
 
     Ok(Json(response))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_ln_onchain_address(
+    Extension(cln_service): Extension<ClnRpcService>,
+) -> Result<Json<ln_gateway::rpc::GetLnOnchainAddressResponse>, ClnExtensionError> {
+    let address_or = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::NewAddr(model::requests::NewaddrRequest {
+            addresstype: None,
+        }))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::NewAddr(model::responses::NewaddrResponse { bech32, .. }) => {
+                Ok(bech32)
+            }
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln newaddr rpc returned error {:?}", e);
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    match address_or {
+        Some(address) => Ok(Json(ln_gateway::rpc::GetLnOnchainAddressResponse {
+            address,
+        })),
+        None => Err(ClnExtensionError::RpcWrongResponse),
+    }
 }
 
 // TODO: upstream these structs to cln-plugin
@@ -1462,6 +1497,7 @@ impl GatewayLightning for ClnRpcService {
         &self,
         _request: tonic::Request<EmptyRequest>,
     ) -> Result<tonic::Response<GetLnOnchainAddressResponse>, Status> {
+        /*
         let address_or = self
             .rpc_client()
             .await
@@ -1488,6 +1524,8 @@ impl GatewayLightning for ClnRpcService {
             })),
             None => Err(Status::internal("cln newaddr rpc returned no address")),
         }
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn withdraw_onchain(
