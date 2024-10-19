@@ -321,7 +321,7 @@ pub struct PayInvoiceResponse {
 pub struct PayPrunedInvoiceRequest {
     pub pruned_invoice: Option<PrunedInvoice>,
     pub max_delay: u64,
-    pub max_fee_msat: u64,
+    pub max_fee_msat: Amount,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -368,7 +368,7 @@ async fn cln_pay_pruned_invoice(
                 .ok_or_else(|| ClnExtensionError::RpcWrongResponse)?
                 .amount_msat;
             let fee = first_hop_amount - last_hop_amount;
-            if max_fee_msat < fee.msat() {
+            if max_fee_msat.msats < fee.msat() {
                 return Err(ClnExtensionError::RpcWrongResponse);
             }
 
