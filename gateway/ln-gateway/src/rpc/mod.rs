@@ -323,3 +323,22 @@ pub struct PayPrunedInvoiceRequest {
     pub max_delay: u64,
     pub max_fee_msat: u64,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateInvoiceRequest {
+    pub payment_hash: Option<crate::sha256::Hash>,
+    pub amount_msat: u64,
+    pub expiry_secs: u32,
+    pub description: Option<InvoiceDescription>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum InvoiceDescription {
+    Direct(String),
+    Hash(crate::sha256::Hash),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateInvoiceResponse {
+    pub invoice: String,
+}

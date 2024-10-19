@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Extension, Json, Router};
 use bitcoin::secp256k1;
-use bitcoin_hashes::{sha256, Hash};
+use bitcoin_hashes::sha256;
 use clap::Parser;
 use cln_plugin::{options, Builder, Plugin};
 use cln_rpc::model;
@@ -29,7 +29,6 @@ use futures_util::stream::StreamExt;
 use hex::ToHex;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 use ln_gateway::envs::{FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV, FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2};
-use ln_gateway::gateway_lnrpc::create_invoice_request::Description;
 use ln_gateway::gateway_lnrpc::gateway_lightning_server::{
     GatewayLightning, GatewayLightningServer,
 };
@@ -43,11 +42,12 @@ use ln_gateway::gateway_lnrpc::{
     WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
 use ln_gateway::rpc::extension_endpoints::{
-    CLN_COMPLETE_PAYMENT_ENDPOINT, CLN_INFO_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT,
-    CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_COMPLETE_PAYMENT_ENDPOINT, CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT,
+    CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT,
+    CLN_ROUTE_HTLCS_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
-use ln_gateway::rpc::{InterceptPaymentRequest, PaymentAction};
+use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
 use rand::rngs::OsRng;
 use rand::Rng;
 use reqwest::StatusCode;
@@ -156,6 +156,7 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_PAY_INVOICE_ENDPOINT, get(cln_pay_invoice))
         .route(CLN_PAY_PRUNED_INVOICE_ENDPOINT, get(cln_pay_pruned_invoice))
         .route(CLN_COMPLETE_PAYMENT_ENDPOINT, get(cln_complete_payment))
+        .route(CLN_CREATE_INVOICE_ENDPOINT, get(cln_create_invoice))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -524,6 +525,85 @@ async fn cln_complete_payment(
     Ok(Json(()))
 }
 
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_create_invoice(
+    Extension(cln_service): Extension<ClnRpcService>,
+    Json(payload): Json<ln_gateway::rpc::CreateInvoiceRequest>,
+) -> Result<Json<ln_gateway::rpc::CreateInvoiceResponse>, ClnExtensionError> {
+    let ln_gateway::rpc::CreateInvoiceRequest {
+        payment_hash,
+        amount_msat,
+        expiry_secs,
+        description,
+    } = payload;
+
+    let payment_hash = if let Some(payment_hash) = payment_hash {
+        payment_hash
+    } else {
+        return cln_service
+            .create_invoice_for_self(amount_msat, expiry_secs.into(), description)
+            .await;
+    };
+
+    let description = description.ok_or(ClnExtensionError::RpcWrongResponse)?;
+
+    let info = cln_service.info().await?;
+
+    let network = bitcoin::Network::from_str(info.2.as_str())
+        .map_err(|_| ClnExtensionError::RpcWrongResponse)?;
+
+    let invoice_builder = InvoiceBuilder::new(Currency::from(network))
+        .amount_milli_satoshis(amount_msat)
+        .payment_hash(payment_hash)
+        .payment_secret(PaymentSecret(OsRng.gen()))
+        .duration_since_epoch(fedimint_core::time::duration_since_epoch())
+        .min_final_cltv_expiry_delta(18)
+        .expiry_time(Duration::from_secs(expiry_secs.into()));
+
+    let invoice_builder = match description {
+        InvoiceDescription::Direct(description) => invoice_builder.invoice_description(
+            lightning_invoice::Bolt11InvoiceDescription::Direct(
+                &lightning_invoice::Description::new(description).expect("Description is valid"),
+            ),
+        ),
+        InvoiceDescription::Hash(hash) => invoice_builder.invoice_description(
+            lightning_invoice::Bolt11InvoiceDescription::Hash(&lightning_invoice::Sha256(hash)),
+        ),
+    };
+
+    let invoice = invoice_builder
+        // Temporarily sign with an ephemeral private key, we will request CLN to sign this
+        // invoice next.
+        .build_signed(|m| {
+            let ctx = secp256k1::global::SECP256K1;
+            ctx.sign_ecdsa_recoverable(m, &SecretKey::new(&mut OsRng))
+        })
+        .map_err(|_| ClnExtensionError::RpcWrongResponse)?;
+
+    let invstring = invoice.to_string();
+
+    let response = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::SignInvoice(
+            model::requests::SigninvoiceRequest { invstring },
+        ))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::SignInvoice(model::responses::SigninvoiceResponse { bolt11 }) => {
+                Ok(ln_gateway::rpc::CreateInvoiceResponse { invoice: bolt11 })
+            }
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln invoice returned error {e:?}");
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    Ok(Json(response))
+}
+
 // TODO: upstream these structs to cln-plugin
 // See: https://github.com/ElementsProject/lightning/blob/master/doc/PLUGINS.md#htlc_accepted
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -827,22 +907,17 @@ impl ClnRpcService {
         &self,
         amount_msat: u64,
         expiry_secs: u64,
-        description_or: Option<Description>,
-    ) -> Result<tonic::Response<CreateInvoiceResponse>, Status> {
+        description_or: Option<InvoiceDescription>,
+    ) -> Result<Json<ln_gateway::rpc::CreateInvoiceResponse>, ClnExtensionError> {
         let description = match description_or {
+            Some(InvoiceDescription::Direct(desc)) => desc,
+            Some(InvoiceDescription::Hash(_)) => return Err(ClnExtensionError::RpcWrongResponse),
             None => String::new(),
-            Some(Description::Direct(description)) => description,
-            Some(Description::Hash(_hash)) => {
-                return Err(Status::unimplemented(
-                    "Only direct descriptions are supported for CLN gateways at this time",
-                ));
-            }
         };
 
         let response = self
             .rpc_client()
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
+            .await?
             .call(cln_rpc::Request::Invoice(model::requests::InvoiceRequest {
                 cltv: None,
                 deschashonly: None,
@@ -860,16 +935,15 @@ impl ClnRpcService {
             .map(|response| match response {
                 cln_rpc::Response::Invoice(model::responses::InvoiceResponse {
                     bolt11, ..
-                }) => Ok(CreateInvoiceResponse { invoice: bolt11 }),
+                }) => Ok(ln_gateway::rpc::CreateInvoiceResponse { invoice: bolt11 }),
                 _ => Err(ClnExtensionError::RpcWrongResponse),
             })
             .map_err(|e| {
                 error!("cln invoice returned error {e:?}");
-                tonic::Status::internal(e.to_string())
-            })?
-            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+                ClnExtensionError::RpcWrongResponse
+            })??;
 
-        Ok(tonic::Response::new(response))
+        Ok(Json(response))
     }
 }
 
@@ -1294,8 +1368,9 @@ impl GatewayLightning for ClnRpcService {
 
     async fn create_invoice(
         &self,
-        create_invoice_request: tonic::Request<CreateInvoiceRequest>,
+        _create_invoice_request: tonic::Request<CreateInvoiceRequest>,
     ) -> Result<tonic::Response<CreateInvoiceResponse>, Status> {
+        /*
         let CreateInvoiceRequest {
             payment_hash,
             amount_msat,
@@ -1379,6 +1454,8 @@ impl GatewayLightning for ClnRpcService {
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
         Ok(tonic::Response::new(response))
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn get_ln_onchain_address(
