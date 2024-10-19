@@ -24,10 +24,6 @@ pub mod rpc;
 pub mod state_machine;
 mod types;
 
-pub mod gateway_lnrpc {
-    tonic::include_proto!("gateway_lnrpc");
-}
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Display;
