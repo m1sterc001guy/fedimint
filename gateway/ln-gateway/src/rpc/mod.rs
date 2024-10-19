@@ -265,3 +265,12 @@ pub struct GetNodeInfoResponse {
     pub block_height: u32,
     pub synced_to_chain: bool,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InterceptPaymentRequest {
+    pub payment_hash: crate::sha256::Hash,
+    pub amount_msat: u64,
+    pub expiry: u32,
+    pub short_channel_id: Option<u64>,
+    pub htlc_id: u64,
+}

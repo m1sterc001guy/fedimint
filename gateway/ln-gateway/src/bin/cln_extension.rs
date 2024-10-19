@@ -46,6 +46,7 @@ use ln_gateway::gateway_lnrpc::{
 use ln_gateway::lightning::LightningRpcError;
 use ln_gateway::rpc::extension_endpoints::{CLN_INFO_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT};
 use ln_gateway::rpc::rpc_server::auth_middleware;
+use ln_gateway::rpc::InterceptPaymentRequest;
 use rand::rngs::OsRng;
 use rand::Rng;
 use reqwest::StatusCode;
@@ -149,6 +150,7 @@ async fn run_webserver(
 fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> Router {
     let always_authenticated_routes = Router::new()
         .route(CLN_INFO_ENDPOINT, get(cln_info))
+        .route(CLN_ROUTE_HTLCS_ENDPOINT, get(cln_route_htlcs))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -175,6 +177,29 @@ async fn cln_info(
     )?;
 
     Ok(Json(response))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_route_htlcs(
+    Extension(interceptor): Extension<Arc<ClnHtlcInterceptor>>,
+) -> Result<Body, ClnExtensionError> {
+    // First create new channel that we will use to send responses back to gatewayd
+    let (gatewayd_sender, gatewayd_receiver) = mpsc::channel::<InterceptPaymentRequest>(100);
+
+    let mut sender = interceptor.sender.lock().await;
+    *sender = Some(gatewayd_sender.clone());
+    debug!("Gateway channel sender replaced");
+
+    let receiver_stream = ReceiverStream::new(gatewayd_receiver).map(|msg| {
+        // TODO: Handle JSON decoding error
+        let json = serde_json::to_vec(&msg).unwrap_or_default();
+        Ok::<Bytes, ClnExtensionError>(Bytes::from(json))
+    });
+
+    let body = Body::from_stream(receiver_stream);
+
+    Ok(body)
 }
 
 // TODO: upstream these structs to cln-plugin
@@ -1399,7 +1424,7 @@ fn htlc_processing_failure() -> serde_json::Value {
     })
 }
 
-type HtlcInterceptionSender = mpsc::Sender<Result<InterceptHtlcRequest, ClnExtensionError>>;
+type HtlcInterceptionSender = mpsc::Sender<InterceptPaymentRequest>;
 type HtlcOutcomeSender = oneshot::Sender<serde_json::Value>;
 
 /// Functional structure to filter intercepted HTLCs into subscription streams.
@@ -1453,8 +1478,6 @@ impl ClnHtlcInterceptor {
         // Clone the sender to avoid holding the lock while sending the HTLC
         let sender = self.sender.lock().await.clone();
         if let Some(sender) = sender {
-            let payment_hash = payload.htlc.payment_hash.to_byte_array().to_vec();
-
             let incoming_chan_id =
                 match Self::convert_short_channel_id(payload.htlc.short_channel_id.as_str()) {
                     Ok(scid) => scid,
@@ -1463,15 +1486,13 @@ impl ClnHtlcInterceptor {
                 };
 
             let htlc_ret = match sender
-                .send(Ok(InterceptHtlcRequest {
-                    payment_hash: payment_hash.clone(),
-                    incoming_amount_msat: payload.htlc.amount_msat.msats,
-                    outgoing_amount_msat: payload.onion.forward_msat.msats,
-                    incoming_expiry: htlc_expiry,
+                .send(InterceptPaymentRequest {
+                    payment_hash: payload.htlc.payment_hash,
+                    amount_msat: payload.onion.forward_msat.msats,
+                    expiry: htlc_expiry,
                     short_channel_id,
-                    incoming_chan_id,
                     htlc_id: payload.htlc.id,
-                }))
+                })
                 .await
             {
                 Ok(_) => {
