@@ -1,4 +1,3 @@
-use std::array::TryFromSliceError;
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -9,7 +8,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use axum::body::{Body, Bytes};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{middleware, Extension, Json, Router};
 use bitcoin::secp256k1;
 use bitcoin_hashes::{sha256, Hash};
@@ -19,21 +18,18 @@ use cln_rpc::model;
 use cln_rpc::model::requests::SendpayRoute;
 use cln_rpc::model::responses::ListpeerchannelsChannels;
 use cln_rpc::primitives::ShortChannelId;
-use fedimint_core::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use fedimint_core::secp256k1::{PublicKey, SecretKey};
 use fedimint_core::task::{timeout, TaskGroup};
 use fedimint_core::util::handle_version_hash_command;
 use fedimint_core::{fedimint_build_code_version_env, Amount};
+use fedimint_ln_common::route_hints::{RouteHint, RouteHintHop};
 use futures_util::stream::StreamExt;
-use hex::ToHex;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 use ln_gateway::envs::{FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV, FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2};
-use ln_gateway::error::AdminGatewayError;
 use ln_gateway::gateway_lnrpc::create_invoice_request::Description;
 use ln_gateway::gateway_lnrpc::gateway_lightning_server::{
     GatewayLightning, GatewayLightningServer,
 };
-use ln_gateway::gateway_lnrpc::get_route_hints_response::{RouteHint, RouteHintHop};
-use ln_gateway::gateway_lnrpc::intercept_htlc_response::{Action, Cancel, Forward, Settle};
 use ln_gateway::gateway_lnrpc::list_active_channels_response::ChannelInfo;
 use ln_gateway::gateway_lnrpc::{
     CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
@@ -43,8 +39,9 @@ use ln_gateway::gateway_lnrpc::{
     OpenChannelResponse, PayInvoiceRequest, PayInvoiceResponse, PayPrunedInvoiceRequest,
     PrunedInvoice, WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
-use ln_gateway::lightning::LightningRpcError;
-use ln_gateway::rpc::extension_endpoints::{CLN_INFO_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT};
+use ln_gateway::rpc::extension_endpoints::{
+    CLN_INFO_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+};
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::InterceptPaymentRequest;
 use rand::rngs::OsRng;
@@ -150,6 +147,7 @@ async fn run_webserver(
 fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> Router {
     let always_authenticated_routes = Router::new()
         .route(CLN_INFO_ENDPOINT, get(cln_info))
+        .route(CLN_ROUTE_HINTS_ENDPOINT, post(cln_route_hints))
         .route(CLN_ROUTE_HTLCS_ENDPOINT, get(cln_route_htlcs))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
@@ -177,6 +175,109 @@ async fn cln_info(
     )?;
 
     Ok(Json(response))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_route_hints(
+    Extension(cln_service): Extension<ClnRpcService>,
+    Json(payload): Json<ln_gateway::rpc::GetRouteHintsRequest>,
+) -> Result<Json<ln_gateway::rpc::GetRouteHintsResponse>, ClnExtensionError> {
+    let ln_gateway::rpc::GetRouteHintsRequest { num_route_hints } = payload;
+    let node_info = cln_service.info().await?;
+
+    let mut client = cln_service.rpc_client().await?;
+
+    let active_peer_channels_response = client
+        .call(cln_rpc::Request::ListPeerChannels(
+            model::requests::ListpeerchannelsRequest { id: None },
+        ))
+        .await?;
+
+    let mut active_peer_channels = match active_peer_channels_response {
+        cln_rpc::Response::ListPeerChannels(channels) => Ok(channels.channels),
+        _ => Err(ClnExtensionError::RpcWrongResponse),
+    }?
+    .into_iter()
+    .filter_map(|chan| {
+        if matches!(
+            chan.state,
+            model::responses::ListpeerchannelsChannelsState::CHANNELD_NORMAL
+        ) {
+            return chan.short_channel_id.map(|scid| (chan.peer_id, scid));
+        }
+
+        None
+    })
+    .collect::<Vec<_>>();
+
+    debug!(
+        "Found {} active channels to use as route hints",
+        active_peer_channels.len()
+    );
+
+    let listfunds_response = client
+        .call(cln_rpc::Request::ListFunds(
+            model::requests::ListfundsRequest { spent: None },
+        ))
+        .await?;
+    let pubkey_to_incoming_capacity = match listfunds_response {
+        cln_rpc::Response::ListFunds(listfunds) => listfunds
+            .channels
+            .into_iter()
+            .map(|chan| (chan.peer_id, chan.amount_msat - chan.our_amount_msat))
+            .collect::<HashMap<_, _>>(),
+        err => panic!("CLN received unexpected response: {err:?}"),
+    };
+    active_peer_channels.sort_by(|a, b| {
+        let a_incoming = pubkey_to_incoming_capacity.get(&a.0).unwrap().msat();
+        let b_incoming = pubkey_to_incoming_capacity.get(&b.0).unwrap().msat();
+        b_incoming.cmp(&a_incoming)
+    });
+    active_peer_channels.truncate(num_route_hints as usize);
+
+    let mut route_hints = vec![];
+    for (peer_id, scid) in active_peer_channels {
+        let channels_response = client
+            .call(cln_rpc::Request::ListChannels(
+                model::requests::ListchannelsRequest {
+                    short_channel_id: Some(scid),
+                    source: None,
+                    destination: None,
+                },
+            ))
+            .await?;
+
+        let channel = match channels_response {
+            cln_rpc::Response::ListChannels(channels) => {
+                let Some(channel) = channels
+                    .channels
+                    .into_iter()
+                    .find(|chan| chan.destination == node_info.0)
+                else {
+                    warn!(?scid, "Channel not found in graph");
+                    continue;
+                };
+                Ok(channel)
+            }
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        }?;
+
+        let route_hint_hop = RouteHintHop {
+            src_node_id: peer_id,
+            short_channel_id: scid_to_u64(scid),
+            base_msat: channel.base_fee_millisatoshi,
+            proportional_millionths: channel.fee_per_millionth,
+            cltv_expiry_delta: channel.delay as u16,
+            htlc_minimum_msat: Some(channel.htlc_minimum_msat.msat()),
+            htlc_maximum_msat: channel.htlc_maximum_msat.map(|amt| amt.msat()),
+        };
+
+        debug!("Constructed route hint {:?}", route_hint_hop);
+        route_hints.push(RouteHint(vec![route_hint_hop]));
+    }
+
+    Ok(Json(ln_gateway::rpc::GetRouteHintsResponse { route_hints }))
 }
 
 #[instrument(skip_all, err)]
@@ -556,6 +657,7 @@ impl GatewayLightning for ClnRpcService {
         &self,
         _request: tonic::Request<EmptyRequest>,
     ) -> Result<tonic::Response<GetNodeInfoResponse>, Status> {
+        /*
         self.info()
             .await
             .map(|(pub_key, alias, network, block_height, synced_to_chain)| {
@@ -571,12 +673,15 @@ impl GatewayLightning for ClnRpcService {
                 error!("cln getinfo returned error: {:?}", e);
                 Status::internal(e.to_string())
             })
+            */
+        unimplemented!("Going to be deleted")
     }
 
     async fn get_route_hints(
         &self,
-        request: tonic::Request<GetRouteHintsRequest>,
+        _request: tonic::Request<GetRouteHintsRequest>,
     ) -> Result<tonic::Response<GetRouteHintsResponse>, Status> {
+        /*
         let GetRouteHintsRequest { num_route_hints } = request.into_inner();
         let node_info = self
             .info()
@@ -685,6 +790,8 @@ impl GatewayLightning for ClnRpcService {
         }
 
         Ok(tonic::Response::new(GetRouteHintsResponse { route_hints }))
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn pay_invoice(
@@ -882,7 +989,7 @@ impl GatewayLightning for ClnRpcService {
 
     async fn complete_htlc(
         &self,
-        intercept_response: tonic::Request<InterceptHtlcResponse>,
+        _intercept_response: tonic::Request<InterceptHtlcResponse>,
     ) -> Result<tonic::Response<EmptyResponse>, Status> {
         /*
         let InterceptHtlcResponse {

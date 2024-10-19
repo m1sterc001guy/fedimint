@@ -11,6 +11,7 @@ use fedimint_core::config::{FederationId, JsonClientConfig};
 use fedimint_core::core::OperationId;
 use fedimint_core::{secp256k1, Amount, BitcoinAmountOrAll};
 use fedimint_ln_common::config::parse_routing_fees;
+use fedimint_ln_common::route_hints::RouteHint;
 use fedimint_mint_client::OOBNotes;
 use lightning_invoice::{Bolt11Invoice, RoutingFees};
 use serde::{Deserialize, Serialize};
@@ -273,4 +274,14 @@ pub struct InterceptPaymentRequest {
     pub expiry: u32,
     pub short_channel_id: Option<u64>,
     pub htlc_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetRouteHintsRequest {
+    pub num_route_hints: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetRouteHintsResponse {
+    pub route_hints: Vec<RouteHint>,
 }
