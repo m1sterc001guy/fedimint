@@ -28,7 +28,7 @@ use fedimint_ln_common::PrunedInvoice;
 use futures_util::stream::StreamExt;
 use hex::ToHex;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
-use ln_gateway::envs::{FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV, FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2};
+use ln_gateway::envs::FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV;
 use ln_gateway::rpc::extension_endpoints::{
     CLN_CLOSE_CHANNELS_WITH_PEER_ENDPOINT, CLN_COMPLETE_PAYMENT_ENDPOINT,
     CLN_CREATE_INVOICE_ENDPOINT, CLN_GET_BALANCES_ENDPOINT, CLN_INFO_ENDPOINT,
@@ -83,9 +83,7 @@ async fn main() -> Result<(), anyhow::Error> {
         listen
     );
 
-    let webserver_listen =
-        SocketAddr::from_str(std::env::var(FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2)?.as_str())?;
-    run_webserver(webserver_listen, service.clone(), interceptor, plugin).await?;
+    run_webserver(listen, service.clone(), interceptor, plugin).await?;
 
     // lightningd needs to see exit code 0 to notice the plugin has
     // terminated -- even if we return from main().
