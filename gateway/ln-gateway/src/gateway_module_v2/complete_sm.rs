@@ -1,18 +1,17 @@
 use std::fmt;
 use std::time::Duration;
 
-use bitcoin_hashes::Hash;
 use fedimint_client::sm::{State, StateTransition};
 use fedimint_client::DynGlobalClientContext;
 use fedimint_core::core::OperationId;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::task::sleep;
+use fedimint_ln_common::contracts::Preimage;
 use tracing::warn;
 
 use super::FinalReceiveState;
-use crate::gateway_lnrpc::intercept_htlc_response::{Action, Cancel, Settle};
-use crate::gateway_lnrpc::InterceptHtlcResponse;
 use crate::gateway_module_v2::GatewayClientContextV2;
+use crate::rpc::{InterceptPaymentResponse, PaymentAction};
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
 /// State machine that completes the incoming payment by contacting the
@@ -134,23 +133,15 @@ impl CompleteStateMachine {
         htlc_id: u64,
     ) {
         let action = match final_receive_state {
-            FinalReceiveState::Rejected => Action::Cancel(Cancel {
-                reason: "Rejected".to_string(),
-            }),
-            FinalReceiveState::Success(preimage) => Action::Settle(Settle {
-                preimage: preimage.to_vec(),
-            }),
-            FinalReceiveState::Refunded => Action::Cancel(Cancel {
-                reason: "Refunded".to_string(),
-            }),
-            FinalReceiveState::Failure => Action::Cancel(Cancel {
-                reason: "Failure".to_string(),
-            }),
+            FinalReceiveState::Rejected => PaymentAction::Cancel,
+            FinalReceiveState::Success(preimage) => PaymentAction::Settle(Preimage(preimage)),
+            FinalReceiveState::Refunded => PaymentAction::Cancel,
+            FinalReceiveState::Failure => PaymentAction::Cancel,
         };
 
-        let intercept_htlc_response = InterceptHtlcResponse {
-            action: Some(action),
-            payment_hash: payment_hash.to_byte_array().to_vec(),
+        let intercept_htlc_response = InterceptPaymentResponse {
+            action,
+            payment_hash,
             incoming_chan_id,
             htlc_id,
         };

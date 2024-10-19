@@ -6,8 +6,6 @@ use anyhow::anyhow;
 use fedimint_core::secp256k1::PublicKey;
 use hex::ToHex;
 
-use crate::gateway_lnrpc::InterceptHtlcRequest;
-
 impl TryFrom<crate::gateway_lnrpc::get_route_hints_response::RouteHintHop>
     for fedimint_ln_common::route_hints::RouteHintHop
 {
@@ -57,21 +55,20 @@ impl TryFrom<crate::gateway_lnrpc::GetRouteHintsResponse>
 }
 
 /// Utility struct for formatting an intercepted HTLC. Useful for debugging.
-pub struct PrettyInterceptHtlcRequest<'a>(pub &'a InterceptHtlcRequest);
+pub struct PrettyInterceptPaymentRequest<'a>(pub &'a crate::rpc::InterceptPaymentRequest);
 
-impl Display for PrettyInterceptHtlcRequest<'_> {
+impl Display for PrettyInterceptPaymentRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let PrettyInterceptHtlcRequest(htlc_request) = self;
+        let PrettyInterceptPaymentRequest(payment_request) = self;
         write!(
             f,
-            "InterceptHtlcRequest {{ payment_hash: {}, incoming_amount_msat: {:?}, outgoing_amount_msat: {:?}, incoming_expiry: {:?}, short_channel_id: {:?}, incoming_chan_id: {:?}, htlc_id: {:?} }}",
-            htlc_request.payment_hash.encode_hex::<String>(),
-            htlc_request.incoming_amount_msat,
-            htlc_request.outgoing_amount_msat,
-            htlc_request.incoming_expiry,
-            htlc_request.short_channel_id,
-            htlc_request.incoming_chan_id,
-            htlc_request.htlc_id,
+            "InterceptPaymentRequest {{ payment_hash: {}, amount_msat: {:?}, expiry: {:?}, short_channel_id: {:?}, incoming_chan_id: {:?}, htlc_id: {:?} }}",
+            payment_request.payment_hash.encode_hex::<String>(),
+            payment_request.amount_msat,
+            payment_request.expiry,
+            payment_request.short_channel_id,
+            payment_request.incoming_chan_id,
+            payment_request.htlc_id,
         )
     }
 }

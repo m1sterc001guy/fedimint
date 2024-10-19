@@ -20,15 +20,14 @@ use serde::Serialize;
 use thiserror::Error;
 
 use super::{
-    BackupPayload, BalancePayload, CloseChannelsWithPeerPayload, ConfigPayload, ConnectFedPayload,
-    CreateInvoiceForSelfPayload, DepositAddressPayload, FederationInfo, GatewayBalances,
-    GatewayFedConfig, GatewayInfo, GetLnOnchainAddressPayload, LeaveFedPayload, MnemonicResponse,
-    OpenChannelPayload, PayInvoicePayload, ReceiveEcashPayload, ReceiveEcashResponse,
-    SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse, SyncToChainPayload,
-    WithdrawOnchainPayload, WithdrawPayload,
+    BackupPayload, BalancePayload, CloseChannelsWithPeerPayload, CloseChannelsWithPeerResponse,
+    ConfigPayload, ConnectFedPayload, CreateInvoiceForSelfPayload, DepositAddressPayload,
+    FederationInfo, GatewayBalances, GatewayFedConfig, GatewayInfo, GetLnOnchainAddressPayload,
+    LeaveFedPayload, MnemonicResponse, OpenChannelPayload, PayInvoicePayload, ReceiveEcashPayload,
+    ReceiveEcashResponse, SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse,
+    SyncToChainPayload, WithdrawOnchainPayload, WithdrawPayload,
 };
 use crate::lightning::ChannelInfo;
-use crate::CloseChannelsWithPeerResponse;
 
 pub struct GatewayRpcClient {
     /// Base URL to gateway web server

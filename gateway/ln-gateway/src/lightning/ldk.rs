@@ -5,10 +5,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::{secp256k1, Address, Network, OutPoint};
+use bitcoin_hashes::Hash;
 use fedimint_bip39::Mnemonic;
 use fedimint_core::runtime::spawn;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::{Amount, BitcoinAmountOrAll};
+use fedimint_ln_common::contracts::Preimage;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::lightning::ln::PaymentHash;
 use ldk_node::lightning_invoice::Bolt11Invoice;
@@ -17,16 +19,14 @@ use lightning::ln::PaymentPreimage;
 use lightning::util::scid_utils::scid_from_parts;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::Status;
 use tracing::{error, info};
 
 use super::{ChannelInfo, ILnRpcClient, LightningRpcError, RouteHtlcStream};
-use crate::gateway_lnrpc::create_invoice_request::Description;
-use crate::gateway_lnrpc::intercept_htlc_response::{Action, Settle};
-use crate::gateway_lnrpc::{
-    CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse, InterceptHtlcRequest,
-    InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse, WithdrawOnchainResponse,
+use crate::rpc::{
+    CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    InterceptPaymentRequest, InterceptPaymentResponse, InvoiceDescription, OpenChannelResponse,
+    PayInvoiceResponse, PaymentAction, WithdrawOnchainResponse,
 };
 
 pub struct GatewayLdkClient {
@@ -45,8 +45,7 @@ pub struct GatewayLdkClient {
 
     /// The HTLC stream, until it is taken by calling
     /// `ILnRpcClient::route_htlcs`.
-    htlc_stream_receiver_or:
-        Option<tokio::sync::mpsc::Receiver<Result<InterceptHtlcRequest, Status>>>,
+    htlc_stream_receiver_or: Option<tokio::sync::mpsc::Receiver<InterceptPaymentRequest>>,
 }
 
 impl std::fmt::Debug for GatewayLdkClient {
@@ -112,7 +111,7 @@ impl GatewayLdkClient {
 
     async fn handle_next_event(
         node: &ldk_node::Node,
-        htlc_stream_sender: &Sender<Result<InterceptHtlcRequest, Status>>,
+        htlc_stream_sender: &Sender<InterceptPaymentRequest>,
     ) {
         if let ldk_node::Event::PaymentClaimable {
             payment_id: _,
@@ -122,15 +121,14 @@ impl GatewayLdkClient {
         } = node.next_event_async().await
         {
             if let Err(e) = htlc_stream_sender
-                .send(Ok(InterceptHtlcRequest {
-                    payment_hash: payment_hash.0.to_vec(),
-                    incoming_amount_msat: claimable_amount_msat,
-                    outgoing_amount_msat: 0,
-                    incoming_expiry: claim_deadline.unwrap_or_default(),
+                .send(InterceptPaymentRequest {
+                    payment_hash: Hash::from_slice(&payment_hash.0).expect("Failed to create Hash"),
+                    amount_msat: claimable_amount_msat,
+                    expiry: claim_deadline.unwrap_or_default(),
                     short_channel_id: None,
                     incoming_chan_id: 0,
                     htlc_id: 0,
-                }))
+                })
                 .await
             {
                 error!(?e, "Failed send InterceptHtlcRequest to stream");
@@ -276,7 +274,7 @@ impl ILnRpcClient for GatewayLdkClient {
                         } = payment_details.kind
                         {
                             return Ok(PayInvoiceResponse {
-                                preimage: preimage.0.to_vec(),
+                                preimage: Preimage(preimage.0),
                             });
                         }
                     }
@@ -307,22 +305,15 @@ impl ILnRpcClient for GatewayLdkClient {
         Ok((route_htlc_stream, Arc::new(*self)))
     }
 
-    async fn complete_htlc(
-        &self,
-        htlc: InterceptHtlcResponse,
-    ) -> Result<EmptyResponse, LightningRpcError> {
-        let InterceptHtlcResponse {
+    async fn complete_htlc(&self, htlc: InterceptPaymentResponse) -> Result<(), LightningRpcError> {
+        let InterceptPaymentResponse {
             action,
             payment_hash,
             incoming_chan_id: _,
             htlc_id: _,
         } = htlc;
 
-        let ph = PaymentHash(payment_hash.clone().try_into().map_err(|_| {
-            LightningRpcError::FailedToCompleteHtlc {
-                failure_reason: "Failed to parse payment hash".to_string(),
-            }
-        })?);
+        let ph = PaymentHash(*payment_hash.clone().as_byte_array());
 
         // TODO: Get the actual amount from the LDK node. Probably makes the
         // most sense to pipe it through the `InterceptHtlcResponse` struct.
@@ -333,41 +324,43 @@ impl ILnRpcClient for GatewayLdkClient {
 
         let ph_hex_str = hex::encode(payment_hash);
 
-        if let Some(Action::Settle(Settle { preimage })) = action {
-            self.node
-                .bolt11_payment()
-                .claim_for_hash(
-                    ph,
-                    claimable_amount_msat,
-                    PaymentPreimage(preimage.try_into().unwrap()),
-                )
-                .map_err(|_| LightningRpcError::FailedToCompleteHtlc {
-                    failure_reason: format!("Failed to claim LDK payment with hash {ph_hex_str}"),
+        match action {
+            PaymentAction::Settle(preimage) => {
+                self.node
+                    .bolt11_payment()
+                    .claim_for_hash(ph, claimable_amount_msat, PaymentPreimage(preimage.0))
+                    .map_err(|_| LightningRpcError::FailedToCompleteHtlc {
+                        failure_reason: format!(
+                            "Failed to claim LDK payment with hash {ph_hex_str}"
+                        ),
+                    })?;
+            }
+            _ => {
+                error!(
+                    "Unwinding payment with hash {ph_hex_str} because the action was not `Settle`"
+                );
+                self.node.bolt11_payment().fail_for_hash(ph).map_err(|_| {
+                    LightningRpcError::FailedToCompleteHtlc {
+                        failure_reason: format!(
+                            "Failed to unwind LDK payment with hash {ph_hex_str}"
+                        ),
+                    }
                 })?;
-        } else {
-            error!("Unwinding payment with hash {ph_hex_str} because the action was not `Settle`");
-            self.node.bolt11_payment().fail_for_hash(ph).map_err(|_| {
-                LightningRpcError::FailedToCompleteHtlc {
-                    failure_reason: format!("Failed to unwind LDK payment with hash {ph_hex_str}"),
-                }
-            })?;
-        };
+            }
+        }
 
-        return Ok(EmptyResponse {});
+        return Ok(());
     }
 
     async fn create_invoice(
         &self,
         create_invoice_request: CreateInvoiceRequest,
     ) -> Result<CreateInvoiceResponse, LightningRpcError> {
-        let payment_hash_or = if create_invoice_request.payment_hash.is_empty() {
-            None
+        let payment_hash_or = if let Some(payment_hash) = create_invoice_request.payment_hash {
+            let ph = PaymentHash(*payment_hash.as_byte_array());
+            Some(ph)
         } else {
-            Some(PaymentHash(create_invoice_request.payment_hash.try_into().map_err(
-                |_| LightningRpcError::FailedToGetInvoice {
-                    failure_reason: "Failed to convert Vec<u8> to [u8; 32] (this probably means that LDK received an invalid payment hash)".to_string(),
-                },
-            )?))
+            None
         };
 
         // Currently `ldk-node` only supports direct descriptions.
@@ -375,7 +368,7 @@ impl ILnRpcClient for GatewayLdkClient {
         // TODO: Once the above issue is resolved, we should support
         // description hashes as well.
         let description_str = match create_invoice_request.description {
-            Some(Description::Direct(desc)) => desc,
+            Some(InvoiceDescription::Direct(desc)) => desc,
             _ => String::new(),
         };
 
@@ -562,7 +555,7 @@ impl ILnRpcClient for GatewayLdkClient {
         })
     }
 
-    async fn sync_to_chain(&self, block_height: u32) -> Result<EmptyResponse, LightningRpcError> {
+    async fn sync_to_chain(&self, block_height: u32) -> Result<(), LightningRpcError> {
         loop {
             self.node
                 .sync_wallets()
@@ -577,6 +570,6 @@ impl ILnRpcClient for GatewayLdkClient {
             }
         }
 
-        Ok(EmptyResponse {})
+        Ok(())
     }
 }

@@ -9,15 +9,17 @@ use async_trait::async_trait;
 use bitcoin::Address;
 use bitcoin_hashes::{sha256, Hash};
 use fedimint_core::db::Database;
+use fedimint_core::encoding::Encodable;
 use fedimint_core::task::{sleep, TaskGroup};
 use fedimint_core::{secp256k1, Amount, BitcoinAmountOrAll};
+use fedimint_ln_common::contracts::Preimage;
+use fedimint_ln_common::route_hints::{RouteHint, RouteHintHop};
 use fedimint_ln_common::PrunedInvoice;
 use fedimint_lnv2_common::contracts::PaymentImage;
 use hex::ToHex;
 use secp256k1::PublicKey;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::Status;
 use tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use tonic_lnd::invoicesrpc::{
     AddHoldInvoiceRequest, CancelInvoiceMsg, LookupInvoiceMsg, SettleInvoiceMsg,
@@ -43,16 +45,14 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::{ChannelInfo, ILnRpcClient, LightningRpcError, RouteHtlcStream, MAX_LIGHTNING_RETRIES};
 use crate::db::GatewayDbtxNcExt;
-use crate::gateway_lnrpc::create_invoice_request::Description;
-use crate::gateway_lnrpc::get_route_hints_response::{RouteHint, RouteHintHop};
-use crate::gateway_lnrpc::intercept_htlc_response::{Action, Cancel, Forward, Settle};
-use crate::gateway_lnrpc::{
-    CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse, InterceptHtlcRequest,
-    InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse, WithdrawOnchainResponse,
+use crate::rpc::{
+    CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    InterceptPaymentRequest, InterceptPaymentResponse, InvoiceDescription, OpenChannelResponse,
+    PayInvoiceResponse, PaymentAction, WithdrawOnchainResponse,
 };
 
-type HtlcSubscriptionSender = mpsc::Sender<Result<InterceptHtlcRequest, Status>>;
+type HtlcSubscriptionSender = mpsc::Sender<InterceptPaymentRequest>;
 
 const LND_PAYMENT_TIMEOUT_SECONDS: i32 = 180;
 
@@ -175,19 +175,19 @@ impl GatewayLndClient {
                 );
 
                 if hold.state() == InvoiceState::Accepted {
-                    let intercept = InterceptHtlcRequest {
-                        payment_hash: hold.r_hash.clone(),
-                        incoming_amount_msat: hold.amt_paid_msat as u64,
+                    let intercept = InterceptPaymentRequest {
+                        payment_hash: Hash::from_slice(&hold.r_hash.clone())
+                            .expect("Failed to convert to Hash"),
+                        amount_msat: hold.amt_paid_msat as u64,
                         // The rest of the fields are not used in LNv2 and can be removed once LNv1
                         // support is over
-                        outgoing_amount_msat: hold.amt_paid_msat as u64,
-                        incoming_expiry: hold.expiry as u32,
+                        expiry: hold.expiry as u32,
                         short_channel_id: Some(0),
                         incoming_chan_id: 0,
                         htlc_id: 0,
                     };
 
-                    match gateway_sender.send(Ok(intercept)).await {
+                    match gateway_sender.send(intercept).await {
                         Ok(()) => {}
                         Err(e) => {
                             error!(
@@ -421,17 +421,16 @@ impl GatewayLndClient {
                     let incoming_circuit_key = htlc.incoming_circuit_key.unwrap();
 
                     // Forward all HTLCs to gatewayd, gatewayd will filter them based on scid
-                    let intercept = InterceptHtlcRequest {
-                        payment_hash: htlc.payment_hash,
-                        incoming_amount_msat: htlc.incoming_amount_msat,
-                        outgoing_amount_msat: htlc.outgoing_amount_msat,
-                        incoming_expiry: htlc.incoming_expiry,
+                    let intercept = InterceptPaymentRequest {
+                        payment_hash: Hash::from_slice(&htlc.payment_hash).expect("Failed to convert payment Hash"),
+                        amount_msat: htlc.outgoing_amount_msat,
+                        expiry: htlc.incoming_expiry,
                         short_channel_id: Some(htlc.outgoing_requested_chan_id),
                         incoming_chan_id: incoming_circuit_key.chan_id,
                         htlc_id: incoming_circuit_key.htlc_id,
                     };
 
-                    match gateway_sender.send(Ok(intercept)).await {
+                    match gateway_sender.send(intercept).await {
                         Ok(()) => {}
                         Err(e) => {
                             error!("Failed to send HTLC to gatewayd for processing: {:?}", e);
@@ -550,7 +549,7 @@ impl GatewayLndClient {
     async fn settle_hold_invoice(
         &self,
         payment_hash: Vec<u8>,
-        preimage: Vec<u8>,
+        preimage: Preimage,
     ) -> Result<(), LightningRpcError> {
         let mut client = self.connect().await?;
         let invoice = client
@@ -579,7 +578,9 @@ impl GatewayLndClient {
 
         client
             .invoices()
-            .settle_invoice(SettleInvoiceMsg { preimage })
+            .settle_invoice(SettleInvoiceMsg {
+                preimage: preimage.0.to_vec(),
+            })
             .await
             .map_err(|e| {
                 error!(
@@ -730,10 +731,8 @@ impl ILnRpcClient for GatewayLndClient {
             let Some(policy) = info.node1_policy.clone() else {
                 continue;
             };
-            let src_node_id = PublicKey::from_str(&chan.remote_pubkey)
-                .unwrap()
-                .serialize()
-                .to_vec();
+            let src_node_id =
+                PublicKey::from_str(&chan.remote_pubkey).expect("Failed to parse pubkey");
             let short_channel_id = chan.chan_id;
             let base_msat = policy.fee_base_msat as u32;
             let proportional_millionths = policy.fee_rate_milli_msat as u32;
@@ -746,13 +745,11 @@ impl ILnRpcClient for GatewayLndClient {
                 short_channel_id,
                 base_msat,
                 proportional_millionths,
-                cltv_expiry_delta,
+                cltv_expiry_delta: cltv_expiry_delta as u16,
                 htlc_minimum_msat,
                 htlc_maximum_msat,
             };
-            route_hints.push(RouteHint {
-                hops: vec![route_hint_hop],
-            });
+            route_hints.push(RouteHint(vec![route_hint_hop]));
         }
 
         Ok(GetRouteHintsResponse { route_hints })
@@ -919,7 +916,9 @@ impl ILnRpcClient for GatewayLndClient {
                 }
             }
         };
-        Ok(PayInvoiceResponse { preimage })
+        Ok(PayInvoiceResponse {
+            preimage: Preimage(preimage.try_into().expect("Failed to create preimage")),
+        })
     }
 
     /// Returns true if the lightning backend supports payments without full
@@ -936,7 +935,7 @@ impl ILnRpcClient for GatewayLndClient {
 
         // Channel to send intercepted htlc to the gateway for processing
         let (gateway_sender, gateway_receiver) =
-            mpsc::channel::<Result<InterceptHtlcRequest, tonic::Status>>(CHANNEL_SIZE);
+            mpsc::channel::<InterceptPaymentRequest>(CHANNEL_SIZE);
 
         let (lnd_sender, lnd_rx) = mpsc::channel::<ForwardHtlcInterceptResponse>(CHANNEL_SIZE);
 
@@ -958,11 +957,8 @@ impl ILnRpcClient for GatewayLndClient {
         Ok((Box::pin(ReceiverStream::new(gateway_receiver)), new_client))
     }
 
-    async fn complete_htlc(
-        &self,
-        htlc: InterceptHtlcResponse,
-    ) -> Result<EmptyResponse, LightningRpcError> {
-        let InterceptHtlcResponse {
+    async fn complete_htlc(&self, htlc: InterceptPaymentResponse) -> Result<(), LightningRpcError> {
+        let InterceptPaymentResponse {
             action,
             payment_hash,
             incoming_chan_id,
@@ -970,36 +966,32 @@ impl ILnRpcClient for GatewayLndClient {
         } = htlc;
 
         let (action, preimage) = match action {
-            Some(Action::Settle(Settle { preimage })) => {
-                (ResolveHoldForwardAction::Settle, preimage)
-            }
-            Some(Action::Forward(Forward {})) => (ResolveHoldForwardAction::Resume, vec![]),
-            Some(Action::Cancel(Cancel { reason: _ })) | None => {
-                (ResolveHoldForwardAction::Fail, vec![])
-            }
+            PaymentAction::Settle(preimage) => (ResolveHoldForwardAction::Settle, preimage),
+            PaymentAction::Cancel => (ResolveHoldForwardAction::Resume, Preimage([0; 32])),
+            PaymentAction::Forward => (ResolveHoldForwardAction::Fail, Preimage([0; 32])),
         };
 
         // First check if this completion request corresponds to a HOLD LNv2 invoice
         match action {
             ResolveHoldForwardAction::Settle => {
                 if let Ok(()) = self
-                    .settle_hold_invoice(payment_hash.clone(), preimage.clone())
+                    .settle_hold_invoice(
+                        payment_hash.clone().to_byte_array().to_vec(),
+                        preimage.clone(),
+                    )
                     .await
                 {
-                    info!(
-                        "Successfully settled HOLD invoice {}",
-                        PrettyPaymentHash(&payment_hash)
-                    );
-                    return Ok(EmptyResponse {});
+                    info!("Successfully settled HOLD invoice {}", payment_hash);
+                    return Ok(());
                 }
             }
             _ => {
-                if let Ok(()) = self.cancel_hold_invoice(payment_hash.clone()).await {
-                    info!(
-                        "Successfully canceled HOLD invoice {}",
-                        PrettyPaymentHash(&payment_hash)
-                    );
-                    return Ok(EmptyResponse {});
+                if let Ok(()) = self
+                    .cancel_hold_invoice(payment_hash.clone().to_byte_array().to_vec())
+                    .await
+                {
+                    info!("Successfully canceled HOLD invoice {}", payment_hash);
+                    return Ok(());
                 }
             }
         }
@@ -1012,13 +1004,13 @@ impl ILnRpcClient for GatewayLndClient {
                     htlc_id,
                 }),
                 action: action.into(),
-                preimage,
+                preimage: preimage.0.to_vec(),
                 failure_message: vec![],
                 failure_code: FailureCode::TemporaryChannelFailure.into(),
             };
 
             Self::send_lnd_response(lnd_sender, response).await?;
-            return Ok(EmptyResponse {});
+            return Ok(());
         }
 
         error!("Gatewayd has not started to route HTLCs");
@@ -1034,28 +1026,29 @@ impl ILnRpcClient for GatewayLndClient {
         let mut client = self.connect().await?;
         let description = create_invoice_request
             .description
-            .unwrap_or(Description::Direct(String::new()));
+            .unwrap_or(InvoiceDescription::Direct(String::new()));
 
-        if create_invoice_request.payment_hash.is_empty() {
+        if create_invoice_request.payment_hash.is_none() {
             let invoice = match description {
-                Description::Direct(description) => Invoice {
+                InvoiceDescription::Direct(description) => Invoice {
                     memo: description,
                     value_msat: create_invoice_request.amount_msat as i64,
                     expiry: i64::from(create_invoice_request.expiry_secs),
                     ..Default::default()
                 },
-                Description::Hash(desc_hash) => Invoice {
-                    description_hash: desc_hash,
+                InvoiceDescription::Hash(desc_hash) => Invoice {
+                    description_hash: desc_hash.to_byte_array().to_vec(),
                     value_msat: create_invoice_request.amount_msat as i64,
                     expiry: i64::from(create_invoice_request.expiry_secs),
                     ..Default::default()
                 },
             };
 
-            self.payment_hashes
-                .write()
-                .await
-                .insert(create_invoice_request.payment_hash);
+            self.payment_hashes.write().await.insert(
+                create_invoice_request
+                    .payment_hash
+                    .consensus_encode_to_vec(),
+            );
 
             let add_invoice_response =
                 client.lightning().add_invoice(invoice).await.map_err(|e| {
@@ -1068,26 +1061,33 @@ impl ILnRpcClient for GatewayLndClient {
             Ok(CreateInvoiceResponse { invoice })
         } else {
             let hold_invoice_request = match description {
-                Description::Direct(description) => AddHoldInvoiceRequest {
+                InvoiceDescription::Direct(description) => AddHoldInvoiceRequest {
                     memo: description,
-                    hash: create_invoice_request.payment_hash.clone(),
+                    hash: create_invoice_request
+                        .payment_hash
+                        .clone()
+                        .consensus_encode_to_vec(),
                     value_msat: create_invoice_request.amount_msat as i64,
                     expiry: i64::from(create_invoice_request.expiry_secs),
                     ..Default::default()
                 },
-                Description::Hash(desc_hash) => AddHoldInvoiceRequest {
-                    description_hash: desc_hash,
-                    hash: create_invoice_request.payment_hash.clone(),
+                InvoiceDescription::Hash(desc_hash) => AddHoldInvoiceRequest {
+                    description_hash: desc_hash.to_byte_array().to_vec(),
+                    hash: create_invoice_request
+                        .payment_hash
+                        .clone()
+                        .consensus_encode_to_vec(),
                     value_msat: create_invoice_request.amount_msat as i64,
                     expiry: i64::from(create_invoice_request.expiry_secs),
                     ..Default::default()
                 },
             };
 
-            self.payment_hashes
-                .write()
-                .await
-                .insert(create_invoice_request.payment_hash);
+            self.payment_hashes.write().await.insert(
+                create_invoice_request
+                    .payment_hash
+                    .consensus_encode_to_vec(),
+            );
 
             let hold_invoice_response = client
                 .invoices()
@@ -1381,9 +1381,9 @@ impl ILnRpcClient for GatewayLndClient {
         })
     }
 
-    async fn sync_to_chain(&self, _block_height: u32) -> Result<EmptyResponse, LightningRpcError> {
+    async fn sync_to_chain(&self, _block_height: u32) -> Result<(), LightningRpcError> {
         // We don't need to do anything here, as LND automatically syncs to chain.
-        Ok(EmptyResponse {})
+        Ok(())
     }
 }
 

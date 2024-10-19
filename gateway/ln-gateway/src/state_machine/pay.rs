@@ -24,7 +24,6 @@ use tracing::{debug, error, info, warn, Instrument};
 
 use super::{GatewayClientContext, GatewayClientStateMachines, GatewayExtReceiveStates};
 use crate::db::GatewayDbtxNcExt;
-use crate::gateway_lnrpc::PayInvoiceResponse;
 use crate::lightning::LightningRpcError;
 use crate::state_machine::GatewayClientModule;
 use crate::{GatewayState, RoutingFees};
@@ -442,16 +441,12 @@ impl GatewayPayInvoice {
         };
 
         match payment_result {
-            Ok(PayInvoiceResponse { preimage, .. }) => {
+            Ok(crate::rpc::PayInvoiceResponse { preimage, .. }) => {
                 debug!("Preimage received for contract {contract:?}");
-                let slice: [u8; 32] = preimage.try_into().expect("Failed to parse preimage");
                 GatewayPayStateMachine {
                     common,
                     state: GatewayPayStates::ClaimOutgoingContract(Box::new(
-                        GatewayPayClaimOutgoingContract {
-                            contract,
-                            preimage: Preimage(slice),
-                        },
+                        GatewayPayClaimOutgoingContract { contract, preimage },
                     )),
                 }
             }

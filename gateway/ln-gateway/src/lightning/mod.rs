@@ -30,16 +30,16 @@ use crate::envs::{
     FM_GATEWAY_LIGHTNING_ADDR_ENV, FM_LDK_ESPLORA_SERVER_URL, FM_LDK_NETWORK, FM_LND_MACAROON_ENV,
     FM_LND_RPC_ADDR_ENV, FM_LND_TLS_CERT_ENV, FM_PORT_LDK,
 };
-use crate::gateway_lnrpc::{
-    CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse, EmptyResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse, InterceptHtlcRequest,
-    InterceptHtlcResponse, OpenChannelResponse, PayInvoiceResponse, WithdrawOnchainResponse,
+use crate::rpc::{
+    CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    InterceptPaymentRequest, InterceptPaymentResponse, OpenChannelResponse, PayInvoiceResponse,
+    WithdrawOnchainResponse,
 };
 
 pub const MAX_LIGHTNING_RETRIES: u32 = 10;
 
-pub type HtlcResult = std::result::Result<InterceptHtlcRequest, tonic::Status>;
-pub type RouteHtlcStream<'a> = BoxStream<'a, HtlcResult>;
+pub type RouteHtlcStream<'a> = BoxStream<'a, InterceptPaymentRequest>;
 
 #[derive(
     Error, Debug, Serialize, Deserialize, Encodable, Decodable, Clone, Eq, PartialEq, Hash,
@@ -160,10 +160,7 @@ pub trait ILnRpcClient: Debug + Send + Sync {
     /// Complete an HTLC that was intercepted by the gateway. Must be called for
     /// all successfully intercepted HTLCs sent to the stream returned by
     /// `route_htlcs`.
-    async fn complete_htlc(
-        &self,
-        htlc: InterceptHtlcResponse,
-    ) -> Result<EmptyResponse, LightningRpcError>;
+    async fn complete_htlc(&self, htlc: InterceptPaymentResponse) -> Result<(), LightningRpcError>;
 
     async fn create_invoice(
         &self,
@@ -204,7 +201,7 @@ pub trait ILnRpcClient: Debug + Send + Sync {
 
     async fn get_balances(&self) -> Result<GetBalancesResponse, LightningRpcError>;
 
-    async fn sync_to_chain(&self, block_height: u32) -> Result<EmptyResponse, LightningRpcError>;
+    async fn sync_to_chain(&self, block_height: u32) -> Result<(), LightningRpcError>;
 }
 
 impl dyn ILnRpcClient {
@@ -222,7 +219,7 @@ impl dyn ILnRpcClient {
                 .unwrap_or(GetRouteHintsResponse {
                     route_hints: Vec::new(),
                 });
-        route_hints.try_into().expect("Could not parse route hints")
+        route_hints.route_hints
     }
 
     /// Retrieves the basic information about the Gateway's connected Lightning

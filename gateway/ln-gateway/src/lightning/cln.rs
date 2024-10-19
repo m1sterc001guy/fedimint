@@ -1,32 +1,26 @@
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::Address;
 use fedimint_core::encoding::Encodable;
-use fedimint_core::task::{sleep, TaskGroup};
+use fedimint_core::task::TaskGroup;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::{secp256k1, Amount, BitcoinAmountOrAll};
 use fedimint_ln_common::PrunedInvoice;
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use tonic::transport::{Channel, Endpoint};
-use tonic::Request;
 use tracing::info;
 
 use super::{ChannelInfo, ILnRpcClient, LightningRpcError, RouteHtlcStream};
-use crate::gateway_lnrpc::gateway_lightning_client::GatewayLightningClient;
-use crate::gateway_lnrpc::{
-    self, CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
-    CreateInvoiceResponse, EmptyRequest, EmptyResponse, GetBalancesResponse,
-    GetLnOnchainAddressResponse, GetRouteHintsRequest, GetRouteHintsResponse,
-    InterceptHtlcResponse, OpenChannelRequest, OpenChannelResponse, PayInvoiceResponse,
-    PayPrunedInvoiceRequest, WithdrawOnchainRequest, WithdrawOnchainResponse,
-};
-use crate::lightning::MAX_LIGHTNING_RETRIES;
 use crate::rpc::extension_endpoints::CLN_INFO_ENDPOINT;
+use crate::rpc::{
+    CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
+    CreateInvoiceResponse, GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    InterceptPaymentResponse, OpenChannelRequest, OpenChannelResponse, PayInvoiceResponse,
+    WithdrawOnchainRequest, WithdrawOnchainResponse,
+};
 
 /// An `ILnRpcClient` that wraps around `GatewayLightningClient` for
 /// convenience, and makes real RPC requests over the wire to a remote lightning
@@ -50,6 +44,7 @@ impl NetworkLnRpcClient {
         }
     }
 
+    /*
     async fn connect(&self) -> Result<GatewayLightningClient<Channel>, LightningRpcError> {
         let mut retries = 0;
         let client = loop {
@@ -71,6 +66,7 @@ impl NetworkLnRpcClient {
 
         Ok(client)
     }
+    */
 
     async fn call<P: Serialize, T: DeserializeOwned>(
         &self,
@@ -120,6 +116,7 @@ impl ILnRpcClient for NetworkLnRpcClient {
         &self,
         num_route_hints: usize,
     ) -> Result<GetRouteHintsResponse, LightningRpcError> {
+        /*
         let req = Request::new(GetRouteHintsRequest {
             num_route_hints: num_route_hints as u64,
         });
@@ -130,6 +127,8 @@ impl ILnRpcClient for NetworkLnRpcClient {
             }
         })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     async fn pay_private(
@@ -138,6 +137,7 @@ impl ILnRpcClient for NetworkLnRpcClient {
         max_delay: u64,
         max_fee: Amount,
     ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        /*
         let req = Request::new(PayPrunedInvoiceRequest {
             pruned_invoice: Some(gateway_lnrpc::PrunedInvoice {
                 amount_msat: invoice.amount.msats,
@@ -157,6 +157,8 @@ impl ILnRpcClient for NetworkLnRpcClient {
             }
         })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     fn supports_private_payments(&self) -> bool {
@@ -167,6 +169,7 @@ impl ILnRpcClient for NetworkLnRpcClient {
         self: Box<Self>,
         _task_group: &TaskGroup,
     ) -> Result<(RouteHtlcStream<'a>, Arc<dyn ILnRpcClient>), LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
         let res = client
             .route_htlcs(EmptyRequest {})
@@ -178,12 +181,12 @@ impl ILnRpcClient for NetworkLnRpcClient {
             Box::pin(res.into_inner()),
             Arc::new(Self::new(self.connection_url.clone())),
         ))
+        */
+        todo!()
     }
 
-    async fn complete_htlc(
-        &self,
-        htlc: InterceptHtlcResponse,
-    ) -> Result<EmptyResponse, LightningRpcError> {
+    async fn complete_htlc(&self, htlc: InterceptPaymentResponse) -> Result<(), LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
         let res = client.complete_htlc(htlc).await.map_err(|status| {
             LightningRpcError::FailedToCompleteHtlc {
@@ -191,12 +194,15 @@ impl ILnRpcClient for NetworkLnRpcClient {
             }
         })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     async fn create_invoice(
         &self,
         create_invoice_request: CreateInvoiceRequest,
     ) -> Result<CreateInvoiceResponse, LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
         let res = client
             .create_invoice(create_invoice_request)
@@ -205,11 +211,14 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 failure_reason: status.message().to_string(),
             })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     async fn get_ln_onchain_address(
         &self,
     ) -> Result<GetLnOnchainAddressResponse, LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
         let res = client
             .get_ln_onchain_address(EmptyRequest {})
@@ -218,6 +227,8 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 failure_reason: status.message().to_string(),
             })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     async fn withdraw_onchain(
@@ -226,6 +237,7 @@ impl ILnRpcClient for NetworkLnRpcClient {
         amount: BitcoinAmountOrAll,
         fee_rate_sats_per_vbyte: u64,
     ) -> Result<WithdrawOnchainResponse, LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
         let res = client
             .withdraw_onchain(WithdrawOnchainRequest {
@@ -242,6 +254,8 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 failure_reason: status.message().to_string(),
             })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     async fn open_channel(
@@ -251,6 +265,7 @@ impl ILnRpcClient for NetworkLnRpcClient {
         channel_size_sats: u64,
         push_amount_sats: u64,
     ) -> Result<OpenChannelResponse, LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
 
         let res = client
@@ -265,12 +280,15 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 failure_reason: status.message().to_string(),
             })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     async fn close_channels_with_peer(
         &self,
         pubkey: secp256k1::PublicKey,
     ) -> Result<CloseChannelsWithPeerResponse, LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
         let res = client
             .close_channels_with_peer(CloseChannelsWithPeerRequest {
@@ -281,9 +299,12 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 failure_reason: status.message().to_string(),
             })?;
         Ok(res.into_inner())
+        */
+        todo!()
     }
 
     async fn list_active_channels(&self) -> Result<Vec<ChannelInfo>, LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
         let res = client
             .list_active_channels(EmptyRequest {})
@@ -304,9 +325,12 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 short_channel_id: channel.short_channel_id,
             })
             .collect())
+            */
+        todo!()
     }
 
     async fn get_balances(&self) -> Result<GetBalancesResponse, LightningRpcError> {
+        /*
         let mut client = self.connect().await?;
 
         Ok(client
@@ -316,10 +340,12 @@ impl ILnRpcClient for NetworkLnRpcClient {
                 failure_reason: status.message().to_string(),
             })?
             .into_inner())
+            */
+        todo!()
     }
 
-    async fn sync_to_chain(&self, _block_height: u32) -> Result<EmptyResponse, LightningRpcError> {
+    async fn sync_to_chain(&self, _block_height: u32) -> Result<(), LightningRpcError> {
         // We don't need to do anything here, as CLN automatically syncs to chain.
-        Ok(EmptyResponse {})
+        Ok(())
     }
 }
