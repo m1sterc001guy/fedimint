@@ -18,7 +18,7 @@ use fedimint_mint_client::OOBNotes;
 use lightning_invoice::{Bolt11Invoice, RoutingFees};
 use serde::{Deserialize, Serialize};
 
-use crate::lightning::LightningMode;
+use crate::lightning::{ChannelInfo, LightningMode};
 use crate::{PublicKey, SafeUrl};
 
 pub const V1_API_ENDPOINT: &str = "v1";
@@ -386,15 +386,6 @@ pub struct CloseChannelsWithPeerResponse {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ListActiveChannelsResponse {
     pub channels: Vec<ChannelInfo>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ChannelInfo {
-    pub remote_pubkey: PublicKey,
-    pub channel_size_sats: u64,
-    pub outbound_liquidity_sats: u64,
-    pub inbound_liquidity_sats: u64,
-    pub short_channel_id: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

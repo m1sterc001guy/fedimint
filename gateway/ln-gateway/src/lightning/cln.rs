@@ -24,9 +24,9 @@ use crate::rpc::extension_endpoints::{
 use crate::rpc::{
     CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
     CreateInvoiceResponse, GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsRequest,
-    GetRouteHintsResponse, InterceptPaymentRequest, InterceptPaymentResponse, OpenChannelRequest,
-    OpenChannelResponse, PayInvoiceResponse, PayPrunedInvoiceRequest, WithdrawOnchainRequest,
-    WithdrawOnchainResponse,
+    GetRouteHintsResponse, InterceptPaymentRequest, InterceptPaymentResponse,
+    ListActiveChannelsResponse, OpenChannelRequest, OpenChannelResponse, PayInvoiceResponse,
+    PayPrunedInvoiceRequest, WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
 
 /// An `ILnRpcClient` that wraps around `GatewayLightningClient` for
@@ -285,11 +285,12 @@ impl ILnRpcClient for NetworkLnRpcClient {
             .connection_url
             .join(CLN_LIST_ACTIVE_CHANNELS_ENDPOINT)
             .expect("invalid base url");
-        self.call_get(url)
-            .await
-            .map_err(|e| LightningRpcError::FailedToListActiveChannels {
+        let response: ListActiveChannelsResponse = self.call_get(url).await.map_err(|e| {
+            LightningRpcError::FailedToListActiveChannels {
                 failure_reason: e.to_string(),
-            })
+            }
+        })?;
+        Ok(response.channels)
     }
 
     async fn get_balances(&self) -> Result<GetBalancesResponse, LightningRpcError> {

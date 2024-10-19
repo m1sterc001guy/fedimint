@@ -242,7 +242,7 @@ impl dyn ILnRpcClient {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChannelInfo {
     pub remote_pubkey: secp256k1::PublicKey,
     pub channel_size_sats: u64,

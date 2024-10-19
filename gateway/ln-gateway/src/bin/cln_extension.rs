@@ -795,7 +795,7 @@ async fn cln_list_active_channels(
                         channel.state,
                         model::responses::ListpeerchannelsChannelsState::CHANNELD_NORMAL
                     ) {
-                        Some(ln_gateway::rpc::ChannelInfo {
+                        Some(ln_gateway::lightning::ChannelInfo {
                             remote_pubkey: channel.peer_id,
                             channel_size_sats: channel
                                 .total_msat
