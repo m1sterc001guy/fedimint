@@ -42,10 +42,10 @@ use ln_gateway::gateway_lnrpc::{
 };
 use ln_gateway::rpc::extension_endpoints::{
     CLN_CLOSE_CHANNELS_WITH_PEER_ENDPOINT, CLN_COMPLETE_PAYMENT_ENDPOINT,
-    CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT, CLN_LIST_ACTIVE_CHANNELS_ENDPOINT,
-    CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_OPEN_CHANNEL_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT,
-    CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
-    CLN_WITHDRAW_ONCHAIN_ENDPOINT,
+    CLN_CREATE_INVOICE_ENDPOINT, CLN_GET_BALANCES_ENDPOINT, CLN_INFO_ENDPOINT,
+    CLN_LIST_ACTIVE_CHANNELS_ENDPOINT, CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_OPEN_CHANNEL_ENDPOINT,
+    CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT,
+    CLN_ROUTE_HTLCS_ENDPOINT, CLN_WITHDRAW_ONCHAIN_ENDPOINT,
 };
 use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
 use rand::rngs::OsRng;
@@ -170,7 +170,8 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(
             CLN_LIST_ACTIVE_CHANNELS_ENDPOINT,
             get(cln_list_active_channels),
-        );
+        )
+        .route(CLN_GET_BALANCES_ENDPOINT, get(cln_get_balances));
     Router::new()
         .merge(public_routes)
         .layer(Extension(cln_service))
@@ -860,6 +861,71 @@ async fn cln_list_active_channels(
 
     Ok(Json(ln_gateway::rpc::ListActiveChannelsResponse {
         channels,
+    }))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_get_balances(
+    Extension(cln_service): Extension<ClnRpcService>,
+) -> Result<Json<ln_gateway::rpc::GetBalancesResponse>, ClnExtensionError> {
+    let (channels, outputs) = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::ListFunds(
+            model::requests::ListfundsRequest { spent: None },
+        ))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::ListFunds(model::responses::ListfundsResponse {
+                channels,
+                outputs,
+            }) => Ok((channels, outputs)),
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln listchannels rpc returned error {:?}", e);
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    let total_receivable_msat = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::ListPeerChannels(
+            model::requests::ListpeerchannelsRequest { id: None },
+        ))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::ListPeerChannels(model::responses::ListpeerchannelsResponse {
+                channels,
+            }) => Ok(channels
+                .into_iter()
+                .filter(|channel| {
+                    matches!(
+                        channel.state,
+                        model::responses::ListpeerchannelsChannelsState::CHANNELD_NORMAL
+                    )
+                })
+                .filter_map(|channel| channel.receivable_msat.map(|value| value.msat()))
+                .sum::<u64>()), // Sum the receivable_msat values directly
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln listchannels rpc returned error {:?}", e);
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    let lightning_balance_msats = channels
+        .into_iter()
+        .fold(0, |acc, channel| acc + channel.our_amount_msat.msat());
+    let onchain_balance_sats = outputs
+        .into_iter()
+        .fold(0, |acc, output| acc + output.amount_msat.msat() / 1000);
+
+    Ok(Json(ln_gateway::rpc::GetBalancesResponse {
+        onchain_balance_sats,
+        lightning_balance_msats,
+        inbound_lightning_liquidity_msats: total_receivable_msat,
     }))
 }
 
@@ -2003,6 +2069,7 @@ impl GatewayLightning for ClnRpcService {
         &self,
         _request: tonic::Request<EmptyRequest>,
     ) -> Result<tonic::Response<GetBalancesResponse>, Status> {
+        /*
         let (channels, outputs) = self
             .rpc_client()
             .await
@@ -2065,6 +2132,8 @@ impl GatewayLightning for ClnRpcService {
             lightning_balance_msats,
             inbound_lightning_liquidity_msats: total_receivable_msat,
         }))
+        */
+        unimplemented!("Going to be deleted")
     }
 }
 

@@ -396,3 +396,10 @@ pub struct ChannelInfo {
     pub inbound_liquidity_sats: u64,
     pub short_channel_id: u64,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetBalancesResponse {
+    pub onchain_balance_sats: u64,
+    pub lightning_balance_msats: u64,
+    pub inbound_lightning_liquidity_msats: u64,
+}

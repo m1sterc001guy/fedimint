@@ -10,3 +10,4 @@ pub const CLN_WITHDRAW_ONCHAIN_ENDPOINT: &str = "/cln_withdraw_onchain";
 pub const CLN_OPEN_CHANNEL_ENDPOINT: &str = "/cln_open_channel";
 pub const CLN_CLOSE_CHANNELS_WITH_PEER_ENDPOINT: &str = "/cln_close_channels_with_peer";
 pub const CLN_LIST_ACTIVE_CHANNELS_ENDPOINT: &str = "/cln_list_active_channels";
+pub const CLN_GET_BALANCES_ENDPOINT: &str = "/cln_get_balances";
