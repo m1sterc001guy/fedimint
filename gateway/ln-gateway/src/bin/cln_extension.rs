@@ -42,10 +42,10 @@ use ln_gateway::gateway_lnrpc::{
     WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
 use ln_gateway::rpc::extension_endpoints::{
-    CLN_COMPLETE_PAYMENT_ENDPOINT, CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT,
-    CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_OPEN_CHANNEL_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT,
-    CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
-    CLN_WITHDRAW_ONCHAIN_ENDPOINT,
+    CLN_CLOSE_CHANNELS_WITH_PEER_ENDPOINT, CLN_COMPLETE_PAYMENT_ENDPOINT,
+    CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT, CLN_LN_ONCHAIN_ADDRESS_ENDPOINT,
+    CLN_OPEN_CHANNEL_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT,
+    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT, CLN_WITHDRAW_ONCHAIN_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
@@ -164,6 +164,10 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, get(cln_ln_onchain_address))
         .route(CLN_WITHDRAW_ONCHAIN_ENDPOINT, post(cln_withdraw_onchain))
         .route(CLN_OPEN_CHANNEL_ENDPOINT, post(cln_open_channel))
+        .route(
+            CLN_CLOSE_CHANNELS_WITH_PEER_ENDPOINT,
+            post(cln_close_channels_with_peer),
+        )
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -737,6 +741,66 @@ async fn cln_open_channel(
         })??;
 
     Ok(Json(ln_gateway::rpc::OpenChannelResponse { funding_txid }))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_close_channels_with_peer(
+    Extension(cln_service): Extension<ClnRpcService>,
+    Json(payload): Json<ln_gateway::rpc::CloseChannelsWithPeerRequest>,
+) -> Result<Json<ln_gateway::rpc::CloseChannelsWithPeerResponse>, ClnExtensionError> {
+    let channels_with_peer: Vec<ListpeerchannelsChannels> = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::ListPeerChannels(
+            model::requests::ListpeerchannelsRequest {
+                id: Some(payload.pubkey),
+            },
+        ))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::ListPeerChannels(model::responses::ListpeerchannelsResponse {
+                channels,
+            }) => Ok(channels
+                .into_iter()
+                .filter(|channel| {
+                    channel.state
+                        == model::responses::ListpeerchannelsChannelsState::CHANNELD_NORMAL
+                })
+                .collect()),
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln listchannels rpc returned error {:?}", e);
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    for channel_id in channels_with_peer
+        .iter()
+        .filter_map(|channel| channel.channel_id)
+    {
+        cln_service
+            .rpc_client()
+            .await?
+            .call(cln_rpc::Request::Close(model::requests::CloseRequest {
+                id: channel_id.to_string(),
+                unilateraltimeout: None,
+                destination: None,
+                fee_negotiation_step: None,
+                wrong_funding: None,
+                force_lease_closed: None,
+                feerange: None,
+            }))
+            .await
+            .map_err(|e| {
+                error!("cln fundchannel rpc returned error {:?}", e);
+                ClnExtensionError::RpcWrongResponse
+            })?;
+    }
+
+    Ok(Json(ln_gateway::rpc::CloseChannelsWithPeerResponse {
+        num_channels_closed: channels_with_peer.len() as u32,
+    }))
 }
 
 // TODO: upstream these structs to cln-plugin
@@ -1748,8 +1812,9 @@ impl GatewayLightning for ClnRpcService {
 
     async fn close_channels_with_peer(
         &self,
-        request: tonic::Request<CloseChannelsWithPeerRequest>,
+        _request: tonic::Request<CloseChannelsWithPeerRequest>,
     ) -> Result<tonic::Response<CloseChannelsWithPeerResponse>, Status> {
+        /*
         let request_inner = request.into_inner();
 
         let peer_id = PublicKey::from_slice(&request_inner.pubkey).map_err(|e| {
@@ -1808,6 +1873,8 @@ impl GatewayLightning for ClnRpcService {
         Ok(tonic::Response::new(CloseChannelsWithPeerResponse {
             num_channels_closed: channels_with_peer.len() as u32,
         }))
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn list_active_channels(

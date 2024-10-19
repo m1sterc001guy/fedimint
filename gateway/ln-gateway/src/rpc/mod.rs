@@ -372,3 +372,13 @@ pub struct OpenChannelRequest {
 pub struct OpenChannelResponse {
     pub funding_txid: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CloseChannelsWithPeerRequest {
+    pub pubkey: PublicKey,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CloseChannelsWithPeerResponse {
+    pub num_channels_closed: u32,
+}
