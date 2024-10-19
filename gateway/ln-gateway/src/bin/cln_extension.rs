@@ -7,6 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use axum::body::{Body, Bytes};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{middleware, Extension, Json, Router};
+use bitcoin::secp256k1;
 use bitcoin_hashes::{sha256, Hash};
 use clap::Parser;
 use cln_plugin::{options, Builder, Plugin};
@@ -14,13 +19,15 @@ use cln_rpc::model;
 use cln_rpc::model::requests::SendpayRoute;
 use cln_rpc::model::responses::ListpeerchannelsChannels;
 use cln_rpc::primitives::ShortChannelId;
-use fedimint_core::secp256k1::{All, PublicKey, Secp256k1, SecretKey};
+use fedimint_core::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use fedimint_core::task::{timeout, TaskGroup};
 use fedimint_core::util::handle_version_hash_command;
 use fedimint_core::{fedimint_build_code_version_env, Amount};
+use futures_util::stream::StreamExt;
 use hex::ToHex;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
-use ln_gateway::envs::FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV;
+use ln_gateway::envs::{FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV, FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2};
+use ln_gateway::error::AdminGatewayError;
 use ln_gateway::gateway_lnrpc::create_invoice_request::Description;
 use ln_gateway::gateway_lnrpc::gateway_lightning_server::{
     GatewayLightning, GatewayLightningServer,
@@ -36,16 +43,22 @@ use ln_gateway::gateway_lnrpc::{
     OpenChannelResponse, PayInvoiceRequest, PayInvoiceResponse, PayPrunedInvoiceRequest,
     PrunedInvoice, WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
+use ln_gateway::lightning::LightningRpcError;
+use ln_gateway::rpc::extension_endpoints::{CLN_INFO_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT};
+use ln_gateway::rpc::rpc_server::auth_middleware;
 use rand::rngs::OsRng;
 use rand::Rng;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{stdin, stdout};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
 use tonic::Status;
-use tracing::{debug, error, info, warn};
+use tower_http::cors::CorsLayer;
+use tracing::{debug, error, info, instrument, warn};
 
 const MAX_HTLC_PROCESSING_DURATION: Duration = Duration::MAX;
 // Amount of time to attempt making a payment before returning an error
@@ -72,7 +85,7 @@ async fn main() -> Result<(), anyhow::Error> {
     handle_version_hash_command(fedimint_build_code_version_env!());
 
     let extension_opts = ClnExtensionOpts::parse();
-    let (service, listen, plugin) = ClnRpcService::new(extension_opts)
+    let (service, interceptor, listen, plugin) = ClnRpcService::new(extension_opts)
         .await
         .expect("Failed to create cln rpc service");
 
@@ -80,6 +93,11 @@ async fn main() -> Result<(), anyhow::Error> {
         "Starting gateway-cln-extension with listen address : {}",
         listen
     );
+
+    let task_group = TaskGroup::new();
+    let webserver_listen =
+        SocketAddr::from_str(std::env::var(FM_CLN_EXTENSION_LISTEN_ADDRESS_ENV2)?.as_str())?;
+    run_webserver(webserver_listen, service.clone(), interceptor, &task_group).await?;
 
     Server::builder()
         .add_service(GatewayLightningServer::new(service))
@@ -94,7 +112,69 @@ async fn main() -> Result<(), anyhow::Error> {
         .await
         .map_err(|e| ClnExtensionError::Error(anyhow!("Failed to start server, {:?}", e)))?;
 
+    drop(task_group);
     Ok(())
+}
+
+async fn run_webserver(
+    listen: SocketAddr,
+    cln_service: ClnRpcService,
+    interceptor: Arc<ClnHtlcInterceptor>,
+    task_group: &TaskGroup,
+) -> anyhow::Result<()> {
+    let routes = routes(cln_service, interceptor);
+    let listener = TcpListener::bind(&listen).await?;
+    let serve = axum::serve(listener, routes.into_make_service());
+
+    // TODO: This should block but it wont work until grpc is gone
+    let handle = task_group.make_handle();
+    let shutdown_rx = handle.make_shutdown_rx();
+    task_group.spawn("CLN Extension Webserver", |_| async {
+        let graceful = serve.with_graceful_shutdown(async {
+            shutdown_rx.await;
+        });
+
+        if let Err(e) = graceful.await {
+            error!("Error shutting down cln extension webserver: {:?}", e);
+        } else {
+            info!("Successfully shutdown webserver");
+        }
+    });
+
+    info!("Successfully started cln extension webserver on {}", listen);
+
+    Ok(())
+}
+
+fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> Router {
+    let always_authenticated_routes = Router::new()
+        .route(CLN_INFO_ENDPOINT, get(cln_info))
+        .layer(middleware::from_fn(auth_middleware));
+    Router::new()
+        .merge(always_authenticated_routes)
+        .layer(Extension(cln_service))
+        .layer(Extension(interceptor))
+        .layer(CorsLayer::permissive())
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_info(
+    Extension(cln_service): Extension<ClnRpcService>,
+) -> Result<Json<ln_gateway::rpc::GetNodeInfoResponse>, ClnExtensionError> {
+    let response = cln_service.info().await.map(
+        |(pub_key, alias, network, block_height, synced_to_chain)| {
+            ln_gateway::rpc::GetNodeInfoResponse {
+                pub_key,
+                alias,
+                network,
+                block_height,
+                synced_to_chain,
+            }
+        },
+    )?;
+
+    Ok(Json(response))
 }
 
 // TODO: upstream these structs to cln-plugin
@@ -125,18 +205,23 @@ struct HtlcAccepted {
     onion: Onion,
 }
 
-#[allow(dead_code)]
+#[derive(Clone)]
 struct ClnRpcService {
     socket: PathBuf,
-    interceptor: Arc<ClnHtlcInterceptor>,
-    task_group: TaskGroup,
-    secp: Secp256k1<All>,
 }
 
 impl ClnRpcService {
     async fn new(
         extension_opts: ClnExtensionOpts,
-    ) -> Result<(Self, SocketAddr, Plugin<Arc<ClnHtlcInterceptor>>), ClnExtensionError> {
+    ) -> Result<
+        (
+            Self,
+            Arc<ClnHtlcInterceptor>,
+            SocketAddr,
+            Plugin<Arc<ClnHtlcInterceptor>>,
+        ),
+        ClnExtensionError,
+    > {
         let interceptor = Arc::new(ClnHtlcInterceptor::new());
 
         if let Some(plugin) = Builder::new(stdin(), stdout())
@@ -192,10 +277,8 @@ impl ClnRpcService {
             Ok((
                 Self {
                     socket,
-                    interceptor,
-                    task_group: TaskGroup::new(),
-                    secp: Secp256k1::gen_new(),
                 },
+                interceptor,
                 fm_gateway_listen,
                 plugin,
             ))
@@ -758,6 +841,7 @@ impl GatewayLightning for ClnRpcService {
         &self,
         _: tonic::Request<EmptyRequest>,
     ) -> Result<tonic::Response<Self::RouteHtlcsStream>, Status> {
+        /*
         // First create new channel that we will use to send responses back to gatewayd
         let (gatewayd_sender, gatewayd_receiver) =
             mpsc::channel::<Result<InterceptHtlcRequest, Status>>(100);
@@ -767,12 +851,15 @@ impl GatewayLightning for ClnRpcService {
         debug!("Gateway channel sender replaced");
 
         Ok(tonic::Response::new(ReceiverStream::new(gatewayd_receiver)))
+        */
+        todo!()
     }
 
     async fn complete_htlc(
         &self,
         intercept_response: tonic::Request<InterceptHtlcResponse>,
     ) -> Result<tonic::Response<EmptyResponse>, Status> {
+        /*
         let InterceptHtlcResponse {
             action,
             incoming_chan_id,
@@ -841,6 +928,8 @@ impl GatewayLightning for ClnRpcService {
             return Err(Status::internal("No interceptor reference found for htlc"));
         }
         Ok(tonic::Response::new(EmptyResponse {}))
+        */
+        todo!()
     }
 
     async fn create_invoice(
@@ -902,8 +991,8 @@ impl GatewayLightning for ClnRpcService {
             // Temporarily sign with an ephemeral private key, we will request CLN to sign this
             // invoice next.
             .build_signed(|m| {
-                self.secp
-                    .sign_ecdsa_recoverable(m, &SecretKey::new(&mut OsRng))
+                let ctx = secp256k1::global::SECP256K1;
+                ctx.sign_ecdsa_recoverable(m, &SecretKey::new(&mut OsRng))
             })
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -1280,6 +1369,16 @@ enum ClnExtensionError {
     FailedPayment { erring_node: String },
 }
 
+impl IntoResponse for ClnExtensionError {
+    fn into_response(self) -> axum::response::Response {
+        error!("{self}");
+        Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(self.to_string().into())
+            .expect("Failed to create Response")
+    }
+}
+
 // TODO: upstream
 fn scid_to_u64(scid: ShortChannelId) -> u64 {
     let mut scid_num = scid.outnum() as u64;
@@ -1300,7 +1399,7 @@ fn htlc_processing_failure() -> serde_json::Value {
     })
 }
 
-type HtlcInterceptionSender = mpsc::Sender<Result<InterceptHtlcRequest, Status>>;
+type HtlcInterceptionSender = mpsc::Sender<Result<InterceptHtlcRequest, ClnExtensionError>>;
 type HtlcOutcomeSender = oneshot::Sender<serde_json::Value>;
 
 /// Functional structure to filter intercepted HTLCs into subscription streams.

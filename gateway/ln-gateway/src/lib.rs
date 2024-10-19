@@ -16,7 +16,7 @@ pub mod client;
 pub mod config;
 mod db;
 pub mod envs;
-mod error;
+pub mod error;
 mod federation_manager;
 pub mod gateway_module_v2;
 pub mod lightning;

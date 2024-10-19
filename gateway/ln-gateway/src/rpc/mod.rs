@@ -1,3 +1,4 @@
+pub mod extension_endpoints;
 pub mod rpc_client;
 pub mod rpc_server;
 
@@ -15,7 +16,7 @@ use lightning_invoice::{Bolt11Invoice, RoutingFees};
 use serde::{Deserialize, Serialize};
 
 use crate::lightning::LightningMode;
-use crate::SafeUrl;
+use crate::{PublicKey, SafeUrl};
 
 pub const V1_API_ENDPOINT: &str = "v1";
 
@@ -254,4 +255,13 @@ pub struct MnemonicResponse {
     // and do not derive their secrets from the gateway's mnemonic. They also use
     // a separate database from the gateway's db.
     pub legacy_federations: Vec<FederationId>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetNodeInfoResponse {
+    pub pub_key: PublicKey,
+    pub alias: String,
+    pub network: String,
+    pub block_height: u32,
+    pub synced_to_chain: bool,
 }

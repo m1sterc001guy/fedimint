@@ -145,6 +145,7 @@ declare_vars! {
         FM_PORT_GW_LND: u16 = port_alloc(1)?; env: "FM_PORT_GW_LND";
         FM_PORT_GW_LDK: u16 = port_alloc(1)?; env: "FM_PORT_GW_LDK";
         FM_PORT_CLN_EXTENSION: u16 = port_alloc(1)?; env: "FM_PORT_CLN_EXTENSION";
+        FM_PORT_CLN_EXTENSION2: u16 = port_alloc(1)?; env: "FM_PORT_CLN_EXTENSION2";
         FM_PORT_FAUCET: u16 = 15243u16; env: "FM_PORT_FAUCET";
 
         FM_LDK_ESPLORA_SERVER_URL: String = format!("http://127.0.0.1:{FM_PORT_ESPLORA}"); env: "FM_LDK_ESPLORA_SERVER_URL";
@@ -172,7 +173,9 @@ declare_vars! {
         FM_DEFAULT_GATEWAY_FEES: String = "0,0"; env: "FM_DEFAULT_GATEWAY_FEES";
 
         FM_CLN_EXTENSION_LISTEN_ADDRESS: String = f!("0.0.0.0:{FM_PORT_CLN_EXTENSION}"); env: "FM_CLN_EXTENSION_LISTEN_ADDRESS";
+        FM_CLN_EXTENSION_LISTEN_ADDRESS2: String = f!("0.0.0.0:{FM_PORT_CLN_EXTENSION2}"); env: "FM_CLN_EXTENSION_LISTEN_ADDRESS2";
         FM_GATEWAY_LIGHTNING_ADDR: String = f!("http://localhost:{FM_PORT_CLN_EXTENSION}"); env: "FM_GATEWAY_LIGHTNING_ADDR";
+        FM_GATEWAY_LIGHTNING_ADDR2: String = f!("http://localhost:{FM_PORT_CLN_EXTENSION2}"); env: "FM_GATEWAY_LIGHTNING_ADDR2";
         FM_FAUCET_BIND_ADDR: String = f!("0.0.0.0:{FM_PORT_FAUCET}"); env: "FM_FAUCET_BIND_ADDR";
 
         // clients env: "// ";

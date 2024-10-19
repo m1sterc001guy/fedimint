@@ -88,7 +88,7 @@ fn extract_bearer_token(request: &Request) -> Result<String, StatusCode> {
 /// Middleware to authenticate an incoming request. Routes that are
 /// authenticated with this middleware always require a Bearer token to be
 /// supplied in the Authorization header.
-async fn auth_middleware(
+pub async fn auth_middleware(
     Extension(gateway): Extension<Arc<Gateway>>,
     request: Request,
     next: Next,
