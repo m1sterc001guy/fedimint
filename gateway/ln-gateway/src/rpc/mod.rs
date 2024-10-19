@@ -359,3 +359,16 @@ pub struct WithdrawOnchainRequest {
 pub struct WithdrawOnchainResponse {
     pub txid: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OpenChannelRequest {
+    pub pubkey: PublicKey,
+    pub host: String,
+    pub channel_size_sats: u64,
+    pub push_amount_sats: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OpenChannelResponse {
+    pub funding_txid: String,
+}

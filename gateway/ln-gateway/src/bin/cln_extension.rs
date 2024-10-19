@@ -43,8 +43,9 @@ use ln_gateway::gateway_lnrpc::{
 };
 use ln_gateway::rpc::extension_endpoints::{
     CLN_COMPLETE_PAYMENT_ENDPOINT, CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT,
-    CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT,
-    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT, CLN_WITHDRAW_ONCHAIN_ENDPOINT,
+    CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_OPEN_CHANNEL_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT,
+    CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_WITHDRAW_ONCHAIN_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
@@ -162,6 +163,7 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_CREATE_INVOICE_ENDPOINT, post(cln_create_invoice))
         .route(CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, get(cln_ln_onchain_address))
         .route(CLN_WITHDRAW_ONCHAIN_ENDPOINT, post(cln_withdraw_onchain))
+        .route(CLN_OPEN_CHANNEL_ENDPOINT, post(cln_open_channel))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -680,6 +682,61 @@ async fn cln_withdraw_onchain(
         })??;
 
     Ok(Json(ln_gateway::rpc::WithdrawOnchainResponse { txid }))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_open_channel(
+    Extension(cln_service): Extension<ClnRpcService>,
+    Json(payload): Json<ln_gateway::rpc::OpenChannelRequest>,
+) -> Result<Json<ln_gateway::rpc::OpenChannelResponse>, ClnExtensionError> {
+    cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::Connect(model::requests::ConnectRequest {
+            id: format!("{}@{}", payload.pubkey, payload.host),
+            host: None,
+            port: None,
+        }))
+        .await?;
+
+    let funding_txid = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::FundChannel(
+            model::requests::FundchannelRequest {
+                id: payload.pubkey,
+                amount: cln_rpc::primitives::AmountOrAll::Amount(
+                    cln_rpc::primitives::Amount::from_sat(payload.channel_size_sats),
+                ),
+                feerate: None,
+                announce: None,
+                minconf: None,
+                push_msat: Some(cln_rpc::primitives::Amount::from_sat(
+                    payload.push_amount_sats,
+                )),
+                close_to: None,
+                request_amt: None,
+                compact_lease: None,
+                utxos: None,
+                mindepth: None,
+                reserve: None,
+                channel_type: None,
+            },
+        ))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::FundChannel(model::responses::FundchannelResponse {
+                txid, ..
+            }) => Ok(txid),
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln fundchannel rpc returned error {:?}", e);
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    Ok(Json(ln_gateway::rpc::OpenChannelResponse { funding_txid }))
 }
 
 // TODO: upstream these structs to cln-plugin
@@ -1620,8 +1677,9 @@ impl GatewayLightning for ClnRpcService {
 
     async fn open_channel(
         &self,
-        request: tonic::Request<OpenChannelRequest>,
+        _request: tonic::Request<OpenChannelRequest>,
     ) -> Result<tonic::Response<OpenChannelResponse>, Status> {
+        /*
         let request_inner = request.into_inner();
 
         let public_key = cln_rpc::primitives::PublicKey::from_slice(&request_inner.pubkey)
@@ -1684,6 +1742,8 @@ impl GatewayLightning for ClnRpcService {
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
         Ok(tonic::Response::new(OpenChannelResponse { funding_txid }))
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn close_channels_with_peer(

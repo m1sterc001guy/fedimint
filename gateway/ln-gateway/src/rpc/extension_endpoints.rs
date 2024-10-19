@@ -7,3 +7,4 @@ pub const CLN_CREATE_INVOICE_ENDPOINT: &str = "/cln_create_invoice";
 pub const CLN_ROUTE_HTLCS_ENDPOINT: &str = "/cln_route_htlcs";
 pub const CLN_LN_ONCHAIN_ADDRESS_ENDPOINT: &str = "/cln_ln_onchain_address";
 pub const CLN_WITHDRAW_ONCHAIN_ENDPOINT: &str = "/cln_withdraw_onchain";
+pub const CLN_OPEN_CHANNEL_ENDPOINT: &str = "/cln_open_channel";
