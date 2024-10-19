@@ -22,6 +22,7 @@ use fedimint_core::secp256k1::{PublicKey, SecretKey};
 use fedimint_core::task::{timeout, TaskGroup};
 use fedimint_core::util::handle_version_hash_command;
 use fedimint_core::{fedimint_build_code_version_env, Amount};
+use fedimint_ln_common::contracts::Preimage;
 use fedimint_ln_common::route_hints::{RouteHint, RouteHintHop};
 use futures_util::stream::StreamExt;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
@@ -40,7 +41,7 @@ use ln_gateway::gateway_lnrpc::{
     PrunedInvoice, WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
 use ln_gateway::rpc::extension_endpoints::{
-    CLN_INFO_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_INFO_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::InterceptPaymentRequest;
@@ -149,6 +150,7 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_INFO_ENDPOINT, get(cln_info))
         .route(CLN_ROUTE_HINTS_ENDPOINT, post(cln_route_hints))
         .route(CLN_ROUTE_HTLCS_ENDPOINT, get(cln_route_htlcs))
+        .route(CLN_PAY_INVOICE_ENDPOINT, get(cln_pay_invoice))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -278,6 +280,55 @@ async fn cln_route_hints(
     }
 
     Ok(Json(ln_gateway::rpc::GetRouteHintsResponse { route_hints }))
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_pay_invoice(
+    Extension(cln_service): Extension<ClnRpcService>,
+    Json(payload): Json<ln_gateway::rpc::PayInvoiceRequest>,
+) -> Result<Json<ln_gateway::rpc::PayInvoiceResponse>, ClnExtensionError> {
+    let ln_gateway::rpc::PayInvoiceRequest {
+        invoice,
+        max_delay,
+        max_fee_msat,
+        payment_hash: _,
+    } = payload;
+
+    let outcome = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::Pay(model::requests::PayRequest {
+            bolt11: invoice,
+            amount_msat: None,
+            label: None,
+            riskfactor: None,
+            retry_for: None,
+            maxdelay: Some(max_delay as u16),
+            exemptfee: None,
+            localinvreqid: None,
+            exclude: None,
+            maxfee: Some(cln_rpc::primitives::Amount::from_msat(max_fee_msat)),
+            maxfeepercent: None,
+            description: None,
+            partial_msat: None,
+        }))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::Pay(model::responses::PayResponse {
+                payment_preimage, ..
+            }) => Ok(ln_gateway::rpc::PayInvoiceResponse {
+                preimage: Preimage(
+                    payment_preimage
+                        .to_vec()
+                        .try_into()
+                        .expect("Failed to parse preimage"),
+                ),
+            }),
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })??;
+
+    Ok(Json(outcome))
 }
 
 #[instrument(skip_all, err)]
@@ -796,8 +847,9 @@ impl GatewayLightning for ClnRpcService {
 
     async fn pay_invoice(
         &self,
-        request: tonic::Request<PayInvoiceRequest>,
+        _request: tonic::Request<PayInvoiceRequest>,
     ) -> Result<tonic::Response<PayInvoiceResponse>, tonic::Status> {
+        /*
         let PayInvoiceRequest {
             invoice,
             max_delay,
@@ -840,6 +892,8 @@ impl GatewayLightning for ClnRpcService {
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
         Ok(tonic::Response::new(outcome))
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn pay_pruned_invoice(

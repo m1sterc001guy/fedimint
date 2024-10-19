@@ -11,6 +11,7 @@ use fedimint_core::config::{FederationId, JsonClientConfig};
 use fedimint_core::core::OperationId;
 use fedimint_core::{secp256k1, Amount, BitcoinAmountOrAll};
 use fedimint_ln_common::config::parse_routing_fees;
+use fedimint_ln_common::contracts::Preimage;
 use fedimint_ln_common::route_hints::RouteHint;
 use fedimint_mint_client::OOBNotes;
 use lightning_invoice::{Bolt11Invoice, RoutingFees};
@@ -284,4 +285,17 @@ pub struct GetRouteHintsRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GetRouteHintsResponse {
     pub route_hints: Vec<RouteHint>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PayInvoiceRequest {
+    pub invoice: String,
+    pub max_delay: u64,
+    pub max_fee_msat: u64,
+    pub payment_hash: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PayInvoiceResponse {
+    pub preimage: Preimage,
 }
