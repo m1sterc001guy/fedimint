@@ -44,7 +44,7 @@ use ln_gateway::gateway_lnrpc::{
 use ln_gateway::rpc::extension_endpoints::{
     CLN_COMPLETE_PAYMENT_ENDPOINT, CLN_CREATE_INVOICE_ENDPOINT, CLN_INFO_ENDPOINT,
     CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT,
-    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
+    CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT, CLN_WITHDRAW_ONCHAIN_ENDPOINT,
 };
 use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
@@ -161,6 +161,7 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(CLN_COMPLETE_PAYMENT_ENDPOINT, post(cln_complete_payment))
         .route(CLN_CREATE_INVOICE_ENDPOINT, post(cln_create_invoice))
         .route(CLN_LN_ONCHAIN_ADDRESS_ENDPOINT, get(cln_ln_onchain_address))
+        .route(CLN_WITHDRAW_ONCHAIN_ENDPOINT, post(cln_withdraw_onchain))
         .layer(middleware::from_fn(auth_middleware));
     Router::new()
         .merge(always_authenticated_routes)
@@ -637,6 +638,48 @@ async fn cln_ln_onchain_address(
         })),
         None => Err(ClnExtensionError::RpcWrongResponse),
     }
+}
+
+#[instrument(skip_all, err)]
+#[axum_macros::debug_handler]
+async fn cln_withdraw_onchain(
+    Extension(cln_service): Extension<ClnRpcService>,
+    Json(payload): Json<ln_gateway::rpc::WithdrawOnchainRequest>,
+) -> Result<Json<ln_gateway::rpc::WithdrawOnchainResponse>, ClnExtensionError> {
+    let txid = cln_service
+        .rpc_client()
+        .await?
+        .call(cln_rpc::Request::Withdraw(
+            model::requests::WithdrawRequest {
+                feerate: Some(cln_rpc::primitives::Feerate::PerKw(
+                    // 1 vbyte = 4 weight units, so 250 vbytes = 1,000 weight units.
+                    payload.fee_rate_sats_per_vbyte as u32 * 250,
+                )),
+                minconf: Some(0),
+                utxos: None,
+                destination: payload.address,
+                satoshi: if let Some(amount_sats) = payload.amount_sats {
+                    cln_rpc::primitives::AmountOrAll::Amount(cln_rpc::primitives::Amount::from_sat(
+                        amount_sats,
+                    ))
+                } else {
+                    cln_rpc::primitives::AmountOrAll::All
+                },
+            },
+        ))
+        .await
+        .map(|response| match response {
+            cln_rpc::Response::Withdraw(model::responses::WithdrawResponse { txid, .. }) => {
+                Ok(txid)
+            }
+            _ => Err(ClnExtensionError::RpcWrongResponse),
+        })
+        .map_err(|e| {
+            error!("cln connect rpc returned error {:?}", e);
+            ClnExtensionError::RpcWrongResponse
+        })??;
+
+    Ok(Json(ln_gateway::rpc::WithdrawOnchainResponse { txid }))
 }
 
 // TODO: upstream these structs to cln-plugin
@@ -1530,8 +1573,9 @@ impl GatewayLightning for ClnRpcService {
 
     async fn withdraw_onchain(
         &self,
-        request: tonic::Request<WithdrawOnchainRequest>,
+        _request: tonic::Request<WithdrawOnchainRequest>,
     ) -> Result<tonic::Response<WithdrawOnchainResponse>, Status> {
+        /*
         let request_inner = request.into_inner();
 
         let txid = self
@@ -1570,6 +1614,8 @@ impl GatewayLightning for ClnRpcService {
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
         Ok(tonic::Response::new(WithdrawOnchainResponse { txid }))
+        */
+        unimplemented!("Going to be deleted")
     }
 
     async fn open_channel(

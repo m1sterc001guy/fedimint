@@ -347,3 +347,15 @@ pub struct CreateInvoiceResponse {
 pub struct GetLnOnchainAddressResponse {
     pub address: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WithdrawOnchainRequest {
+    pub address: String,
+    pub amount_sats: Option<u64>,
+    pub fee_rate_sats_per_vbyte: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WithdrawOnchainResponse {
+    pub txid: String,
+}
