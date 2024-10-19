@@ -9,7 +9,7 @@ use anyhow::anyhow;
 use axum::body::{Body, Bytes};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{middleware, Extension, Json, Router};
+use axum::{Extension, Json, Router};
 use bitcoin::secp256k1;
 use bitcoin_hashes::sha256;
 use clap::Parser;
@@ -47,7 +47,6 @@ use ln_gateway::rpc::extension_endpoints::{
     CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT, CLN_ROUTE_HTLCS_ENDPOINT,
     CLN_WITHDRAW_ONCHAIN_ENDPOINT,
 };
-use ln_gateway::rpc::rpc_server::auth_middleware;
 use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -150,7 +149,7 @@ async fn run_webserver(
 }
 
 fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> Router {
-    let always_authenticated_routes = Router::new()
+    let public_routes = Router::new()
         .route(CLN_INFO_ENDPOINT, get(cln_info))
         .route(CLN_ROUTE_HINTS_ENDPOINT, post(cln_route_hints))
         .route(CLN_ROUTE_HTLCS_ENDPOINT, get(cln_route_htlcs))
@@ -171,10 +170,9 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
         .route(
             CLN_LIST_ACTIVE_CHANNELS_ENDPOINT,
             get(cln_list_active_channels),
-        )
-        .layer(middleware::from_fn(auth_middleware));
+        );
     Router::new()
-        .merge(always_authenticated_routes)
+        .merge(public_routes)
         .layer(Extension(cln_service))
         .layer(Extension(interceptor))
         .layer(CorsLayer::permissive())
