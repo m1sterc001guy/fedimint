@@ -82,9 +82,10 @@ use lightning_invoice::{Bolt11Invoice, RoutingFees};
 use rand::{thread_rng, Rng};
 use rpc::{
     CloseChannelsWithPeerPayload, CreateInvoiceForSelfPayload, FederationInfo, GatewayFedConfig,
-    GatewayInfo, LeaveFedPayload, MnemonicResponse, OpenChannelPayload, PayInvoicePayload,
-    ReceiveEcashPayload, ReceiveEcashResponse, SetConfigurationPayload, SpendEcashPayload,
-    SpendEcashResponse, SyncToChainPayload, WithdrawOnchainPayload, V1_API_ENDPOINT,
+    GatewayInfo, InterceptPaymentRequest, InterceptPaymentResponse, LeaveFedPayload,
+    MnemonicResponse, OpenChannelPayload, PayInvoicePayload, PaymentAction, ReceiveEcashPayload,
+    ReceiveEcashResponse, SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse,
+    SyncToChainPayload, WithdrawOnchainPayload, V1_API_ENDPOINT,
 };
 use state_machine::{GatewayClientModule, GatewayExtPayStates};
 use tokio::sync::RwLock;
@@ -600,7 +601,7 @@ impl Gateway {
     /// a normal lightning node.
     async fn handle_lightning_payment(
         &self,
-        payment_request: crate::rpc::InterceptPaymentRequest,
+        payment_request: InterceptPaymentRequest,
         lightning_context: &LightningContext,
     ) {
         info!(
@@ -631,7 +632,7 @@ impl Gateway {
     /// Returns `Ok` if the payment was handled, `Err` otherwise.
     async fn try_handle_lightning_payment_lnv2(
         &self,
-        htlc_request: &crate::rpc::InterceptPaymentRequest,
+        htlc_request: &InterceptPaymentRequest,
         lightning_context: &LightningContext,
     ) -> Result<()> {
         // If `payment_hash` has been registered as a LNv2 payment, we try to complete
@@ -659,8 +660,8 @@ impl Gateway {
         {
             error!("Error relaying incoming lightning payment: {error:?}");
 
-            let outcome = crate::rpc::InterceptPaymentResponse {
-                action: crate::rpc::PaymentAction::Cancel,
+            let outcome = InterceptPaymentResponse {
+                action: PaymentAction::Cancel,
                 payment_hash: htlc_request.payment_hash,
                 incoming_chan_id: htlc_request.incoming_chan_id,
                 htlc_id: htlc_request.htlc_id,
@@ -678,7 +679,7 @@ impl Gateway {
     /// Returns `Ok` if the payment was handled, `Err` otherwise.
     async fn try_handle_lightning_payment_ln_legacy(
         &self,
-        htlc_request: &crate::rpc::InterceptPaymentRequest,
+        htlc_request: &InterceptPaymentRequest,
     ) -> Result<()> {
         // Check if the payment corresponds to a federation supporting legacy Lightning.
         let Some(federation_index) = htlc_request.short_channel_id else {
@@ -725,11 +726,11 @@ impl Gateway {
     /// node. Only necessary for LNv1, since LNv2 uses hold invoices instead
     /// of HTLC interception for routing incoming payments.
     async fn forward_lightning_payment(
-        htlc_request: crate::rpc::InterceptPaymentRequest,
+        htlc_request: InterceptPaymentRequest,
         lightning_context: &LightningContext,
     ) {
-        let outcome = crate::rpc::InterceptPaymentResponse {
-            action: crate::rpc::PaymentAction::Forward,
+        let outcome = InterceptPaymentResponse {
+            action: PaymentAction::Forward,
             payment_hash: htlc_request.payment_hash,
             incoming_chan_id: htlc_request.incoming_chan_id,
             htlc_id: htlc_request.htlc_id,

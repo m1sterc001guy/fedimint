@@ -23,8 +23,8 @@ use crate::rpc::extension_endpoints::{
 };
 use crate::rpc::{
     CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
-    CreateInvoiceResponse, GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsRequest,
-    GetRouteHintsResponse, InterceptPaymentRequest, InterceptPaymentResponse,
+    CreateInvoiceResponse, GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse,
+    GetRouteHintsRequest, GetRouteHintsResponse, InterceptPaymentRequest, InterceptPaymentResponse,
     ListActiveChannelsResponse, OpenChannelRequest, OpenChannelResponse, PayInvoiceResponse,
     PayPrunedInvoiceRequest, WithdrawOnchainRequest, WithdrawOnchainResponse,
 };
@@ -83,7 +83,7 @@ impl NetworkLnRpcClient {
 
 #[async_trait]
 impl ILnRpcClient for NetworkLnRpcClient {
-    async fn info(&self) -> Result<crate::rpc::GetNodeInfoResponse, LightningRpcError> {
+    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError> {
         let url = self
             .connection_url
             .join(CLN_INFO_ENDPOINT)

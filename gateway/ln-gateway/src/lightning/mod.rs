@@ -32,7 +32,7 @@ use crate::envs::{
 };
 use crate::rpc::{
     CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse, GetRouteHintsResponse,
     InterceptPaymentRequest, InterceptPaymentResponse, OpenChannelResponse, PayInvoiceResponse,
     WithdrawOnchainResponse,
 };
@@ -96,7 +96,7 @@ pub struct LightningContext {
 #[async_trait]
 pub trait ILnRpcClient: Debug + Send + Sync {
     /// Get the public key and alias of the lightning node
-    async fn info(&self) -> Result<crate::rpc::GetNodeInfoResponse, LightningRpcError>;
+    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError>;
 
     /// Get route hints to the lightning node
     async fn routehints(
@@ -227,7 +227,7 @@ impl dyn ILnRpcClient {
     pub async fn parsed_node_info(
         &self,
     ) -> std::result::Result<(PublicKey, String, Network, u32, bool), LightningRpcError> {
-        let crate::rpc::GetNodeInfoResponse {
+        let GetNodeInfoResponse {
             pub_key,
             alias,
             network,

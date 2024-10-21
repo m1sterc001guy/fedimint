@@ -36,7 +36,14 @@ use ln_gateway::rpc::extension_endpoints::{
     CLN_PAY_INVOICE_ENDPOINT, CLN_PAY_PRUNED_INVOICE_ENDPOINT, CLN_ROUTE_HINTS_ENDPOINT,
     CLN_ROUTE_HTLCS_ENDPOINT, CLN_WITHDRAW_ONCHAIN_ENDPOINT,
 };
-use ln_gateway::rpc::{InterceptPaymentRequest, InvoiceDescription, PaymentAction};
+use ln_gateway::rpc::{
+    CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, CreateInvoiceRequest,
+    CreateInvoiceResponse, GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse,
+    GetRouteHintsRequest, GetRouteHintsResponse, InterceptPaymentRequest, InterceptPaymentResponse,
+    InvoiceDescription, ListActiveChannelsResponse, OpenChannelRequest, OpenChannelResponse,
+    PayInvoiceRequest, PayInvoiceResponse, PayPrunedInvoiceRequest, PaymentAction,
+    WithdrawOnchainRequest, WithdrawOnchainResponse,
+};
 use rand::rngs::OsRng;
 use rand::Rng;
 use reqwest::StatusCode;
@@ -150,16 +157,14 @@ fn routes(cln_service: ClnRpcService, interceptor: Arc<ClnHtlcInterceptor>) -> R
 #[axum_macros::debug_handler]
 async fn cln_info(
     Extension(cln_service): Extension<ClnRpcService>,
-) -> Result<Json<ln_gateway::rpc::GetNodeInfoResponse>, ClnExtensionError> {
+) -> Result<Json<GetNodeInfoResponse>, ClnExtensionError> {
     let response = cln_service.info().await.map(
-        |(pub_key, alias, network, block_height, synced_to_chain)| {
-            ln_gateway::rpc::GetNodeInfoResponse {
-                pub_key,
-                alias,
-                network,
-                block_height,
-                synced_to_chain,
-            }
+        |(pub_key, alias, network, block_height, synced_to_chain)| GetNodeInfoResponse {
+            pub_key,
+            alias,
+            network,
+            block_height,
+            synced_to_chain,
         },
     )?;
 
@@ -170,9 +175,9 @@ async fn cln_info(
 #[axum_macros::debug_handler]
 async fn cln_route_hints(
     Extension(cln_service): Extension<ClnRpcService>,
-    Json(payload): Json<ln_gateway::rpc::GetRouteHintsRequest>,
-) -> Result<Json<ln_gateway::rpc::GetRouteHintsResponse>, ClnExtensionError> {
-    let ln_gateway::rpc::GetRouteHintsRequest { num_route_hints } = payload;
+    Json(payload): Json<GetRouteHintsRequest>,
+) -> Result<Json<GetRouteHintsResponse>, ClnExtensionError> {
+    let GetRouteHintsRequest { num_route_hints } = payload;
     let node_info = cln_service.info().await?;
 
     let mut client = cln_service.rpc_client().await?;
@@ -266,16 +271,16 @@ async fn cln_route_hints(
         route_hints.push(RouteHint(vec![route_hint_hop]));
     }
 
-    Ok(Json(ln_gateway::rpc::GetRouteHintsResponse { route_hints }))
+    Ok(Json(GetRouteHintsResponse { route_hints }))
 }
 
 #[instrument(skip_all, err)]
 #[axum_macros::debug_handler]
 async fn cln_pay_invoice(
     Extension(cln_service): Extension<ClnRpcService>,
-    Json(payload): Json<ln_gateway::rpc::PayInvoiceRequest>,
-) -> Result<Json<ln_gateway::rpc::PayInvoiceResponse>, ClnExtensionError> {
-    let ln_gateway::rpc::PayInvoiceRequest {
+    Json(payload): Json<PayInvoiceRequest>,
+) -> Result<Json<PayInvoiceResponse>, ClnExtensionError> {
+    let PayInvoiceRequest {
         invoice,
         max_delay,
         max_fee_msat,
@@ -304,7 +309,7 @@ async fn cln_pay_invoice(
         .map(|response| match response {
             cln_rpc::Response::Pay(model::responses::PayResponse {
                 payment_preimage, ..
-            }) => Ok(ln_gateway::rpc::PayInvoiceResponse {
+            }) => Ok(PayInvoiceResponse {
                 preimage: Preimage(
                     payment_preimage
                         .to_vec()
@@ -322,9 +327,9 @@ async fn cln_pay_invoice(
 #[axum_macros::debug_handler]
 async fn cln_pay_pruned_invoice(
     Extension(cln_service): Extension<ClnRpcService>,
-    Json(payload): Json<ln_gateway::rpc::PayPrunedInvoiceRequest>,
-) -> Result<Json<ln_gateway::rpc::PayInvoiceResponse>, ClnExtensionError> {
-    let ln_gateway::rpc::PayPrunedInvoiceRequest {
+    Json(payload): Json<PayPrunedInvoiceRequest>,
+) -> Result<Json<PayInvoiceResponse>, ClnExtensionError> {
+    let PayPrunedInvoiceRequest {
         pruned_invoice,
         max_delay,
         max_fee_msat,
@@ -383,7 +388,7 @@ async fn cln_pay_pruned_invoice(
                 .await
             {
                 Ok(preimage) => {
-                    let response = ln_gateway::rpc::PayInvoiceResponse {
+                    let response = PayInvoiceResponse {
                         preimage: Preimage(preimage.try_into().expect("Failed to parse preimage")),
                     };
                     return Ok(Json(response));
@@ -453,9 +458,9 @@ async fn cln_route_htlcs(
 #[axum_macros::debug_handler]
 async fn cln_complete_payment(
     Extension(interceptor): Extension<Arc<ClnHtlcInterceptor>>,
-    Json(payload): Json<ln_gateway::rpc::InterceptPaymentResponse>,
+    Json(payload): Json<InterceptPaymentResponse>,
 ) -> Result<Json<()>, ClnExtensionError> {
-    let ln_gateway::rpc::InterceptPaymentResponse {
+    let InterceptPaymentResponse {
         action,
         incoming_chan_id,
         htlc_id,
@@ -510,9 +515,9 @@ async fn cln_complete_payment(
 #[axum_macros::debug_handler]
 async fn cln_create_invoice(
     Extension(cln_service): Extension<ClnRpcService>,
-    Json(payload): Json<ln_gateway::rpc::CreateInvoiceRequest>,
-) -> Result<Json<ln_gateway::rpc::CreateInvoiceResponse>, ClnExtensionError> {
-    let ln_gateway::rpc::CreateInvoiceRequest {
+    Json(payload): Json<CreateInvoiceRequest>,
+) -> Result<Json<CreateInvoiceResponse>, ClnExtensionError> {
+    let CreateInvoiceRequest {
         payment_hash,
         amount_msat,
         expiry_secs,
@@ -573,7 +578,7 @@ async fn cln_create_invoice(
         .await
         .map(|response| match response {
             cln_rpc::Response::SignInvoice(model::responses::SigninvoiceResponse { bolt11 }) => {
-                Ok(ln_gateway::rpc::CreateInvoiceResponse { invoice: bolt11 })
+                Ok(CreateInvoiceResponse { invoice: bolt11 })
             }
             _ => Err(ClnExtensionError::RpcWrongResponse),
         })
@@ -589,7 +594,7 @@ async fn cln_create_invoice(
 #[axum_macros::debug_handler]
 async fn cln_ln_onchain_address(
     Extension(cln_service): Extension<ClnRpcService>,
-) -> Result<Json<ln_gateway::rpc::GetLnOnchainAddressResponse>, ClnExtensionError> {
+) -> Result<Json<GetLnOnchainAddressResponse>, ClnExtensionError> {
     let address_or = cln_service
         .rpc_client()
         .await?
@@ -609,9 +614,7 @@ async fn cln_ln_onchain_address(
         })??;
 
     match address_or {
-        Some(address) => Ok(Json(ln_gateway::rpc::GetLnOnchainAddressResponse {
-            address,
-        })),
+        Some(address) => Ok(Json(GetLnOnchainAddressResponse { address })),
         None => Err(ClnExtensionError::RpcWrongResponse),
     }
 }
@@ -620,8 +623,8 @@ async fn cln_ln_onchain_address(
 #[axum_macros::debug_handler]
 async fn cln_withdraw_onchain(
     Extension(cln_service): Extension<ClnRpcService>,
-    Json(payload): Json<ln_gateway::rpc::WithdrawOnchainRequest>,
-) -> Result<Json<ln_gateway::rpc::WithdrawOnchainResponse>, ClnExtensionError> {
+    Json(payload): Json<WithdrawOnchainRequest>,
+) -> Result<Json<WithdrawOnchainResponse>, ClnExtensionError> {
     let txid = cln_service
         .rpc_client()
         .await?
@@ -655,15 +658,15 @@ async fn cln_withdraw_onchain(
             ClnExtensionError::RpcWrongResponse
         })??;
 
-    Ok(Json(ln_gateway::rpc::WithdrawOnchainResponse { txid }))
+    Ok(Json(WithdrawOnchainResponse { txid }))
 }
 
 #[instrument(skip_all, err)]
 #[axum_macros::debug_handler]
 async fn cln_open_channel(
     Extension(cln_service): Extension<ClnRpcService>,
-    Json(payload): Json<ln_gateway::rpc::OpenChannelRequest>,
-) -> Result<Json<ln_gateway::rpc::OpenChannelResponse>, ClnExtensionError> {
+    Json(payload): Json<OpenChannelRequest>,
+) -> Result<Json<OpenChannelResponse>, ClnExtensionError> {
     cln_service
         .rpc_client()
         .await?
@@ -710,15 +713,15 @@ async fn cln_open_channel(
             ClnExtensionError::RpcWrongResponse
         })??;
 
-    Ok(Json(ln_gateway::rpc::OpenChannelResponse { funding_txid }))
+    Ok(Json(OpenChannelResponse { funding_txid }))
 }
 
 #[instrument(skip_all, err)]
 #[axum_macros::debug_handler]
 async fn cln_close_channels_with_peer(
     Extension(cln_service): Extension<ClnRpcService>,
-    Json(payload): Json<ln_gateway::rpc::CloseChannelsWithPeerRequest>,
-) -> Result<Json<ln_gateway::rpc::CloseChannelsWithPeerResponse>, ClnExtensionError> {
+    Json(payload): Json<CloseChannelsWithPeerRequest>,
+) -> Result<Json<CloseChannelsWithPeerResponse>, ClnExtensionError> {
     let channels_with_peer: Vec<ListpeerchannelsChannels> = cln_service
         .rpc_client()
         .await?
@@ -768,7 +771,7 @@ async fn cln_close_channels_with_peer(
             })?;
     }
 
-    Ok(Json(ln_gateway::rpc::CloseChannelsWithPeerResponse {
+    Ok(Json(CloseChannelsWithPeerResponse {
         num_channels_closed: channels_with_peer.len() as u32,
     }))
 }
@@ -777,7 +780,7 @@ async fn cln_close_channels_with_peer(
 #[axum_macros::debug_handler]
 async fn cln_list_active_channels(
     Extension(cln_service): Extension<ClnRpcService>,
-) -> Result<Json<ln_gateway::rpc::ListActiveChannelsResponse>, ClnExtensionError> {
+) -> Result<Json<ListActiveChannelsResponse>, ClnExtensionError> {
     let channels = cln_service
         .rpc_client()
         .await?
@@ -826,16 +829,14 @@ async fn cln_list_active_channels(
             ClnExtensionError::RpcWrongResponse
         })??;
 
-    Ok(Json(ln_gateway::rpc::ListActiveChannelsResponse {
-        channels,
-    }))
+    Ok(Json(ListActiveChannelsResponse { channels }))
 }
 
 #[instrument(skip_all, err)]
 #[axum_macros::debug_handler]
 async fn cln_get_balances(
     Extension(cln_service): Extension<ClnRpcService>,
-) -> Result<Json<ln_gateway::rpc::GetBalancesResponse>, ClnExtensionError> {
+) -> Result<Json<GetBalancesResponse>, ClnExtensionError> {
     let (channels, outputs) = cln_service
         .rpc_client()
         .await?
@@ -889,7 +890,7 @@ async fn cln_get_balances(
         .into_iter()
         .fold(0, |acc, output| acc + output.amount_msat.msat() / 1000);
 
-    Ok(Json(ln_gateway::rpc::GetBalancesResponse {
+    Ok(Json(GetBalancesResponse {
         onchain_balance_sats,
         lightning_balance_msats,
         inbound_lightning_liquidity_msats: total_receivable_msat,
@@ -1200,7 +1201,7 @@ impl ClnRpcService {
         amount_msat: u64,
         expiry_secs: u64,
         description_or: Option<InvoiceDescription>,
-    ) -> Result<Json<ln_gateway::rpc::CreateInvoiceResponse>, ClnExtensionError> {
+    ) -> Result<Json<CreateInvoiceResponse>, ClnExtensionError> {
         let description = match description_or {
             Some(InvoiceDescription::Direct(desc)) => desc,
             Some(InvoiceDescription::Hash(_)) => return Err(ClnExtensionError::RpcWrongResponse),
@@ -1227,7 +1228,7 @@ impl ClnRpcService {
             .map(|response| match response {
                 cln_rpc::Response::Invoice(model::responses::InvoiceResponse {
                     bolt11, ..
-                }) => Ok(ln_gateway::rpc::CreateInvoiceResponse { invoice: bolt11 }),
+                }) => Ok(CreateInvoiceResponse { invoice: bolt11 }),
                 _ => Err(ClnExtensionError::RpcWrongResponse),
             })
             .map_err(|e| {

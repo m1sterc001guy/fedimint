@@ -47,7 +47,7 @@ use super::{ChannelInfo, ILnRpcClient, LightningRpcError, RouteHtlcStream, MAX_L
 use crate::db::GatewayDbtxNcExt;
 use crate::rpc::{
     CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse, GetRouteHintsResponse,
     InterceptPaymentRequest, InterceptPaymentResponse, InvoiceDescription, OpenChannelResponse,
     PayInvoiceResponse, PaymentAction, WithdrawOnchainResponse,
 };
@@ -647,7 +647,7 @@ impl fmt::Debug for GatewayLndClient {
 
 #[async_trait]
 impl ILnRpcClient for GatewayLndClient {
-    async fn info(&self) -> Result<crate::rpc::GetNodeInfoResponse, LightningRpcError> {
+    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError> {
         let mut client = self.connect().await?;
         let info = client
             .lightning()
@@ -681,7 +681,7 @@ impl ILnRpcClient for GatewayLndClient {
         }
         .to_string();
 
-        return Ok(crate::rpc::GetNodeInfoResponse {
+        return Ok(GetNodeInfoResponse {
             pub_key,
             alias: info.alias,
             network,

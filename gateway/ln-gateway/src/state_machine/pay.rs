@@ -25,6 +25,7 @@ use tracing::{debug, error, info, warn, Instrument};
 use super::{GatewayClientContext, GatewayClientStateMachines, GatewayExtReceiveStates};
 use crate::db::GatewayDbtxNcExt;
 use crate::lightning::LightningRpcError;
+use crate::rpc::PayInvoiceResponse;
 use crate::state_machine::GatewayClientModule;
 use crate::{GatewayState, RoutingFees};
 
@@ -441,7 +442,7 @@ impl GatewayPayInvoice {
         };
 
         match payment_result {
-            Ok(crate::rpc::PayInvoiceResponse { preimage, .. }) => {
+            Ok(PayInvoiceResponse { preimage, .. }) => {
                 debug!("Preimage received for contract {contract:?}");
                 GatewayPayStateMachine {
                     common,

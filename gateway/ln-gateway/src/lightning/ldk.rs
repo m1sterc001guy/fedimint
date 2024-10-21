@@ -24,7 +24,7 @@ use tracing::{error, info};
 use super::{ChannelInfo, ILnRpcClient, LightningRpcError, RouteHtlcStream};
 use crate::rpc::{
     CloseChannelsWithPeerResponse, CreateInvoiceRequest, CreateInvoiceResponse,
-    GetBalancesResponse, GetLnOnchainAddressResponse, GetRouteHintsResponse,
+    GetBalancesResponse, GetLnOnchainAddressResponse, GetNodeInfoResponse, GetRouteHintsResponse,
     InterceptPaymentRequest, InterceptPaymentResponse, InvoiceDescription, OpenChannelResponse,
     PayInvoiceResponse, PaymentAction, WithdrawOnchainResponse,
 };
@@ -192,7 +192,7 @@ impl Drop for GatewayLdkClient {
 
 #[async_trait]
 impl ILnRpcClient for GatewayLdkClient {
-    async fn info(&self) -> Result<crate::rpc::GetNodeInfoResponse, LightningRpcError> {
+    async fn info(&self) -> Result<GetNodeInfoResponse, LightningRpcError> {
         let node_status = self.node.status();
 
         let Some(chain_tip_block_summary) = self
@@ -222,7 +222,7 @@ impl ILnRpcClient for GatewayLdkClient {
                 .unwrap_or_default()
                 > esplora_chain_tip_timestamp;
 
-        Ok(crate::rpc::GetNodeInfoResponse {
+        Ok(GetNodeInfoResponse {
             pub_key: self.node.node_id(),
             // TODO: This is a placeholder. We need to get the actual alias from the LDK node.
             alias: format!("LDK Fedimint Gateway Node {}", self.node.node_id()),
