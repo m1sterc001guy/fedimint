@@ -870,11 +870,12 @@ pub async fn open_channels_between_gateways(
     bitcoind: &Bitcoind,
     gateways: &[NamedGateway<'_>],
 ) -> Result<()> {
-    debug!(target: LOG_DEVIMINT, "Syncing gateway lightning nodes to chain tip...");
+    let block_height = bitcoind.get_block_count().await? - 1;
+    debug!(target: LOG_DEVIMINT, ?block_height, "Syncing gateway lightning nodes to block height...");
     futures::future::try_join_all(
         gateways
             .iter()
-            .map(|(gw, _gw_name)| gw.wait_for_chain_sync(bitcoind)),
+            .map(|(gw, _gw_name)| gw.wait_for_block_height(block_height)),
     )
     .await?;
 
@@ -886,11 +887,12 @@ pub async fn open_channels_between_gateways(
 
     bitcoind.mine_blocks(10).await?;
 
-    debug!(target: LOG_DEVIMINT, "Syncing gateway lightning nodes to chain tip...");
+    let block_height = bitcoind.get_block_count().await? - 1;
+    debug!(target: LOG_DEVIMINT, ?block_height, "Syncing gateway lightning nodes to block height...");
     futures::future::try_join_all(
         gateways
             .iter()
-            .map(|(gw, _gw_name)| gw.wait_for_chain_sync(bitcoind)),
+            .map(|(gw, _gw_name)| gw.wait_for_block_height(block_height)),
     )
     .await?;
 
@@ -977,11 +979,12 @@ pub async fn open_channels_between_gateways(
 
     bitcoind.mine_blocks(10).await?;
 
-    debug!(target: LOG_DEVIMINT, "Syncing gateway lightning nodes to chain tip...");
+    let block_height = bitcoind.get_block_count().await? - 1;
+    debug!(target: LOG_DEVIMINT, ?block_height, "Syncing gateway lightning nodes to block height...");
     futures::future::try_join_all(
         gateways
             .iter()
-            .map(|(gw, _gw_name)| gw.wait_for_chain_sync(bitcoind)),
+            .map(|(gw, _gw_name)| gw.wait_for_block_height(block_height)),
     )
     .await?;
 
