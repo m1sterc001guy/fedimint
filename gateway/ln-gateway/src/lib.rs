@@ -90,7 +90,7 @@ use rpc::{
     CloseChannelsWithPeerPayload, CreateInvoiceForSelfPayload, FederationInfo, GatewayFedConfig,
     GatewayInfo, LeaveFedPayload, MnemonicResponse, OpenChannelPayload, PayInvoicePayload,
     ReceiveEcashPayload, ReceiveEcashResponse, SetConfigurationPayload, SpendEcashPayload,
-    SpendEcashResponse, SyncToChainPayload, WithdrawOnchainPayload, V1_API_ENDPOINT,
+    SpendEcashResponse, WithdrawOnchainPayload, V1_API_ENDPOINT,
 };
 use state_machine::{GatewayClientModule, GatewayExtPayStates};
 use tokio::sync::RwLock;
@@ -1499,16 +1499,6 @@ impl Gateway {
             inbound_lightning_liquidity_msats: lightning_node_balances
                 .inbound_lightning_liquidity_msats,
         })
-    }
-
-    pub async fn handle_sync_to_chain_msg(&self, payload: SyncToChainPayload) -> AdminResult<()> {
-        self.get_lightning_context()
-            .await?
-            .lnrpc
-            .sync_to_chain(payload.block_height)
-            .await?;
-
-        Ok(())
     }
 
     // Handles a request the spend the gateway's ecash for a given federation.
