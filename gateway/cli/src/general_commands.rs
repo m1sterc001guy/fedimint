@@ -124,6 +124,9 @@ pub enum GeneralCommands {
         /// other federations not given here will keep their current fees.
         #[clap(long)]
         per_federation_routing_fees: Option<Vec<PerFederationRoutingFees>>,
+
+        #[clap(long)]
+        per_federation_transaction_fees: Option<Vec<PerFederationRoutingFees>>,
     },
     /// Safely stop the gateway
     Stop,
@@ -245,8 +248,11 @@ impl GeneralCommands {
                 routing_fees,
                 network,
                 per_federation_routing_fees,
+                per_federation_transaction_fees,
             } => {
                 let per_federation_routing_fees = per_federation_routing_fees
+                    .map(|input| input.into_iter().map(Into::into).collect());
+                let per_federation_transaction_fees = per_federation_transaction_fees
                     .map(|input| input.into_iter().map(Into::into).collect());
                 create_client()
                     .set_configuration(SetConfigurationPayload {
@@ -255,6 +261,7 @@ impl GeneralCommands {
                         routing_fees,
                         network: network.map(|network| bitcoin32_to_bitcoin30_network(&network)),
                         per_federation_routing_fees,
+                        per_federation_transaction_fees,
                     })
                     .await?;
             }

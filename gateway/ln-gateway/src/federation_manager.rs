@@ -227,16 +227,16 @@ impl FederationManager {
             .with(|client| async move {
                 let balance_msat = client.get_balance().await;
 
-                let routing_fees = dbtx
+                let lightning_fees = dbtx
                     .load_federation_config(federation_id)
                     .await
-                    .map(|config| config.fees.into());
+                    .map(|config| config.lightning_fees.into());
 
                 Ok(FederationInfo {
                     federation_id,
                     balance_msat,
                     federation_index,
-                    routing_fees,
+                    routing_fees: lightning_fees,
                 })
             })
             .await
@@ -252,16 +252,16 @@ impl FederationManager {
 
             let balance_msat = client.borrow().with(|client| client.get_balance()).await;
 
-            let routing_fees = dbtx
+            let lightning_fees = dbtx
                 .load_federation_config(*federation_id)
                 .await
-                .map(|config| config.fees.into());
+                .map(|config| config.lightning_fees.into());
 
             federation_infos.push(FederationInfo {
                 federation_id: *federation_id,
                 balance_msat,
                 federation_index,
-                routing_fees,
+                routing_fees: lightning_fees,
             });
         }
         federation_infos

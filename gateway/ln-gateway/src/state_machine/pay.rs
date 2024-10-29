@@ -373,7 +373,6 @@ impl GatewayPayInvoice {
                     contract_id,
                     contract: Some(outgoing_contract_account.clone()),
                 })?;
-            let routing_fees = config.fees;
 
             let payment_parameters = Self::validate_outgoing_account(
                 &outgoing_contract_account,
@@ -381,7 +380,7 @@ impl GatewayPayInvoice {
                 context.timelock_delta,
                 consensus_block_count.unwrap(),
                 &payment_data,
-                routing_fees,
+                config.lightning_fees.into(),
             )
             .map_err(|e| {
                 warn!("Invalid outgoing contract: {e:?}");

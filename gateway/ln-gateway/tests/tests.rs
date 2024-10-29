@@ -263,6 +263,7 @@ async fn test_gateway_enforces_fees() -> anyhow::Result<()> {
                 routing_fees: None,
                 network: None,
                 per_federation_routing_fees: Some(vec![(fed.id(), federation_fee)]),
+                per_federation_transaction_fees: None,
             };
             gateway
                 .handle_set_configuration_msg(set_configuration_payload)
@@ -823,6 +824,7 @@ async fn test_gateway_executes_swaps_between_connected_federations() -> anyhow::
             routing_fees: None,
             network: None,
             per_federation_routing_fees: Some(vec![(id1, fed_routing_fees.clone())]),
+            per_federation_transaction_fees: None,
         };
         gateway
             .handle_set_configuration_msg(set_configuration_payload)

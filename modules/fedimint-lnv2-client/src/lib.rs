@@ -47,7 +47,7 @@ use fedimint_lnv2_common::{
     LightningCommonInit, LightningModuleTypes, LightningOutput, LightningOutputV0, KIND,
 };
 use futures::StreamExt;
-use lightning_invoice::{Bolt11Invoice, Currency};
+use lightning_invoice::{Bolt11Invoice, Currency, RoutingFees};
 use secp256k1::schnorr::Signature;
 use secp256k1::{ecdh, KeyPair, PublicKey, Scalar, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -267,24 +267,25 @@ impl RoutingInfo {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, PartialOrd, Hash, Serialize, Deserialize, Encodable, Decodable,
+)]
 pub struct PaymentFee {
     pub base: Amount,
     pub parts_per_million: u64,
 }
 
 impl PaymentFee {
-    /// This is the maximum send fee of one and a half percent plus one hundred
-    /// satoshis a correct gateway may recommend as a default. It accounts for
-    /// the fee required to reliably route this payment over lightning.
-    pub const SEND_FEE_LIMIT_DEFAULT: PaymentFee = PaymentFee {
+    /// This is the default send fee of one and a half percent plus one hundred
+    /// satoshis a correct gateway may recommend as a default.
+    pub const DEFAULT_LIGHTNING_FEE: PaymentFee = PaymentFee {
         base: Amount::from_sats(100),
         parts_per_million: 15_000,
     };
 
-    /// This is the maximum receive fee of half of one percent plus fifty
+    /// This is the default receive fee of half of one percent plus fifty
     /// satoshis a correct gateway may recommend as a default.
-    pub const RECEIVE_FEE_LIMIT_DEFAULT: PaymentFee = PaymentFee {
+    pub const DEFAULT_TRANSACTION_FEE: PaymentFee = PaymentFee {
         base: Amount::from_sats(50),
         parts_per_million: 5_000,
     };
@@ -303,6 +304,24 @@ impl PaymentFee {
             .saturating_div(1_000_000)
             .checked_add(self.base.msats)
             .expect("The division creates sufficient headroom to add the base fee")
+    }
+}
+
+impl Into<RoutingFees> for PaymentFee {
+    fn into(self) -> RoutingFees {
+        RoutingFees {
+            base_msat: self.base.msats as u32,
+            proportional_millionths: self.parts_per_million as u32,
+        }
+    }
+}
+
+impl From<RoutingFees> for PaymentFee {
+    fn from(value: RoutingFees) -> Self {
+        PaymentFee {
+            base: Amount::from_msats(value.base_msat.into()),
+            parts_per_million: value.proportional_millionths.into(),
+        }
     }
 }
 
@@ -560,10 +579,6 @@ impl LightningClientModule {
 
         let (send_fee, expiration_delta) = routing_info.send_parameters(&invoice);
 
-        if !send_fee.le(&PaymentFee::SEND_FEE_LIMIT_DEFAULT) {
-            return Err(SendPaymentError::PaymentFeeExceedsLimit(send_fee));
-        }
-
         if EXPIRATION_DELTA_LIMIT_DEFAULT < expiration_delta {
             return Err(SendPaymentError::ExpirationDeltaExceedsLimit(
                 expiration_delta,
@@ -808,15 +823,6 @@ impl LightningClientModule {
                 .await
                 .map_err(ReceiveError::FailedToSelectGateway)?,
         };
-
-        if !routing_info
-            .receive_fee
-            .le(&PaymentFee::RECEIVE_FEE_LIMIT_DEFAULT)
-        {
-            return Err(ReceiveError::PaymentFeeExceedsLimit(
-                routing_info.receive_fee,
-            ));
-        }
 
         let contract_amount = routing_info.receive_fee.subtract_from(amount.msats);
 

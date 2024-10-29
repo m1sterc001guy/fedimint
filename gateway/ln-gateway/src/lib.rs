@@ -121,16 +121,6 @@ const DEFAULT_NUM_ROUTE_HINTS: u32 = 1;
 /// Default Bitcoin network for testing purposes.
 pub const DEFAULT_NETWORK: Network = Network::Regtest;
 
-/// The default routing fees that the gateway charges for incoming and outgoing
-/// payments. Identical to the Lightning Network.
-pub const DEFAULT_FEES: RoutingFees = RoutingFees {
-    // Base routing fee. Default is 0 msat
-    base_msat: 0,
-    // Liquidity-based routing fee in millionths of a routed amount.
-    // In other words, 10000 is 1%. The default is 10000 (1%).
-    proportional_millionths: 10000,
-};
-
 /// LNv2 CLTV Delta in blocks
 const EXPIRATION_DELTA_MINIMUM_V2: u64 = 144;
 
@@ -524,6 +514,7 @@ impl Gateway {
                 num_route_hints: None,
                 routing_fees: None,
                 per_federation_routing_fees: None,
+                per_federation_transaction_fees: None,
             })
             .await
             .expect("Failed to set gateway configuration");
@@ -1131,7 +1122,8 @@ impl Gateway {
             invite_code,
             federation_index,
             timelock_delta: 10,
-            fees: gateway_config.routing_fees,
+            lightning_fees: gateway_config.default_lightning_fees.clone(),
+            transaction_fees: PaymentFee::DEFAULT_TRANSACTION_FEE,
             connector,
         };
 
@@ -1158,7 +1150,7 @@ impl Gateway {
             federation_id,
             balance_msat: client.get_balance().await,
             federation_index,
-            routing_fees: Some(gateway_config.routing_fees.into()),
+            routing_fees: Some(gateway_config.default_lightning_fees.into()),
         };
 
         if self.is_running_lnv1() {
@@ -1173,7 +1165,7 @@ impl Gateway {
                     // Route hints will be updated in the background
                     Vec::new(),
                     GW_ANNOUNCEMENT_TTL,
-                    federation_config.fees,
+                    federation_config.lightning_fees.clone().into(),
                     lightning_context,
                 )
                 .await;
@@ -1288,6 +1280,7 @@ impl Gateway {
             num_route_hints,
             routing_fees,
             per_federation_routing_fees,
+            per_federation_transaction_fees,
         }: SetConfigurationPayload,
     ) -> AdminResult<()> {
         let gw_state = self.get_state().await;
@@ -1332,8 +1325,8 @@ impl Gateway {
             // Using this routing fee config as a default for all federation that has none
             // routing fees specified.
             if let Some(fees) = routing_fees {
-                let routing_fees = GatewayFee(fees.into()).0;
-                prev_config.routing_fees = routing_fees;
+                let lightning_fee: PaymentFee = fees.into();
+                prev_config.default_lightning_fees = lightning_fee;
             }
 
             prev_config
@@ -1348,7 +1341,7 @@ impl Gateway {
                 hashed_password,
                 network: bitcoin30_to_bitcoin32_network(&lightning_network),
                 num_route_hints: DEFAULT_NUM_ROUTE_HINTS,
-                routing_fees: DEFAULT_FEES,
+                default_lightning_fees: PaymentFee::DEFAULT_LIGHTNING_FEE,
                 password_salt,
             }
         };
@@ -1360,11 +1353,26 @@ impl Gateway {
                 if let Some(mut federation_config) =
                     dbtx.load_federation_config(*federation_id).await
                 {
-                    federation_config.fees = routing_fees.clone().into();
+                    federation_config.lightning_fees = routing_fees.clone().into();
                     dbtx.save_federation_config(&federation_config).await;
                     register_federations.push((*federation_id, federation_config));
                 } else {
                     warn!("Given federation {federation_id} not found for updating routing fees");
+                }
+            }
+        }
+
+        if let Some(per_federation_transaction_fees) = per_federation_transaction_fees {
+            for (federation_id, transaction_fees) in &per_federation_transaction_fees {
+                if let Some(mut federation_config) =
+                    dbtx.load_federation_config(*federation_id).await
+                {
+                    federation_config.transaction_fees = transaction_fees.clone().into();
+                    dbtx.save_federation_config(&federation_config).await;
+                } else {
+                    warn!(
+                        "Given federation {federation_id} not found for updating transaction fees"
+                    );
                 }
             }
         }
@@ -1654,7 +1662,7 @@ impl Gateway {
                                 .try_register_with_federation(
                                     route_hints,
                                     GW_ANNOUNCEMENT_TTL,
-                                    federation_config.fees,
+                                    federation_config.lightning_fees.clone().into(),
                                     lightning_context,
                                 )
                                 .await;
@@ -1692,10 +1700,6 @@ impl Gateway {
         // the provided password (required) and the defaults.
         // Use gateway parameters provided by the environment or CLI
         let num_route_hints = gateway_parameters.num_route_hints;
-        let routing_fees = gateway_parameters
-            .fees
-            .clone()
-            .unwrap_or(GatewayFee(DEFAULT_FEES));
         let network = gateway_parameters.network.unwrap_or(DEFAULT_NETWORK);
         let password_salt: [u8; 16] = rand::thread_rng().gen();
         let hashed_password = hash_password(password, password_salt);
@@ -1703,7 +1707,7 @@ impl Gateway {
             hashed_password,
             network: bitcoin30_to_bitcoin32_network(&network),
             num_route_hints,
-            routing_fees: routing_fees.0,
+            default_lightning_fees: PaymentFee::DEFAULT_LIGHTNING_FEE,
             password_salt,
         };
 
@@ -1950,6 +1954,12 @@ impl Gateway {
         federation_id: &FederationId,
     ) -> Result<Option<RoutingInfo>> {
         let context = self.get_lightning_context().await?;
+        let mut dbtx = self.gateway_db.begin_transaction_nc().await;
+        let fed_config = dbtx.load_federation_config(*federation_id).await.ok_or(
+            PublicGatewayError::FederationNotConnected(FederationNotConnected {
+                federation_id_prefix: federation_id.to_prefix(),
+            }),
+        )?;
 
         Ok(self
             .public_key_v2(federation_id)
@@ -1957,19 +1967,16 @@ impl Gateway {
             .map(|module_public_key| RoutingInfo {
                 lightning_public_key: context.lightning_public_key,
                 module_public_key,
-                send_fee_default: PaymentFee::SEND_FEE_LIMIT_DEFAULT,
+                send_fee_default: fed_config.lightning_fees,
                 // The base fee ensures that the gateway does not loose sats sending the payment due
                 // to fees paid on the transaction claiming the outgoing contract or
                 // subsequent transactions spending the newly issued ecash
-                send_fee_minimum: PaymentFee {
-                    base: Amount::from_sats(50),
-                    parts_per_million: 5_000,
-                },
+                send_fee_minimum: fed_config.transaction_fees.clone(),
                 expiration_delta_default: EXPIRATION_DELTA_LIMIT_DEFAULT,
                 expiration_delta_minimum: EXPIRATION_DELTA_MINIMUM_V2,
                 // The base fee ensures that the gateway does not loose sats receiving the payment
                 // due to fees paid on the transaction funding the incoming contract
-                receive_fee: PaymentFee::RECEIVE_FEE_LIMIT_DEFAULT,
+                receive_fee: fed_config.transaction_fees,
             }))
     }
 

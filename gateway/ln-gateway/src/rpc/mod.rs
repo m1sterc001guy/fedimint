@@ -15,7 +15,7 @@ use lightning_invoice::{Bolt11Invoice, RoutingFees};
 use serde::{Deserialize, Serialize};
 
 use crate::lightning::LightningMode;
-use crate::SafeUrl;
+use crate::{PaymentFee, SafeUrl};
 
 pub const V1_API_ENDPOINT: &str = "v1";
 
@@ -117,6 +117,24 @@ impl From<FederationRoutingFees> for RoutingFees {
     }
 }
 
+impl From<FederationRoutingFees> for PaymentFee {
+    fn from(value: FederationRoutingFees) -> Self {
+        PaymentFee {
+            base: Amount::from_msats(value.base_msat.into()),
+            parts_per_million: value.proportional_millionths.into(),
+        }
+    }
+}
+
+impl From<PaymentFee> for FederationRoutingFees {
+    fn from(value: PaymentFee) -> Self {
+        FederationRoutingFees {
+            base_msat: value.base.msats as u32,
+            proportional_millionths: value.parts_per_million as u32,
+        }
+    }
+}
+
 impl From<RoutingFees> for FederationRoutingFees {
     fn from(value: RoutingFees) -> Self {
         FederationRoutingFees {
@@ -145,6 +163,7 @@ pub struct SetConfigurationPayload {
     pub routing_fees: Option<FederationRoutingFees>,
     pub network: Option<Network>,
     pub per_federation_routing_fees: Option<Vec<(FederationId, FederationRoutingFees)>>,
+    pub per_federation_transaction_fees: Option<Vec<(FederationId, FederationRoutingFees)>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
