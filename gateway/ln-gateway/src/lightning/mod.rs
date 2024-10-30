@@ -22,6 +22,7 @@ use fedimint_core::{secp256k1, Amount};
 use fedimint_ln_common::route_hints::RouteHint;
 use fedimint_ln_common::PrunedInvoice;
 use futures::stream::BoxStream;
+use ldk_node::lightning::offers::offer::Offer;
 use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,7 +34,7 @@ use crate::envs::{
     FM_GATEWAY_LIGHTNING_ADDR_ENV, FM_GATEWAY_SKIP_WAIT_FOR_SYNC_ENV, FM_LDK_ESPLORA_SERVER_URL,
     FM_LDK_NETWORK, FM_LND_MACAROON_ENV, FM_LND_RPC_ADDR_ENV, FM_LND_TLS_CERT_ENV, FM_PORT_LDK,
 };
-use crate::rpc::{CloseChannelsWithPeerPayload, WithdrawOnchainPayload};
+use crate::rpc::{CloseChannelsWithPeerPayload, CreateOfferPayload, WithdrawOnchainPayload};
 use crate::{OpenChannelPayload, Preimage};
 
 pub const MAX_LIGHTNING_RETRIES: u32 = 10;
@@ -78,6 +79,8 @@ pub enum LightningRpcError {
     FailedToSyncToChain { failure_reason: String },
     #[error("Invalid metadata: {failure_reason}")]
     InvalidMetadata { failure_reason: String },
+    #[error("Failed to create offer: {failure_reason}")]
+    FailedToCreateOffer { failure_reason: String },
 }
 
 /// Represents an active connection to the lightning node.
@@ -201,6 +204,14 @@ pub trait ILnRpcClient: Debug + Send + Sync {
     /// Returns a summary of the lightning node's balance, including the onchain
     /// wallet, outbound liquidity, and inbound liquidity.
     async fn get_balances(&self) -> Result<GetBalancesResponse, LightningRpcError>;
+
+    /// Requests the lightning node to create a Bolt12 offer that can be used
+    /// for recurring payments.
+    async fn create_offer(&self, _payload: CreateOfferPayload) -> Result<Offer, LightningRpcError> {
+        Err(LightningRpcError::FailedToCreateOffer {
+            failure_reason: "Lightning implementation does not support Bolt12".to_string(),
+        })
+    }
 }
 
 impl dyn ILnRpcClient {

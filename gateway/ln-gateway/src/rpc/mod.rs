@@ -248,3 +248,11 @@ pub struct MnemonicResponse {
     // a separate database from the gateway's db.
     pub legacy_federations: Vec<FederationId>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateOfferPayload {
+    pub description: Option<String>,
+    pub expiry_secs: Option<u32>,
+    pub amount_msats: Option<u64>,
+    pub quantity: Option<u64>,
+}

@@ -19,6 +19,7 @@ use fedimint_ln_common::contracts::Preimage;
 use ldk_node::config::EsploraSyncConfig;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::lightning::ln::PaymentHash;
+use ldk_node::lightning::offers::offer::Offer;
 use ldk_node::lightning::routing::gossip::NodeAlias;
 use ldk_node::payment::{PaymentKind, PaymentStatus, SendingParameters};
 use lightning::ln::PaymentPreimage;
@@ -35,7 +36,9 @@ use crate::lightning::{
     InterceptPaymentRequest, InterceptPaymentResponse, InvoiceDescription, OpenChannelResponse,
     PayInvoiceResponse, PaymentAction, WithdrawOnchainResponse,
 };
-use crate::rpc::{CloseChannelsWithPeerPayload, OpenChannelPayload, WithdrawOnchainPayload};
+use crate::rpc::{
+    CloseChannelsWithPeerPayload, CreateOfferPayload, OpenChannelPayload, WithdrawOnchainPayload,
+};
 
 pub struct GatewayLdkClient {
     /// The underlying lightning node.
@@ -625,5 +628,26 @@ impl ILnRpcClient for GatewayLdkClient {
             lightning_balance_msats: balances.total_lightning_balance_sats * 1000,
             inbound_lightning_liquidity_msats: total_inbound_liquidity_balance_msat,
         })
+    }
+
+    async fn create_offer(&self, payload: CreateOfferPayload) -> Result<Offer, LightningRpcError> {
+        let description = payload.description.unwrap_or_default();
+        let offer = if let Some(amount) = payload.amount_msats {
+            self.node
+                .bolt12_payment()
+                .receive(amount, &description, payload.expiry_secs, payload.quantity)
+                .map_err(|e| LightningRpcError::FailedToCreateOffer {
+                    failure_reason: e.to_string(),
+                })?
+        } else {
+            self.node
+                .bolt12_payment()
+                .receive_variable_amount(&description, payload.expiry_secs)
+                .map_err(|e| LightningRpcError::FailedToCreateOffer {
+                    failure_reason: e.to_string(),
+                })?
+        };
+
+        Ok(offer)
     }
 }

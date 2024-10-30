@@ -4,6 +4,7 @@ pub const AWAIT_PREIMAGE_ENDPOINT: &str = "await_preimage";
 pub const CONSENSUS_BLOCK_COUNT_ENDPOINT: &str = "consensus_block_count";
 pub const CREATE_BOLT11_INVOICE_ENDPOINT: &str = "/create_bolt11_invoice";
 pub const CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT: &str = "/create_bolt11_invoice_for_operator";
+pub const CREATE_OFFER_FOR_OPERATOR_ENDPOINT: &str = "/create_offer_for_operator";
 pub const GATEWAYS_ENDPOINT: &str = "gateways";
 pub const OUTGOING_CONTRACT_EXPIRATION_ENDPOINT: &str = "outgoing_contract_expiration";
 pub const PAY_INVOICE_FOR_OPERATOR_ENDPOINT: &str = "/pay_invoice_for_operator";

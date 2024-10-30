@@ -80,6 +80,7 @@ use fedimint_wallet_client::{
     WalletClientInit, WalletClientModule, WalletCommonInit, WithdrawState,
 };
 use futures::stream::StreamExt;
+use ldk_node::lightning::offers::offer::Offer;
 use lightning::{
     CloseChannelsWithPeerResponse, CreateInvoiceRequest, ILnRpcClient, InterceptPaymentRequest,
     InterceptPaymentResponse, InvoiceDescription, LightningBuilder, LightningRpcError,
@@ -88,9 +89,9 @@ use lightning::{
 use lightning_invoice::{Bolt11Invoice, RoutingFees};
 use rand::{thread_rng, Rng};
 use rpc::{
-    CloseChannelsWithPeerPayload, CreateInvoiceForOperatorPayload, FederationInfo,
-    GatewayFedConfig, GatewayInfo, LeaveFedPayload, MnemonicResponse, OpenChannelPayload,
-    PayInvoiceForOperatorPayload, ReceiveEcashPayload, ReceiveEcashResponse,
+    CloseChannelsWithPeerPayload, CreateInvoiceForOperatorPayload, CreateOfferPayload,
+    FederationInfo, GatewayFedConfig, GatewayInfo, LeaveFedPayload, MnemonicResponse,
+    OpenChannelPayload, PayInvoiceForOperatorPayload, ReceiveEcashPayload, ReceiveEcashResponse,
     SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse, WithdrawOnchainPayload,
     V1_API_ENDPOINT,
 };
@@ -1631,6 +1632,25 @@ impl Gateway {
             }
         });
         Ok(())
+    }
+
+    /// Instructs the gateway to create a BOLT12 Offer that can be used for
+    /// recurring payments to the gateway.
+    pub async fn handle_create_offer_for_operator_msg(
+        &self,
+        payload: CreateOfferPayload,
+    ) -> AdminResult<Offer> {
+        let GatewayState::Running { lightning_context } = self.get_state().await else {
+            return Err(AdminGatewayError::Lightning(
+                LightningRpcError::FailedToConnect,
+            ));
+        };
+
+        Ok(lightning_context
+            .lnrpc
+            .create_offer(payload)
+            .await
+            .map_err(AdminGatewayError::Lightning)?)
     }
 
     /// Registers the gateway with each specified federation.

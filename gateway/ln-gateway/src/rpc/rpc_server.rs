@@ -21,8 +21,8 @@ use fedimint_ln_common::gateway_endpoint_constants::{
 use fedimint_lnv2_client::{CreateBolt11InvoicePayload, SendPaymentPayload};
 use fedimint_lnv2_common::endpoint_constants::{
     CREATE_BOLT11_INVOICE_ENDPOINT, CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT,
-    PAY_INVOICE_FOR_OPERATOR_ENDPOINT, ROUTING_INFO_ENDPOINT, SEND_PAYMENT_ENDPOINT,
-    WITHDRAW_ONCHAIN_ENDPOINT,
+    CREATE_OFFER_FOR_OPERATOR_ENDPOINT, PAY_INVOICE_FOR_OPERATOR_ENDPOINT, ROUTING_INFO_ENDPOINT,
+    SEND_PAYMENT_ENDPOINT, WITHDRAW_ONCHAIN_ENDPOINT,
 };
 use hex::ToHex;
 use serde_json::json;
@@ -32,10 +32,10 @@ use tracing::{error, info, instrument};
 
 use super::{
     BackupPayload, BalancePayload, CloseChannelsWithPeerPayload, ConnectFedPayload,
-    CreateInvoiceForOperatorPayload, DepositAddressPayload, GetLnOnchainAddressPayload,
-    InfoPayload, LeaveFedPayload, OpenChannelPayload, PayInvoiceForOperatorPayload,
-    ReceiveEcashPayload, SetConfigurationPayload, SpendEcashPayload, WithdrawOnchainPayload,
-    WithdrawPayload, V1_API_ENDPOINT,
+    CreateInvoiceForOperatorPayload, CreateOfferPayload, DepositAddressPayload,
+    GetLnOnchainAddressPayload, InfoPayload, LeaveFedPayload, OpenChannelPayload,
+    PayInvoiceForOperatorPayload, ReceiveEcashPayload, SetConfigurationPayload, SpendEcashPayload,
+    WithdrawOnchainPayload, WithdrawPayload, V1_API_ENDPOINT,
 };
 use crate::error::{AdminGatewayError, PublicGatewayError};
 use crate::rpc::ConfigPayload;
@@ -191,6 +191,10 @@ fn v1_routes(gateway: Arc<Gateway>, task_group: TaskGroup) -> Router {
         .route(
             CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT,
             post(create_invoice_for_operator),
+        )
+        .route(
+            CREATE_OFFER_FOR_OPERATOR_ENDPOINT,
+            post(create_offer_for_operator),
         )
         .route(
             PAY_INVOICE_FOR_OPERATOR_ENDPOINT,
@@ -494,4 +498,16 @@ async fn stop(
 ) -> Result<impl IntoResponse, AdminGatewayError> {
     gateway.handle_shutdown_msg(task_group).await?;
     Ok(Json(json!(())))
+}
+
+#[instrument(skip_all, err)]
+async fn create_offer_for_operator(
+    Extension(gateway): Extension<Arc<Gateway>>,
+    Json(payload): Json<CreateOfferPayload>,
+) -> Result<impl IntoResponse, AdminGatewayError> {
+    let offer = gateway
+        .handle_create_offer_for_operator_msg(payload)
+        .await?
+        .to_string();
+    Ok(Json(json!(offer)))
 }

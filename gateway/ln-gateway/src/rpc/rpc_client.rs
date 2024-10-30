@@ -11,8 +11,8 @@ use fedimint_ln_common::gateway_endpoint_constants::{
     WITHDRAW_ENDPOINT,
 };
 use fedimint_lnv2_common::endpoint_constants::{
-    CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT, PAY_INVOICE_FOR_OPERATOR_ENDPOINT,
-    WITHDRAW_ONCHAIN_ENDPOINT,
+    CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT, CREATE_OFFER_FOR_OPERATOR_ENDPOINT,
+    PAY_INVOICE_FOR_OPERATOR_ENDPOINT, WITHDRAW_ONCHAIN_ENDPOINT,
 };
 use lightning_invoice::Bolt11Invoice;
 use reqwest::{Method, StatusCode};
@@ -22,11 +22,11 @@ use thiserror::Error;
 
 use super::{
     BackupPayload, BalancePayload, CloseChannelsWithPeerPayload, ConfigPayload, ConnectFedPayload,
-    CreateInvoiceForOperatorPayload, DepositAddressPayload, FederationInfo, GatewayBalances,
-    GatewayFedConfig, GatewayInfo, GetLnOnchainAddressPayload, LeaveFedPayload, MnemonicResponse,
-    OpenChannelPayload, PayInvoiceForOperatorPayload, ReceiveEcashPayload, ReceiveEcashResponse,
-    SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse, WithdrawOnchainPayload,
-    WithdrawPayload,
+    CreateInvoiceForOperatorPayload, CreateOfferPayload, DepositAddressPayload, FederationInfo,
+    GatewayBalances, GatewayFedConfig, GatewayInfo, GetLnOnchainAddressPayload, LeaveFedPayload,
+    MnemonicResponse, OpenChannelPayload, PayInvoiceForOperatorPayload, ReceiveEcashPayload,
+    ReceiveEcashResponse, SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse,
+    WithdrawOnchainPayload, WithdrawPayload,
 };
 use crate::lightning::{ChannelInfo, CloseChannelsWithPeerResponse};
 
@@ -146,13 +146,24 @@ impl GatewayRpcClient {
         self.call_post(url, payload).await
     }
 
-    pub async fn create_invoice_for_self(
+    pub async fn create_invoice_for_operator(
         &self,
         payload: CreateInvoiceForOperatorPayload,
     ) -> GatewayRpcResult<Bolt11Invoice> {
         let url = self
             .base_url
             .join(CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT)
+            .expect("invalid base url");
+        self.call_post(url, payload).await
+    }
+
+    pub async fn create_offer_for_operator(
+        &self,
+        payload: CreateOfferPayload,
+    ) -> GatewayRpcResult<String> {
+        let url = self
+            .base_url
+            .join(CREATE_OFFER_FOR_OPERATOR_ENDPOINT)
             .expect("invalid base url");
         self.call_post(url, payload).await
     }

@@ -7,8 +7,8 @@ use fedimint_core::BitcoinAmountOrAll;
 use lightning_invoice::Bolt11Invoice;
 use ln_gateway::rpc::rpc_client::GatewayRpcClient;
 use ln_gateway::rpc::{
-    CloseChannelsWithPeerPayload, GetLnOnchainAddressPayload, OpenChannelPayload,
-    WithdrawOnchainPayload,
+    CloseChannelsWithPeerPayload, CreateOfferPayload, GetLnOnchainAddressPayload,
+    OpenChannelPayload, WithdrawOnchainPayload,
 };
 
 use crate::print_response;
@@ -27,6 +27,25 @@ pub enum LightningCommands {
 
         #[clap(long)]
         description: Option<String>,
+    },
+    /// Create an Bolt12 Offer to receive lightning funds to the gateway.
+    CreateOffer {
+        /// Optional amount to attach to the offer.
+        #[clap(long)]
+        amount_msats: Option<u64>,
+
+        /// Optional expiry time for the offer in seconds.
+        #[clap(long)]
+        expiry_secs: Option<u32>,
+
+        /// Optional description of the offer.
+        #[clap(long)]
+        description: Option<String>,
+
+        /// Optional parameter that constrains how many times the offer can be
+        /// used.
+        #[clap(long)]
+        quantity: Option<u64>,
     },
     /// Pay a lightning invoice as the gateway (i.e. no e-cash exchange).
     PayInvoice { invoice: Bolt11Invoice },
@@ -92,10 +111,26 @@ impl LightningCommands {
                 description,
             } => {
                 let response = create_client()
-                    .create_invoice_for_self(ln_gateway::rpc::CreateInvoiceForOperatorPayload {
+                    .create_invoice_for_operator(ln_gateway::rpc::CreateInvoiceForOperatorPayload {
                         amount_msats,
                         expiry_secs,
                         description,
+                    })
+                    .await?;
+                println!("{response}");
+            }
+            Self::CreateOffer {
+                amount_msats,
+                expiry_secs,
+                description,
+                quantity,
+            } => {
+                let response = create_client()
+                    .create_offer_for_operator(CreateOfferPayload {
+                        description,
+                        expiry_secs,
+                        amount_msats,
+                        quantity,
                     })
                     .await?;
                 println!("{response}");
