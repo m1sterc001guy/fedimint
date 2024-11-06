@@ -8,6 +8,7 @@ pub const CONNECT_FED_ENDPOINT: &str = "/connect_fed";
 pub const GATEWAY_INFO_ENDPOINT: &str = "/info";
 pub const GET_BALANCES_ENDPOINT: &str = "/balances";
 pub const GET_GATEWAY_ID_ENDPOINT: &str = "/id";
+pub const GET_TRANSACTIONS_ENDPOINT: &str = "/transactions";
 pub const GATEWAY_INFO_POST_ENDPOINT: &str = "/info";
 pub const GET_LN_ONCHAIN_ADDRESS_ENDPOINT: &str = "/get_ln_onchain_address";
 pub const LEAVE_FED_ENDPOINT: &str = "/leave_fed";

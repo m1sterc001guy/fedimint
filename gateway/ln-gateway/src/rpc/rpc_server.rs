@@ -14,9 +14,10 @@ use fedimint_ln_common::gateway_endpoint_constants::{
     ADDRESS_ENDPOINT, BACKUP_ENDPOINT, BALANCE_ENDPOINT, CLOSE_CHANNELS_WITH_PEER_ENDPOINT,
     CONFIGURATION_ENDPOINT, CONNECT_FED_ENDPOINT, GATEWAY_INFO_ENDPOINT,
     GATEWAY_INFO_POST_ENDPOINT, GET_BALANCES_ENDPOINT, GET_GATEWAY_ID_ENDPOINT,
-    GET_LN_ONCHAIN_ADDRESS_ENDPOINT, LEAVE_FED_ENDPOINT, LIST_ACTIVE_CHANNELS_ENDPOINT,
-    MNEMONIC_ENDPOINT, OPEN_CHANNEL_ENDPOINT, PAY_INVOICE_ENDPOINT, RECEIVE_ECASH_ENDPOINT,
-    SET_CONFIGURATION_ENDPOINT, SPEND_ECASH_ENDPOINT, STOP_ENDPOINT, WITHDRAW_ENDPOINT,
+    GET_LN_ONCHAIN_ADDRESS_ENDPOINT, GET_TRANSACTIONS_ENDPOINT, LEAVE_FED_ENDPOINT,
+    LIST_ACTIVE_CHANNELS_ENDPOINT, MNEMONIC_ENDPOINT, OPEN_CHANNEL_ENDPOINT, PAY_INVOICE_ENDPOINT,
+    RECEIVE_ECASH_ENDPOINT, SET_CONFIGURATION_ENDPOINT, SPEND_ECASH_ENDPOINT, STOP_ENDPOINT,
+    WITHDRAW_ENDPOINT,
 };
 use fedimint_lnv2_common::endpoint_constants::{
     CREATE_BOLT11_INVOICE_ENDPOINT, CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT,
@@ -34,8 +35,8 @@ use super::{
     BackupPayload, BalancePayload, CloseChannelsWithPeerPayload, ConnectFedPayload,
     CreateInvoiceForOperatorPayload, DepositAddressPayload, GetLnOnchainAddressPayload,
     InfoPayload, LeaveFedPayload, OpenChannelPayload, PayInvoiceForOperatorPayload,
-    ReceiveEcashPayload, SetConfigurationPayload, SpendEcashPayload, WithdrawOnchainPayload,
-    WithdrawPayload, V1_API_ENDPOINT,
+    ReceiveEcashPayload, SetConfigurationPayload, SpendEcashPayload, TransactionsPayload,
+    WithdrawOnchainPayload, WithdrawPayload, V1_API_ENDPOINT,
 };
 use crate::error::{AdminGatewayError, PublicGatewayError};
 use crate::rpc::ConfigPayload;
@@ -208,6 +209,7 @@ fn v1_routes(gateway: Arc<Gateway>, task_group: TaskGroup) -> Router {
         .route(LIST_ACTIVE_CHANNELS_ENDPOINT, get(list_active_channels))
         .route(WITHDRAW_ONCHAIN_ENDPOINT, post(withdraw_onchain))
         .route(GET_BALANCES_ENDPOINT, get(get_balances))
+        .route(GET_TRANSACTIONS_ENDPOINT, post(get_transactions))
         .route(SPEND_ECASH_ENDPOINT, post(spend_ecash))
         .route(MNEMONIC_ENDPOINT, get(mnemonic))
         .route(STOP_ENDPOINT, get(stop))
@@ -494,4 +496,13 @@ async fn stop(
 ) -> Result<impl IntoResponse, AdminGatewayError> {
     gateway.handle_shutdown_msg(task_group).await?;
     Ok(Json(json!(())))
+}
+
+#[instrument(skip_all, err)]
+async fn get_transactions(
+    Extension(gateway): Extension<Arc<Gateway>>,
+    Json(payload): Json<TransactionsPayload>,
+) -> Result<impl IntoResponse, AdminGatewayError> {
+    let transactions = gateway.handle_get_transactions_msg(payload).await;
+    Ok(Json(json!(transactions)))
 }

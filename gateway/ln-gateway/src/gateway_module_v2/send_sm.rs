@@ -11,6 +11,7 @@ use fedimint_lnv2_common::contracts::{OutgoingContract, PaymentImage};
 use fedimint_lnv2_common::{LightningInput, LightningInputV0, LightningInvoice, OutgoingWitness};
 use serde::{Deserialize, Serialize};
 
+use super::events::OutgoingLightningPayment;
 use super::FinalReceiveState;
 use crate::gateway_module_v2::{GatewayClientContextV2, GatewayClientModuleV2};
 
@@ -104,6 +105,7 @@ impl State for SendStateMachine {
         global_context: &DynGlobalClientContext,
     ) -> Vec<StateTransition<Self>> {
         let gc = global_context.clone();
+        let gateway_context = context.clone();
 
         match &self.state {
             SendSMState::Sending => {
@@ -121,6 +123,7 @@ impl State for SendStateMachine {
                             old_state,
                             gc.clone(),
                             result,
+                            gateway_context.clone(),
                         ))
                     },
                 )]
@@ -208,9 +211,15 @@ impl SendStateMachine {
         old_state: SendStateMachine,
         global_context: DynGlobalClientContext,
         result: Result<[u8; 32], Cancelled>,
+        client_ctx: GatewayClientContextV2,
     ) -> SendStateMachine {
         match result {
             Ok(preimage) => {
+                client_ctx
+                    .module
+                    .client_ctx
+                    .log_event(&mut dbtx.module_tx(), OutgoingLightningPayment)
+                    .await;
                 let client_input = ClientInput::<LightningInput> {
                     input: LightningInput::V0(LightningInputV0::Outgoing(
                         old_state.common.contract.contract_id(),

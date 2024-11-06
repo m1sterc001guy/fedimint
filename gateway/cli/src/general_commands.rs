@@ -9,8 +9,9 @@ use ln_gateway::rpc::rpc_client::GatewayRpcClient;
 use ln_gateway::rpc::{
     BackupPayload, BalancePayload, ConfigPayload, ConnectFedPayload, DepositAddressPayload,
     FederationRoutingFees, LeaveFedPayload, ReceiveEcashPayload, SetConfigurationPayload,
-    SpendEcashPayload, WithdrawPayload,
+    SpendEcashPayload, TransactionsPayload, WithdrawPayload,
 };
+use ln_gateway::EventLogId;
 
 use crate::print_response;
 
@@ -142,6 +143,14 @@ pub enum GeneralCommands {
         notes: OOBNotes,
         #[arg(long = "no-wait", action = clap::ArgAction::SetFalse)]
         wait: bool,
+    },
+    /// List the transacations that the gateway has processed
+    Transactions {
+        #[clap(long)]
+        position: Option<EventLogId>,
+
+        #[clap(long, default_value_t = 100)]
+        limit: u64,
     },
 }
 
@@ -286,6 +295,12 @@ impl GeneralCommands {
             }
             Self::Stop => {
                 create_client().stop().await?;
+            }
+            Self::Transactions { position, limit } => {
+                let response = create_client()
+                    .get_transactions(TransactionsPayload { position, limit })
+                    .await?;
+                print_response(response);
             }
         }
 

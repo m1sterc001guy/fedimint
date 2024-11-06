@@ -1,5 +1,6 @@
 mod api;
 mod complete_sm;
+pub mod events;
 mod receive_sm;
 mod send_sm;
 

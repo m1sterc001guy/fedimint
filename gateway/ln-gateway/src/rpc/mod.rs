@@ -6,8 +6,9 @@ use std::str::FromStr;
 
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::{Address, Network};
+use fedimint_client::db::event_log::{EventKind, EventLogId};
 use fedimint_core::config::{FederationId, JsonClientConfig};
-use fedimint_core::core::OperationId;
+use fedimint_core::core::{ModuleInstanceId, ModuleKind, OperationId};
 use fedimint_core::{secp256k1, Amount, BitcoinAmountOrAll};
 use fedimint_ln_common::config::parse_routing_fees;
 use fedimint_mint_client::OOBNotes;
@@ -247,4 +248,21 @@ pub struct MnemonicResponse {
     // and do not derive their secrets from the gateway's mnemonic. They also use
     // a separate database from the gateway's db.
     pub legacy_federations: Vec<FederationId>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TransactionsPayload {
+    pub position: Option<EventLogId>,
+    pub limit: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TransactionsResponse {
+    pub transactions: Vec<(
+        EventLogId,
+        EventKind,
+        Option<(ModuleKind, ModuleInstanceId)>,
+        u64,
+        serde_json::Value,
+    )>,
 }

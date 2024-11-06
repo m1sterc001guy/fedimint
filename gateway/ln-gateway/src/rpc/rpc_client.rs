@@ -6,9 +6,9 @@ use fedimint_ln_common::gateway_endpoint_constants::{
     ADDRESS_ENDPOINT, BACKUP_ENDPOINT, BALANCE_ENDPOINT, CLOSE_CHANNELS_WITH_PEER_ENDPOINT,
     CONFIGURATION_ENDPOINT, CONNECT_FED_ENDPOINT, GATEWAY_INFO_ENDPOINT,
     GATEWAY_INFO_POST_ENDPOINT, GET_BALANCES_ENDPOINT, GET_LN_ONCHAIN_ADDRESS_ENDPOINT,
-    LEAVE_FED_ENDPOINT, LIST_ACTIVE_CHANNELS_ENDPOINT, MNEMONIC_ENDPOINT, OPEN_CHANNEL_ENDPOINT,
-    RECEIVE_ECASH_ENDPOINT, SET_CONFIGURATION_ENDPOINT, SPEND_ECASH_ENDPOINT, STOP_ENDPOINT,
-    WITHDRAW_ENDPOINT,
+    GET_TRANSACTIONS_ENDPOINT, LEAVE_FED_ENDPOINT, LIST_ACTIVE_CHANNELS_ENDPOINT,
+    MNEMONIC_ENDPOINT, OPEN_CHANNEL_ENDPOINT, RECEIVE_ECASH_ENDPOINT, SET_CONFIGURATION_ENDPOINT,
+    SPEND_ECASH_ENDPOINT, STOP_ENDPOINT, WITHDRAW_ENDPOINT,
 };
 use fedimint_lnv2_common::endpoint_constants::{
     CREATE_BOLT11_INVOICE_FOR_OPERATOR_ENDPOINT, PAY_INVOICE_FOR_OPERATOR_ENDPOINT,
@@ -25,8 +25,8 @@ use super::{
     CreateInvoiceForOperatorPayload, DepositAddressPayload, FederationInfo, GatewayBalances,
     GatewayFedConfig, GatewayInfo, GetLnOnchainAddressPayload, LeaveFedPayload, MnemonicResponse,
     OpenChannelPayload, PayInvoiceForOperatorPayload, ReceiveEcashPayload, ReceiveEcashResponse,
-    SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse, WithdrawOnchainPayload,
-    WithdrawPayload,
+    SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse, TransactionsPayload,
+    TransactionsResponse, WithdrawOnchainPayload, WithdrawPayload,
 };
 use crate::lightning::{ChannelInfo, CloseChannelsWithPeerResponse};
 
@@ -253,6 +253,17 @@ impl GatewayRpcClient {
             .join(MNEMONIC_ENDPOINT)
             .expect("invalid base url");
         self.call_get(url).await
+    }
+
+    pub async fn get_transactions(
+        &self,
+        payload: TransactionsPayload,
+    ) -> GatewayRpcResult<TransactionsResponse> {
+        let url = self
+            .base_url
+            .join(GET_TRANSACTIONS_ENDPOINT)
+            .expect("invalid base url");
+        self.call_post(url, payload).await
     }
 
     pub async fn stop(&self) -> GatewayRpcResult<()> {

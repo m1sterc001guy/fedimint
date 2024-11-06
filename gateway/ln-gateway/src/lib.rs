@@ -25,12 +25,12 @@ pub mod state_machine;
 mod types;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::env;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{env, u64};
 
 use anyhow::{anyhow, Context};
 use bitcoin::{Address, Network, Txid};
@@ -44,6 +44,8 @@ use error::FederationNotConnected;
 use federation_manager::FederationManager;
 use fedimint_api_client::api::net::Connector;
 use fedimint_bip39::{Bip39RootSecretStrategy, Language, Mnemonic};
+use fedimint_client::db::event_log::Event;
+pub use fedimint_client::db::event_log::EventLogId;
 use fedimint_client::module::init::ClientModuleInitRegistry;
 use fedimint_client::secret::RootSecretStrategy;
 use fedimint_client::{Client, ClientHandleArc};
@@ -91,8 +93,8 @@ use rpc::{
     CloseChannelsWithPeerPayload, CreateInvoiceForOperatorPayload, FederationInfo,
     GatewayFedConfig, GatewayInfo, LeaveFedPayload, MnemonicResponse, OpenChannelPayload,
     PayInvoiceForOperatorPayload, ReceiveEcashPayload, ReceiveEcashResponse,
-    SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse, WithdrawOnchainPayload,
-    V1_API_ENDPOINT,
+    SetConfigurationPayload, SpendEcashPayload, SpendEcashResponse, TransactionsPayload,
+    TransactionsResponse, WithdrawOnchainPayload, V1_API_ENDPOINT,
 };
 use state_machine::{GatewayClientModule, GatewayExtPayStates};
 use tokio::sync::RwLock;
@@ -1623,6 +1625,42 @@ impl Gateway {
             }
         });
         Ok(())
+    }
+
+    pub async fn handle_get_transactions_msg(
+        &self,
+        payload: TransactionsPayload,
+    ) -> TransactionsResponse {
+        let federation_manager = self.federation_manager.read().await;
+
+        let configs = {
+            let mut dbtx = self.gateway_db.begin_transaction_nc().await;
+            dbtx.load_federation_configs().await
+        };
+
+        let mut all_events = Vec::new();
+
+        for (fed_id, _) in configs {
+            if let Some(client) = federation_manager.client(&fed_id) {
+                let event_log = client
+                    .value()
+                    .get_event_log(payload.position, payload.limit)
+                    .await;
+                let events = event_log
+                    .iter()
+                    .filter(|event| {
+                        event.1 == gateway_module_v2::events::OutgoingLightningPayment::KIND
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+
+                all_events.extend(events);
+            }
+        }
+
+        TransactionsResponse {
+            transactions: all_events,
+        }
     }
 
     /// Registers the gateway with each specified federation.
