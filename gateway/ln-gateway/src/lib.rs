@@ -1641,6 +1641,8 @@ impl Gateway {
 
         let position = payload.position;
         let limit = payload.limit;
+
+        /*
         info!(?position, ?limit, "Logging fake Outgoing Payment");
         let fed_id = configs.first_key_value().expect("No federation").0;
         let client = federation_manager
@@ -1652,6 +1654,7 @@ impl Gateway {
             .log_event_dbtx(&mut dbtx, None, OutgoingLightningPayment)
             .await;
         dbtx.commit_tx().await;
+        */
 
         let mut all_events = Vec::new();
 
