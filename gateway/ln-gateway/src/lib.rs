@@ -82,6 +82,7 @@ use fedimint_wallet_client::{
     WalletClientInit, WalletClientModule, WalletCommonInit, WithdrawState,
 };
 use futures::stream::StreamExt;
+use gateway_module_v2::events::OutgoingLightningPayment;
 use lightning::{
     CloseChannelsWithPeerResponse, CreateInvoiceRequest, ILnRpcClient, InterceptPaymentRequest,
     InterceptPaymentResponse, InvoiceDescription, LightningBuilder, LightningRpcError,
@@ -1638,21 +1639,34 @@ impl Gateway {
             dbtx.load_federation_configs().await
         };
 
+        let position = payload.position;
+        let limit = payload.limit;
+        info!(?position, ?limit, "Logging fake Outgoing Payment");
+        let fed_id = configs.first_key_value().expect("No federation").0;
+        let client = federation_manager
+            .client(&fed_id)
+            .expect("No federation")
+            .value();
+        let mut dbtx = client.db().begin_transaction().await;
+        client
+            .log_event_dbtx(&mut dbtx, None, OutgoingLightningPayment)
+            .await;
+        dbtx.commit_tx().await;
+
         let mut all_events = Vec::new();
 
         for (fed_id, _) in configs {
             if let Some(client) = federation_manager.client(&fed_id) {
-                let event_log = client
-                    .value()
-                    .get_event_log(payload.position, payload.limit)
-                    .await;
+                let event_log = client.value().get_event_log(position, limit).await;
+                info!("1 Size of events: {}", event_log.len());
                 let events = event_log
                     .iter()
-                    .filter(|event| {
-                        event.1 == gateway_module_v2::events::OutgoingLightningPayment::KIND
-                    })
+                    //.filter(|event| {
+                    //    event.1 == gateway_module_v2::events::OutgoingLightningPayment::KIND
+                    //})
                     .cloned()
                     .collect::<Vec<_>>();
+                info!("2 Size of events: {}", events.len());
 
                 all_events.extend(events);
             }
