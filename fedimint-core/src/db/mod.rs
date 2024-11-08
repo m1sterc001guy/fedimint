@@ -1144,6 +1144,11 @@ where
         K::Value: MaybeSend + MaybeSync,
     {
         let decoders = self.decoders().clone();
+        tracing::info!(
+            "find_by_range start: {:?} end: {:?}",
+            key_range.start,
+            key_range.end
+        );
         Box::pin(
             self.raw_find_by_range(Range {
                 start: &key_range.start.to_bytes(),
@@ -1152,6 +1157,7 @@ where
             .await
             .expect("Unrecoverable error occurred while listing entries from the database")
             .map(move |(key_bytes, value_bytes)| {
+                tracing::info!("find_by_range mapping to key and value type...");
                 let key = decode_key_expect(&key_bytes, &decoders);
                 let value = decode_value_expect(&value_bytes, &decoders, &key_bytes);
                 (key, value)

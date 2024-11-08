@@ -215,6 +215,7 @@ impl SendStateMachine {
     ) -> SendStateMachine {
         match result {
             Ok(preimage) => {
+                tracing::info!("transition_send_payment logging event...");
                 client_ctx
                     .module
                     .client_ctx

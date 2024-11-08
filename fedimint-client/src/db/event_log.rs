@@ -33,6 +33,10 @@ pub trait Event: serde::Serialize + serde::de::DeserializeOwned {
     const MODULE: Option<ModuleKind>;
     const KIND: EventKind;
     const PERSIST: bool = true;
+
+    fn get_kind(&self) -> EventKind {
+        return Self::KIND;
+    }
 }
 
 /// An counter that resets on every restart, that guarantees that
@@ -206,6 +210,10 @@ pub trait DBTransactionEventLogExt {
     ) where
         E: Event + Send,
     {
+        tracing::info!(
+            "DbTransactionEventLogExt log_event. type: {:?}",
+            event.get_kind()
+        );
         self.log_event_raw(
             log_ordering_wakeup_tx,
             E::KIND,
@@ -235,6 +243,17 @@ pub trait DBTransactionEventLogExt {
         u64,
         serde_json::Value,
     )>;
+
+    async fn get_event(
+        &mut self,
+        pos: EventLogId,
+    ) -> Option<(
+        EventLogId,
+        EventKind,
+        Option<(ModuleKind, ModuleInstanceId)>,
+        u64,
+        serde_json::Value,
+    )>;
 }
 
 #[apply(async_trait_maybe_send!)]
@@ -251,6 +270,10 @@ where
         payload: Vec<u8>,
         persist: bool,
     ) {
+        tracing::info!(
+            "DbTransactionEventLogExt log_event_raw. type: {:?}",
+            kind.clone()
+        );
         assert_eq!(
             module_kind.is_some(),
             module_id.is_some(),
@@ -260,13 +283,17 @@ where
         let unordered_id = UnordedEventLogId::new();
         trace!(target: LOG_CLIENT_EVENT_LOG, ?unordered_id, "New unordered event log event");
 
+        tracing::info!(
+            "DbTransactionEventLogExt log_event_raw inserting entry. type: {:?}",
+            kind.clone()
+        );
         if self
             .insert_entry(
                 &unordered_id,
                 &UnorderedEventLogEntry {
                     persist,
                     inner: EventLogEntry {
-                        kind,
+                        kind: kind.clone(),
                         module: module_kind.map(|kind| (kind, module_id.unwrap())),
                         ts_usecs: unordered_id.ts_usecs,
                         payload,
@@ -279,6 +306,7 @@ where
             panic!("Trying to overwrite event in the client event log");
         }
         self.on_commit(move || {
+            tracing::info!("DbTransactionEventLogExt log_event_raw on_commit sending ONESHOT CHANNEL update: {:?}", kind);
             let _ = log_ordering_wakeup_tx.send(());
         });
     }
@@ -304,9 +332,11 @@ where
         serde_json::Value,
     )> {
         let pos = pos.unwrap_or_default();
+        tracing::info!(?pos, ?limit, "JUMOELL get_event_log");
         self.find_by_range(pos..pos.saturating_add(limit))
             .await
             .map(|(k, v)| {
+                tracing::info!("mapping from find_by_range {:?}, {:?}", k, v);
                 (
                     k,
                     v.kind,
@@ -317,6 +347,27 @@ where
             })
             .collect()
             .await
+    }
+
+    async fn get_event(
+        &mut self,
+        pos: EventLogId,
+    ) -> Option<(
+        EventLogId,
+        EventKind,
+        Option<(ModuleKind, ModuleInstanceId)>,
+        u64,
+        serde_json::Value,
+    )> {
+        self.get_value(&pos).await.map(|v| {
+            (
+                pos,
+                v.kind,
+                v.module,
+                v.ts_usecs,
+                serde_json::from_slice(&v.payload).unwrap_or_default(),
+            )
+        })
     }
 }
 
@@ -343,9 +394,10 @@ pub(crate) async fn run_event_log_ordering_task(
             .await
             .collect::<Vec<_>>()
             .await;
-        trace!(target: LOG_CLIENT_EVENT_LOG, num=unordered_events.len(), "Fetched unordered events");
+        tracing::info!(target: LOG_CLIENT_EVENT_LOG, num=unordered_events.len(), "Fetched unordered events");
 
         for (unordered_id, entry) in &unordered_events {
+            let kind = entry.inner.kind.clone();
             assert!(
                 dbtx.remove_entry(unordered_id).await.is_some(),
                 "Must never fail to remove entry"
@@ -357,10 +409,10 @@ pub(crate) async fn run_event_log_ordering_task(
                         .is_none(),
                     "Must never overwrite existing event"
                 );
-                trace!(target: LOG_CLIENT_EVENT_LOG, ?unordered_id, id=?next_entry_id, "Ordered event log event");
+                tracing::info!(target: LOG_CLIENT_EVENT_LOG, ?unordered_id, id=?next_entry_id, ?kind, "Ordered event log event");
                 next_entry_id = next_entry_id.next();
             } else {
-                trace!(target: LOG_CLIENT_EVENT_LOG, ?unordered_id, id=?next_entry_id, "Transient event log event");
+                tracing::info!(target: LOG_CLIENT_EVENT_LOG, ?unordered_id, id=?next_entry_id, ?kind, "Transient event log event");
                 dbtx.on_commit({
                     let log_event_added_transient = log_event_added_transient.clone();
                     let entry = entry.inner.clone();
@@ -377,6 +429,7 @@ pub(crate) async fn run_event_log_ordering_task(
         // log and inserting new elements into ordered log, so it should never
         // fail to commit.
         dbtx.commit_tx().await;
+        tracing::info!("event log thread successfully committed");
         if !unordered_events.is_empty() {
             let _ = log_event_added.send(());
         }

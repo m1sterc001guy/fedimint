@@ -241,6 +241,7 @@ impl<'a> IDatabaseTransactionOpsCore for RocksDbTransaction<'a> {
                 start: range.start.to_vec(),
                 end: range.end.to_vec(),
             };
+            tracing::info!("ROCKSDB raw_find_by_range: {:?}", range);
             let mut options = rocksdb::ReadOptions::default();
             options.set_iterate_range(range.clone());
             let iter = self.0.snapshot().iterator_opt(

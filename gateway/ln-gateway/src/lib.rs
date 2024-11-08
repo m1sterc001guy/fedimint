@@ -58,6 +58,7 @@ use fedimint_core::core::{
     LEGACY_HARDCODED_INSTANCE_ID_WALLET,
 };
 use fedimint_core::db::{apply_migrations_server, Database, DatabaseTransaction};
+use fedimint_core::encoding::Encodable;
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::CommonModuleInit;
 use fedimint_core::secp256k1::schnorr::Signature;
@@ -1642,25 +1643,32 @@ impl Gateway {
         let position = payload.position;
         let limit = payload.limit;
 
-        /*
-        info!(?position, ?limit, "Logging fake Outgoing Payment");
+        info!(?position, ?limit, "Getting single event at pos 300");
         let fed_id = configs.first_key_value().expect("No federation").0;
         let client = federation_manager
             .client(&fed_id)
             .expect("No federation")
             .value();
-        let mut dbtx = client.db().begin_transaction().await;
-        client
-            .log_event_dbtx(&mut dbtx, None, OutgoingLightningPayment)
-            .await;
-        dbtx.commit_tx().await;
-        */
+        //let mut dbtx = client.db().begin_transaction().await;
+        let mut dbtx = self
+            .gateway_db
+            .begin_transaction_nc()
+            .await
+            .with_prefix(fed_id.consensus_encode_to_vec());
+        let pos = EventLogId::from_str("300").expect("Invalid");
+        let event = client.get_event_dbtx(&mut dbtx, pos).await;
+        info!(?event, "Retrieve event at 300");
+        //let events = client.get_event_log(Some(pos), 1).await;
+        let events = client.get_event_log_dbtx(&mut dbtx, Some(pos), 1).await;
+        info!(?events, "Get all events");
+        //dbtx.commit_tx().await;
 
+        /*
         let mut all_events = Vec::new();
 
         for (fed_id, _) in configs {
             if let Some(client) = federation_manager.client(&fed_id) {
-                let event_log = client.value().get_event_log(position, limit).await;
+                let event_log = client.value().get_event_log(Some(pos), 1).await;
                 info!("1 Size of events: {}", event_log.len());
                 let events = event_log
                     .iter()
@@ -1674,9 +1682,10 @@ impl Gateway {
                 all_events.extend(events);
             }
         }
+        */
 
         TransactionsResponse {
-            transactions: all_events,
+            transactions: events,
         }
     }
 

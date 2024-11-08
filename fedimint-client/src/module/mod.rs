@@ -554,6 +554,7 @@ where
         E: Event + Send,
         Cap: Send,
     {
+        tracing::info!("ClientContext log_event type: {:?}", event.get_kind());
         self.client
             .get()
             .log_event_dbtx(

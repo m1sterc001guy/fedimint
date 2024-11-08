@@ -149,7 +149,7 @@ pub enum GeneralCommands {
         #[clap(long)]
         position: Option<EventLogId>,
 
-        #[clap(long, default_value_t = 100)]
+        #[clap(long, default_value_t = 1000)]
         limit: u64,
     },
 }

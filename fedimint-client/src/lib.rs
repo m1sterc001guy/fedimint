@@ -2176,6 +2176,7 @@ impl Client {
         E: Event + Send,
         Cap: Send,
     {
+        info!("Client log_event_dbtx. type: {:?}", event.get_kind());
         dbtx.log_event(self.log_ordering_wakeup_tx.clone(), module_id, event)
             .await;
     }
@@ -2249,7 +2250,26 @@ impl Client {
     where
         Cap: Send,
     {
-        dbtx.get_event_log(pos, limit).await
+        let events = dbtx.get_event_log(pos, limit).await;
+        info!("get_event_log_dbtx size: {}", events.len());
+        events
+    }
+
+    pub async fn get_event_dbtx<Cap>(
+        &self,
+        dbtx: &mut DatabaseTransaction<'_, Cap>,
+        pos: EventLogId,
+    ) -> Option<(
+        EventLogId,
+        EventKind,
+        Option<(ModuleKind, ModuleInstanceId)>,
+        u64,
+        serde_json::Value,
+    )>
+    where
+        Cap: Send,
+    {
+        dbtx.get_event(pos).await
     }
 
     /// Register to receiver all new transient (unpersisted) events
