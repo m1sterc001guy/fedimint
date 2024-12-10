@@ -525,6 +525,7 @@ impl Gateway {
                 num_route_hints: None,
                 routing_fees: None,
                 per_federation_routing_fees: None,
+                per_federation_transaction_fees: None,
             })
             .await
             .expect("Failed to set gateway configuration");
@@ -1124,6 +1125,7 @@ impl Gateway {
             federation_index,
             timelock_delta: 10,
             fees: gateway_config.routing_fees,
+            transaction_fees: PaymentFee::TRANSACTION_FEE_DEFAULT.into(),
             connector,
         };
 
@@ -1152,6 +1154,7 @@ impl Gateway {
             balance_msat: client.get_balance().await,
             federation_index,
             routing_fees: Some(gateway_config.routing_fees.into()),
+            transaction_fees: Some(PaymentFee::TRANSACTION_FEE_DEFAULT),
         };
 
         if self.is_running_lnv1() {
@@ -1272,6 +1275,7 @@ impl Gateway {
             num_route_hints,
             routing_fees,
             per_federation_routing_fees,
+            per_federation_transaction_fees,
         }: SetConfigurationPayload,
     ) -> AdminResult<()> {
         if let Some(network) = network {
@@ -1313,26 +1317,60 @@ impl Gateway {
         dbtx.set_gateway_config(&new_gateway_config).await;
 
         let mut register_federations: Vec<(FederationId, FederationConfig)> = Vec::new();
-        if let Some(per_federation_routing_fees) = per_federation_routing_fees {
-            for (federation_id, routing_fees) in &per_federation_routing_fees {
+        let per_federation_routing_fees = per_federation_routing_fees.unwrap_or(vec![]);
+        for (federation_id, routing_fees) in &per_federation_routing_fees {
+            if let Some(mut federation_config) = dbtx.load_federation_config(*federation_id).await {
+                // Check if the routing fees + transaction fees is higher than the send limit
+                let send_fees = routing_fees.add(&federation_config.transaction_fees);
+                if !self.is_running_lnv1() && send_fees.gt(&PaymentFee::SEND_FEE_LIMIT) {
+                    return Err(AdminGatewayError::GatewayConfigurationError(format!(
+                        "Total Send fees exceeded {}",
+                        PaymentFee::SEND_FEE_LIMIT
+                    )));
+                }
+
+                federation_config.fees = routing_fees;
+                dbtx.save_federation_config(&federation_config).await;
+                register_federations.push((*federation_id, federation_config));
+            } else {
+                warn!(
+                    ?federation_id,
+                    "Federation not found for updating routing fees"
+                );
+            }
+        }
+
+        // Transaction fees are only available in LNv2
+        if self.is_running_lnv2() {
+            let per_federation_transaction_fees = per_federation_transaction_fees.unwrap_or(vec![]);
+            for (federation_id, transaction_fees) in &per_federation_transaction_fees {
                 if let Some(mut federation_config) =
                     dbtx.load_federation_config(*federation_id).await
                 {
-                    let routing_fees: RoutingFees = routing_fees.clone().into();
-                    if !self.is_running_lnv1()
-                        && PaymentFee::SEND_FEE_LIMIT.lt(&routing_fees.into())
-                    {
+                    // Check if the routing fees + transaction fees is higher than the send limit
+                    let send_fees = routing_fees.add(&federation_config.transaction_fees);
+                    if send_fees.gt(&PaymentFee::SEND_FEE_LIMIT) {
                         return Err(AdminGatewayError::GatewayConfigurationError(format!(
-                            "Routing fees cannot be above {}",
+                            "Total Send fees exceeded SEND LIMIT {}",
                             PaymentFee::SEND_FEE_LIMIT
                         )));
                     }
 
-                    federation_config.fees = routing_fees;
+                    // Check if the transaction fee is higher than the receive limit
+                    if transaction_fees.gt(&PaymentFee::RECEIVE_FEE_LIMIT) {
+                        return Err(AdminGatewayError::GatewayConfigurationError(format!(
+                            "Transaction fees exceeded RECEIVE LIMIT {}",
+                            PaymentFee::RECEIVE_FEE_LIMIT
+                        )));
+                    }
+
+                    federation_config.transaction_fees = transaction_fees;
                     dbtx.save_federation_config(&federation_config).await;
-                    register_federations.push((*federation_id, federation_config));
                 } else {
-                    warn!("Given federation {federation_id} not found for updating routing fees");
+                    warn!(
+                        ?federation_id,
+                        "Federation not found for updating transaction fees"
+                    );
                 }
             }
         }
@@ -1709,7 +1747,7 @@ impl Gateway {
         let routing_fees = gateway_parameters
             .fees
             .clone()
-            .unwrap_or(GatewayFee(PaymentFee::SEND_FEE_DEFAULT.into()));
+            .unwrap_or(GatewayFee(PaymentFee::TRANSACTION_FEE_DEFAULT.into()));
         let network =
             NetworkLegacyEncodingWrapper(gateway_parameters.network.unwrap_or(DEFAULT_NETWORK));
         GatewayConfiguration {
@@ -1964,11 +2002,13 @@ impl Gateway {
             .federation_info(*federation_id, &mut dbtx)
             .await?;
 
-        let routing_fees: RoutingFees = if let Some(fees) = fed_config.routing_fees {
-            fees.into()
-        } else {
-            PaymentFee::SEND_FEE_DEFAULT.into()
-        };
+        let routing_fees = fed_config
+            .routing_fees
+            .unwrap_or(PaymentFee::TRANSACTION_FEE_DEFAULT);
+
+        let transaction_fees = fed_config
+            .transaction_fees
+            .unwrap_or(PaymentFee::TRANSACTION_FEE_DEFAULT);
 
         Ok(self
             .public_key_v2(federation_id)
@@ -1976,16 +2016,16 @@ impl Gateway {
             .map(|module_public_key| RoutingInfo {
                 lightning_public_key: context.lightning_public_key,
                 module_public_key,
-                send_fee_default: routing_fees.into(),
+                send_fee_default: routing_fees,
                 // The base fee ensures that the gateway does not loose sats sending the payment due
                 // to fees paid on the transaction claiming the outgoing contract or
                 // subsequent transactions spending the newly issued ecash
-                send_fee_minimum: PaymentFee::SEND_FEE_DEFAULT,
+                send_fee_minimum: transaction_fees.clone(),
                 expiration_delta_default: 1440,
                 expiration_delta_minimum: EXPIRATION_DELTA_MINIMUM_V2,
                 // The base fee ensures that the gateway does not loose sats receiving the payment
                 // due to fees paid on the transaction funding the incoming contract
-                receive_fee: PaymentFee::RECEIVE_FEE_LIMIT,
+                receive_fee: transaction_fees,
             }))
     }
 

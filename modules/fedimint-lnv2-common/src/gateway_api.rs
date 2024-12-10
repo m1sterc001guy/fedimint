@@ -1,3 +1,6 @@
+use std::str::FromStr;
+
+use anyhow::Context;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::PublicKey;
 use fedimint_core::config::FederationId;
@@ -188,11 +191,7 @@ impl RoutingInfo {
             (self.send_fee_minimum.clone(), self.expiration_delta_minimum)
         } else {
             (
-                PaymentFee {
-                    base: self.send_fee_default.base + self.send_fee_minimum.base,
-                    parts_per_million: self.send_fee_default.parts_per_million
-                        + self.send_fee_minimum.parts_per_million,
-                },
+                self.send_fee_default.clone().add(&self.send_fee_minimum),
                 self.expiration_delta_default,
             )
         }
@@ -216,7 +215,7 @@ impl PaymentFee {
 
     /// This is the fee the gateway uses to cover transaction fees with the
     /// federation.
-    pub const SEND_FEE_DEFAULT: PaymentFee = PaymentFee {
+    pub const TRANSACTION_FEE_DEFAULT: PaymentFee = PaymentFee {
         base: Amount::from_sats(50),
         parts_per_million: 5_000,
     };
@@ -243,6 +242,13 @@ impl PaymentFee {
             .checked_add(self.base.msats)
             .expect("The division creates sufficient headroom to add the base fee")
     }
+
+    pub fn add(self, other: &PaymentFee) -> PaymentFee {
+        PaymentFee {
+            base: self.base + other.base,
+            parts_per_million: self.parts_per_million + other.parts_per_million,
+        }
+    }
 }
 
 impl From<RoutingFees> for PaymentFee {
@@ -267,5 +273,22 @@ impl From<PaymentFee> for RoutingFees {
 impl std::fmt::Display for PaymentFee {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{},{}", self.base, self.parts_per_million)
+    }
+}
+
+impl FromStr for PaymentFee {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split(',');
+        let base = parts
+            .next()
+            .context("missing base fee in millisatoshis")?
+            .parse()?;
+        let parts_per_million = parts.next().context("missing parts per million")?.parse()?;
+        Ok(PaymentFee {
+            base,
+            parts_per_million,
+        })
     }
 }

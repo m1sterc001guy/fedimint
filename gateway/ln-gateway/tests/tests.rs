@@ -37,6 +37,7 @@ use fedimint_ln_common::contracts::{EncryptedPreimage, FundedContract, Preimage,
 use fedimint_ln_common::{LightningGateway, LightningInput, LightningOutput, PrunedInvoice};
 use fedimint_ln_server::LightningInit;
 use fedimint_lnv2_common::contracts::{IncomingContract, OutgoingContract, PaymentImage};
+use fedimint_lnv2_common::gateway_api::PaymentFee;
 use fedimint_logging::LOG_TEST;
 use fedimint_testing::btc::BitcoinTest;
 use fedimint_testing::db::BYTE_33;
@@ -54,7 +55,7 @@ use ln_gateway::gateway_module_v2::events::{
     OutgoingPaymentStarted, OutgoingPaymentSucceeded,
 };
 use ln_gateway::gateway_module_v2::{FinalReceiveState, GatewayClientModuleV2};
-use ln_gateway::rpc::{FederationRoutingFees, PaymentLogPayload, SetConfigurationPayload};
+use ln_gateway::rpc::{PaymentLogPayload, SetConfigurationPayload};
 use ln_gateway::state_machine::pay::{
     OutgoingContractError, OutgoingPaymentError, OutgoingPaymentErrorType,
 };
@@ -264,12 +265,13 @@ async fn test_gateway_enforces_fees() -> anyhow::Result<()> {
 
             // Change the fees of the gateway
             let fee = "10,10000".to_string();
-            let federation_fee = FederationRoutingFees::from_str(&fee)?;
+            let federation_fee = PaymentFee::from_str(&fee)?;
             let set_configuration_payload = SetConfigurationPayload {
                 num_route_hints: None,
                 routing_fees: None,
                 network: None,
                 per_federation_routing_fees: Some(vec![(fed.id(), federation_fee)]),
+                per_federation_transaction_fees: None,
             };
             gateway
                 .handle_set_configuration_msg(set_configuration_payload)
@@ -823,12 +825,13 @@ async fn test_gateway_executes_swaps_between_connected_federations() -> anyhow::
         fed2.connect_gateway(&gateway).await;
 
         // setting specific routing fees for fed1
-        let fed_routing_fees = FederationRoutingFees::from_str("10,10000")?;
+        let fed_routing_fees = PaymentFee::from_str("10,10000")?;
         let set_configuration_payload = SetConfigurationPayload {
             num_route_hints: None,
             routing_fees: None,
             network: None,
             per_federation_routing_fees: Some(vec![(id1, fed_routing_fees.clone())]),
+            per_federation_transaction_fees: None,
         };
         gateway
             .handle_set_configuration_msg(set_configuration_payload)
@@ -919,9 +922,9 @@ async fn test_gateway_executes_swaps_between_connected_federations() -> anyhow::
     .await
 }
 
-fn routing_fees_in_msats(routing_fees: &FederationRoutingFees, amount: &Amount) -> u64 {
-    ((amount.msats * routing_fees.proportional_millionths as u64) / 1_000_000)
-        + routing_fees.base_msat as u64
+fn routing_fees_in_msats(routing_fees: &PaymentFee, amount: &Amount) -> u64 {
+    ((amount.msats * routing_fees.parts_per_million as u64) / 1_000_000)
+        + routing_fees.base.msats as u64
 }
 
 /// Retrieves the balance of each federation the gateway is connected to.

@@ -1,7 +1,7 @@
 use devimint::devfed::DevJitFed;
 use devimint::federation::Client;
 use devimint::version_constants::VERSION_0_5_0_ALPHA;
-use devimint::{cmd, util};
+use devimint::{cmd, util, Gatewayd};
 use fedimint_core::core::OperationId;
 use fedimint_lnv2_client::{FinalReceiveOperationState, FinalSendOperationState};
 use lightning_invoice::Bolt11Invoice;
@@ -277,6 +277,23 @@ async fn test_payments(dev_fed: &DevJitFed) -> anyhow::Result<()> {
     gw_lnd
         .set_federation_routing_fee(fed_id.clone(), 0, 0)
         .await?;
+    gw_lnd
+        .set_federation_transaction_fee(fed_id.clone(), 0, 0)
+        .await?;
+    // Gateway pays: 1_000 msat LNv2 federation base fee, 1_000 msat LNv2 federation
+    // relative fee. Gateway receives: 1_000_000 payment.
+    test_fees(fed_id, &client, gw_lnd, gw_ldk, 1_000_000 - 1_000 - 1_000).await?;
+
+    Ok(())
+}
+
+async fn test_fees(
+    fed_id: String,
+    client: &Client,
+    gw_lnd: &Gatewayd,
+    gw_ldk: &Gatewayd,
+    expected_addition: u64,
+) -> anyhow::Result<()> {
     let gw_lnd_ecash_prev = gw_lnd.ecash_balance(fed_id.clone()).await?;
     let (invoice, receive_op) = receive(&client, &gw_ldk.addr, 1_000_000).await?;
     test_send(
@@ -287,14 +304,8 @@ async fn test_payments(dev_fed: &DevJitFed) -> anyhow::Result<()> {
     )
     .await?;
     await_receive_claimed(&client, receive_op).await?;
-    // Gateway pays: 1_000 msat LNv2 federation base fee, 1_055 msat LNv2 federation
-    // relative fee. Gateway receives: 1_000_000 payment, 50_000 msat base TX
-    // fee, 5_000 msat relative TX fee
     let gw_lnd_ecash_after = gw_lnd.ecash_balance(fed_id.clone()).await?;
-    assert_eq!(
-        gw_lnd_ecash_prev + 1_055_000 - 1_055 - 1000,
-        gw_lnd_ecash_after
-    );
+    assert_eq!(gw_lnd_ecash_prev + expected_addition, gw_lnd_ecash_after);
 
     Ok(())
 }

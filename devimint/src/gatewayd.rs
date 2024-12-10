@@ -503,4 +503,26 @@ impl Gatewayd {
 
         Ok(())
     }
+
+    pub async fn set_federation_transaction_fee(
+        &self,
+        fed_id: String,
+        base: u64,
+        ppm: u64,
+    ) -> Result<()> {
+        let gatewayd_version = crate::util::Gatewayd::version_or_default().await;
+        if gatewayd_version >= *VERSION_0_5_0_ALPHA {
+            let new_fed_transaction_fees = format!("{fed_id},{base},{ppm}");
+            cmd!(
+                self,
+                "set-configuration",
+                "--per-federation-transaction-fees",
+                new_fed_transaction_fees
+            )
+            .run()
+            .await?;
+        }
+
+        Ok(())
+    }
 }

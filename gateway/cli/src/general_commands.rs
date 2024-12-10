@@ -3,28 +3,28 @@ use clap::Subcommand;
 use fedimint_core::config::FederationId;
 use fedimint_core::fedimint_build_code_version_env;
 use fedimint_eventlog::{EventKind, EventLogId};
+use fedimint_lnv2_common::gateway_api::PaymentFee;
 use ln_gateway::rpc::rpc_client::GatewayRpcClient;
 use ln_gateway::rpc::{
-    ConfigPayload, ConnectFedPayload, FederationRoutingFees, LeaveFedPayload, PaymentLogPayload,
-    SetConfigurationPayload,
+    ConfigPayload, ConnectFedPayload, LeaveFedPayload, PaymentLogPayload, SetConfigurationPayload,
 };
 
 use crate::print_response;
 
 #[derive(Clone)]
-pub struct PerFederationRoutingFees {
+pub struct PerFederationFees {
     federation_id: FederationId,
-    routing_fees: FederationRoutingFees,
+    fees: PaymentFee,
 }
 
-impl std::str::FromStr for PerFederationRoutingFees {
+impl std::str::FromStr for PerFederationFees {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some((federation_id, routing_fees)) = s.split_once(',') {
+        if let Some((federation_id, fees)) = s.split_once(',') {
             Ok(Self {
                 federation_id: federation_id.parse()?,
-                routing_fees: routing_fees.parse()?,
+                fees: fees.parse()?,
             })
         } else {
             bail!("Wrong format, please provide: <federation id>,<base msat>,<proportional to millionths part>");
@@ -32,9 +32,9 @@ impl std::str::FromStr for PerFederationRoutingFees {
     }
 }
 
-impl From<PerFederationRoutingFees> for (FederationId, FederationRoutingFees) {
-    fn from(val: PerFederationRoutingFees) -> Self {
-        (val.federation_id, val.routing_fees)
+impl From<PerFederationFees> for (FederationId, PaymentFee) {
+    fn from(val: PerFederationFees) -> Self {
+        (val.federation_id, val.fees)
     }
 }
 
@@ -79,7 +79,7 @@ pub enum GeneralCommands {
         /// Default routing fee for all new federations. Setting it won't affect
         /// existing federations
         #[clap(long)]
-        routing_fees: Option<FederationRoutingFees>,
+        routing_fees: Option<PaymentFee>,
 
         #[clap(long)]
         network: Option<bitcoin::Network>,
@@ -87,7 +87,12 @@ pub enum GeneralCommands {
         /// Format federation id,base msat,proportional to millionths part. Any
         /// other federations not given here will keep their current fees.
         #[clap(long)]
-        per_federation_routing_fees: Option<Vec<PerFederationRoutingFees>>,
+        per_federation_routing_fees: Option<Vec<PerFederationFees>>,
+
+        /// Format federation id,base msat,proportional to millionths part. Any
+        /// other federations not given here will keep their current fees.
+        #[clap(long)]
+        per_federation_transaction_fees: Option<Vec<PerFederationFees>>,
     },
     /// Safely stop the gateway
     Stop,
@@ -169,8 +174,11 @@ impl GeneralCommands {
                 routing_fees,
                 network,
                 per_federation_routing_fees,
+                per_federation_transaction_fees,
             } => {
                 let per_federation_routing_fees = per_federation_routing_fees
+                    .map(|input| input.into_iter().map(Into::into).collect());
+                let per_federation_transaction_fees = per_federation_transaction_fees
                     .map(|input| input.into_iter().map(Into::into).collect());
                 create_client()
                     .set_configuration(SetConfigurationPayload {
@@ -178,6 +186,7 @@ impl GeneralCommands {
                         routing_fees,
                         network,
                         per_federation_routing_fees,
+                        per_federation_transaction_fees,
                     })
                     .await?;
             }

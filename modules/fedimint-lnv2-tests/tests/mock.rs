@@ -93,11 +93,11 @@ impl GatewayConnection for MockGatewayConnection {
         Ok(Some(RoutingInfo {
             lightning_public_key: self.keypair.public_key(),
             module_public_key: self.keypair.public_key(),
-            send_fee_default: PaymentFee::SEND_FEE_DEFAULT,
-            send_fee_minimum: PaymentFee::SEND_FEE_DEFAULT,
+            send_fee_default: PaymentFee::TRANSACTION_FEE_DEFAULT,
+            send_fee_minimum: PaymentFee::TRANSACTION_FEE_DEFAULT,
             expiration_delta_default: 500,
             expiration_delta_minimum: 144,
-            receive_fee: PaymentFee::RECEIVE_FEE_LIMIT,
+            receive_fee: PaymentFee::TRANSACTION_FEE_DEFAULT,
         }))
     }
 

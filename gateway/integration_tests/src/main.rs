@@ -372,11 +372,11 @@ async fn config_test(gw_type: LightningNodeType) -> anyhow::Result<()> {
                     .as_ref()
                     .expect("Federation routing fees should be set");
                 assert_eq!(
-                    federation_fees.base_msat, 20,
+                    federation_fees.base.msats, 20,
                     "Federation base msat is not 20"
                 );
                 assert_eq!(
-                    federation_fees.proportional_millionths, 20000,
+                    federation_fees.parts_per_million, 20000,
                     "Federation proportional millionths is not 20000"
                 );
                 info!("Verified per-federation routing fees changed");
@@ -418,11 +418,11 @@ async fn config_test(gw_type: LightningNodeType) -> anyhow::Result<()> {
                     .routing_fees
                     .expect("Routing fees were none");
                 assert_eq!(
-                    fees.base_msat, 10,
+                    fees.base.msats, 10,
                     "Default Base msat for new federation was not correct"
                 );
                 assert_eq!(
-                    fees.proportional_millionths, 10000,
+                    fees.parts_per_million, 10000,
                     "Default Base msat for new federation was not correct"
                 );
                 info!(?new_fed_id, "Verified new federation");
