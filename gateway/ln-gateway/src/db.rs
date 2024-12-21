@@ -4,12 +4,13 @@ use bitcoin::hashes::{sha256, Hash};
 use fedimint_api_client::api::net::Connector;
 use fedimint_core::config::FederationId;
 use fedimint_core::db::{
-    CoreMigrationFn, Database, DatabaseTransaction, DatabaseVersion,
+    CoreMigrationFn, Database, DatabaseTransaction, DatabaseVersion, IDatabaseTransactionOpsCore,
     IDatabaseTransactionOpsCoreTyped, MigrationContext,
 };
 use fedimint_core::encoding::btc::NetworkLegacyEncodingWrapper;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::invite_code::InviteCode;
+use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::{impl_db_lookup, impl_db_record, push_db_pair_items, secp256k1, Amount};
 use fedimint_ln_common::serde_routing_fees;
 use fedimint_lnv2_common::contracts::{IncomingContract, PaymentImage};
@@ -417,6 +418,7 @@ pub fn get_gatewayd_database_migrations() -> BTreeMap<DatabaseVersion, CoreMigra
     migrations.insert(DatabaseVersion(1), |ctx| migrate_to_v2(ctx).boxed());
     migrations.insert(DatabaseVersion(2), |ctx| migrate_to_v3(ctx).boxed());
     migrations.insert(DatabaseVersion(3), |ctx| migrate_to_v4(ctx).boxed());
+    migrations.insert(DatabaseVersion(4), |ctx| migrate_to_v5(ctx).boxed());
     migrations
 }
 
@@ -518,6 +520,49 @@ async fn migrate_to_v4(mut ctx: MigrationContext<'_>) -> Result<(), anyhow::Erro
             dbtx.insert_new_entry(&new_key, &new_fed_config).await;
         }
     }
+    Ok(())
+}
+
+async fn migrate_to_v5(mut ctx: MigrationContext<'_>) -> Result<(), anyhow::Error> {
+    let mut dbtx = ctx.dbtx();
+
+    // We need to migrate the isolated databases to be behind the 0x10 prefix.
+    // First, we find the `FederationId`s from the database.
+    // We cannot directly decode them because an isolated DB key entry might overlap
+    // and cause a decoding error. If the `FederationConfig` can decode, then we
+    // have found a `FederationId`. Otherwise, just ignore for now.
+    let federation_ids = dbtx
+        .raw_find_by_prefix(&vec![DbKeyPrefix::FederationConfig as u8])
+        .await?
+        .filter_map(|(key, val)| async move {
+            let config =
+                FederationConfig::consensus_decode_vec(val, &ModuleDecoderRegistry::default());
+            if let Ok(_) = config {
+                Some(key[1..].to_vec())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .await;
+
+    // For every key that starts with the federation ID (with no other prefix) that
+    // means it is an entry that corresponds to an old isolated database.
+    // Migrate it to be behind the 0x10 prefix.
+    for fed_id in federation_ids {
+        let isolated_db_entries = dbtx
+            .raw_find_by_prefix(&fed_id)
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        for (mut key, val) in isolated_db_entries {
+            let mut new_key = vec![DbKeyPrefix::ClientDatabase as u8];
+            new_key.append(&mut key);
+            dbtx.raw_insert_bytes(&new_key, &val).await?;
+            dbtx.raw_remove_entry(&key).await?;
+        }
+    }
+
     Ok(())
 }
 

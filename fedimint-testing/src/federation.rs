@@ -167,9 +167,8 @@ impl FederationTestBuilder {
         Self {
             num_peers,
             num_offline: 1,
-            //base_port: block_in_place(|| fedimint_portalloc::port_alloc(num_peers * 2))
-            //    .expect("Failed to allocate a port range"),
-            base_port: 31113,
+            base_port: block_in_place(|| fedimint_portalloc::port_alloc(num_peers * 2))
+                .expect("Failed to allocate a port range"),
             primary_module_kind,
             version_hash: "fedimint-testing-dummy-version-hash".to_owned(),
             params,
@@ -212,8 +211,6 @@ impl FederationTestBuilder {
         let peers = (0..self.num_peers).map(PeerId::from).collect::<Vec<_>>();
         let params = local_config_gen_params(&peers, self.base_port, &self.params)
             .expect("Generates local config");
-        info!("JUMOELL Base port: {}", self.base_port);
-        info!(?params, "JUMOELL params");
 
         let configs =
             ServerConfig::trusted_dealer_gen(&params, &self.server_init, &self.version_hash);
