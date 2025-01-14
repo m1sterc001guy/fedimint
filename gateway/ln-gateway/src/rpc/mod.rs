@@ -13,6 +13,7 @@ use fedimint_mint_client::OOBNotes;
 use fedimint_wallet_client::PegOutFees;
 use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::db::FederationConfig;
 use crate::lightning::LightningMode;
@@ -74,8 +75,9 @@ pub struct BackupPayload {
     pub federation_id: FederationId,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct ConfigPayload {
+    #[schema(value_type = String, example = "0406afdc71a052d2787eab7e84c95803636d2a84c272eb81b4e01b27acb86c6f")]
     pub federation_id: Option<FederationId>,
 }
 
@@ -137,8 +139,9 @@ pub struct GatewayInfo {
     pub lightning_mode: Option<LightningMode>,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct GatewayFedConfig {
+    #[schema(value_type = BTreeMap<String, String>)]
     pub federations: BTreeMap<FederationId, JsonClientConfig>,
 }
 

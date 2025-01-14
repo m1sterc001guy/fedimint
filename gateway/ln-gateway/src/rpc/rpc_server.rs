@@ -21,6 +21,8 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, instrument};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use super::{
     BackupPayload, CloseChannelsWithPeerPayload, ConnectFedPayload,
@@ -38,6 +40,10 @@ use super::{
 use crate::error::{AdminGatewayError, PublicGatewayError};
 use crate::rpc::ConfigPayload;
 use crate::Gateway;
+
+#[derive(OpenApi)]
+#[openapi(paths(configuration), components(schemas(ConfigPayload)))]
+struct ApiDoc;
 
 /// Creates the webserver's routes and spawns the webserver in a separate task.
 pub async fn run_webserver(gateway: Arc<Gateway>) -> anyhow::Result<()> {
@@ -128,6 +134,8 @@ fn lnv2_routes() -> Router {
 /// - Un-authenticated: anyone can request these routes. Used by fedimint
 ///   clients.
 fn v1_routes(gateway: Arc<Gateway>, task_group: TaskGroup) -> Router {
+    let api_docs = ApiDoc::openapi();
+
     // Public routes on gateway webserver
     let mut public_routes = Router::new().route(RECEIVE_ECASH_ENDPOINT, post(receive_ecash));
 
@@ -178,6 +186,7 @@ fn v1_routes(gateway: Arc<Gateway>, task_group: TaskGroup) -> Router {
     Router::new()
         .merge(public_routes)
         .merge(authenticated_routes)
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api_docs))
         .layer(Extension(gateway))
         .layer(Extension(task_group))
         .layer(CorsLayer::permissive())
@@ -205,6 +214,16 @@ async fn info(
 }
 
 /// Display high-level information about the Gateway config
+#[utoipa::path(
+    post,
+    path = CONFIGURATION_ENDPOINT,
+    responses(
+        (status = 200, description = "Get federation config by federation id", body = crate::GatewayFedConfig),
+    ),
+    params(
+        ("payload" = ConfigPayload, Path, description = "Configuration Payload")
+    )
+)]
 #[instrument(target = LOG_GATEWAY, skip_all, err, fields(?payload))]
 async fn configuration(
     Extension(gateway): Extension<Arc<Gateway>>,

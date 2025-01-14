@@ -98,7 +98,7 @@ aquamarine = "0.5.0"
 assert_matches = "1.5.0"
 async-stream = "0.3.6"
 async-trait = "0.1.85"
-axum = "0.7.9"
+axum = "0.8.1"
 base64 = "0.22.1"
 base64-url = "3.0.0"
 bcrypt = "0.16.0"
@@ -208,6 +208,8 @@ tpe = { package = "fedimint-tpe", path = "./crypto/tpe", version = "=0.6.0-alpha
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 url = "2.5.4"
+utoipa = "5.3.1"
+utoipa-swagger-ui = "8.1.1"
 
 # Workaround: https://github.com/rust-lang/cargo/issues/12457 which causes
 #             https://github.com/ipetkov/crane/issues/370
