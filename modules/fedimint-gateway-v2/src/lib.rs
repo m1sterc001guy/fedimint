@@ -6,11 +6,15 @@ mod send_sm;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use anyhow::{anyhow, ensure};
+use api::GatewayFederationApi;
+use async_trait::async_trait;
 use bitcoin::hashes::sha256;
 use bitcoin::secp256k1::Message;
+use complete_sm::{CompleteSMCommon, CompleteSMState, CompleteStateMachine};
 use events::{IncomingPaymentStarted, OutgoingPaymentStarted};
 use fedimint_api_client::api::DynModuleApi;
 use fedimint_client::module::init::{ClientModuleInit, ClientModuleInitArgs};
@@ -39,27 +43,19 @@ use fedimint_lnv2_common::{
     LightningCommonInit, LightningInvoice, LightningModuleTypes, LightningOutput, LightningOutputV0,
 };
 use futures::StreamExt;
-use receive_sm::{ReceiveSMState, ReceiveStateMachine};
+use receive_sm::{ReceiveSMCommon, ReceiveSMState, ReceiveStateMachine};
 use secp256k1::schnorr::Signature;
-use send_sm::{SendSMState, SendStateMachine};
+use send_sm::{SendSMCommon, SendSMState, SendStateMachine};
 use serde::{Deserialize, Serialize};
 use tpe::{AggregatePublicKey, PublicKeyShare};
 use tracing::{info, warn};
-
-use crate::gateway_module_v2::api::GatewayFederationApi;
-use crate::gateway_module_v2::complete_sm::{
-    CompleteSMCommon, CompleteSMState, CompleteStateMachine,
-};
-use crate::gateway_module_v2::receive_sm::ReceiveSMCommon;
-use crate::gateway_module_v2::send_sm::SendSMCommon;
-use crate::{Gateway, EXPIRATION_DELTA_MINIMUM_V2};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayOperationMetaV2;
 
 #[derive(Debug, Clone)]
 pub struct GatewayClientInitV2 {
-    pub gateway: Arc<Gateway>,
+    pub lightning_manager: Arc<dyn LightningV2Manager>,
 }
 
 impl ModuleInit for GatewayClientInitV2 {
@@ -94,7 +90,7 @@ impl ClientModuleInit for GatewayClientInitV2 {
                 .module_root_secret()
                 .clone()
                 .to_secp_key(fedimint_core::secp256k1::SECP256K1),
-            gateway: self.gateway.clone(),
+            lightning_manager: self.lightning_manager.clone(),
         })
     }
 }
@@ -107,7 +103,7 @@ pub struct GatewayClientModuleV2 {
     pub client_ctx: ClientContext<Self>,
     pub module_api: DynModuleApi,
     pub keypair: Keypair,
-    pub gateway: Arc<Gateway>,
+    pub lightning_manager: Arc<dyn LightningV2Manager>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +112,7 @@ pub struct GatewayClientContextV2 {
     pub decoder: Decoder,
     pub tpe_agg_pk: AggregatePublicKey,
     pub tpe_pks: BTreeMap<PeerId, PublicKeyShare>,
-    pub gateway: Arc<Gateway>,
+    pub lightning_manager: Arc<dyn LightningV2Manager>,
 }
 
 impl Context for GatewayClientContextV2 {
@@ -136,7 +132,7 @@ impl ClientModule for GatewayClientModuleV2 {
             decoder: self.decoder(),
             tpe_agg_pk: self.cfg.tpe_agg_pk,
             tpe_pks: self.cfg.tpe_pks.clone(),
-            gateway: self.gateway.clone(),
+            lightning_manager: self.lightning_manager.clone(),
         }
     }
     fn input_fee(
@@ -600,4 +596,9 @@ impl GatewayClientModuleV2 {
             }
         }
     }
+}
+
+#[async_trait]
+pub trait LightningV2Manager: Debug + Send + Sync {
+    async fn contains_incoming_contract(&self, payment_image: PaymentImage) -> bool;
 }

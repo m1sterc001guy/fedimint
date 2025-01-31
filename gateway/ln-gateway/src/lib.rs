@@ -19,7 +19,6 @@ pub mod envs;
 mod error;
 mod events;
 mod federation_manager;
-pub mod gateway_module_v2;
 pub mod rpc;
 mod types;
 
@@ -1923,7 +1922,6 @@ impl Gateway {
                 lnd_tls_cert,
                 lnd_macaroon,
                 None,
-                Arc::new(self.clone()),
             )),
             LightningMode::Ldk {
                 esplora_server_url,

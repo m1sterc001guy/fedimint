@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::events::{OutgoingPaymentFailed, OutgoingPaymentSucceeded};
 use super::FinalReceiveState;
-use crate::gateway_module_v2::{GatewayClientContextV2, GatewayClientModuleV2};
+use crate::{GatewayClientContextV2, GatewayClientModuleV2};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
 pub struct SendStateMachine {
