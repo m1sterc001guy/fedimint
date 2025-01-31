@@ -1,12 +1,13 @@
 use fedimint_core::core::{ModuleKind, OperationId};
 use fedimint_core::Amount;
-use fedimint_eventlog::{Event, EventKind, PersistedLogEntry};
+use fedimint_eventlog::{
+    filter_events, join_events, Event, EventKind, PersistedLogEntry, StructuredPaymentEvents,
+};
 use fedimint_ln_common::contracts::outgoing::OutgoingContractAccount;
 use fedimint_ln_common::contracts::ContractId;
 use serde::{Deserialize, Serialize};
 
 use super::pay::OutgoingPaymentError;
-use crate::events::{filter_events, join_events, StructuredPaymentEvents};
 
 /// LNv1 event that is emitted when an outgoing payment attempt is initiated.
 #[derive(Serialize, Deserialize, Debug)]

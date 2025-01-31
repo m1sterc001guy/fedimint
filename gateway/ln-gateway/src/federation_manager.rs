@@ -7,13 +7,13 @@ use fedimint_client::ClientHandleArc;
 use fedimint_core::config::{FederationId, FederationIdPrefix, JsonClientConfig};
 use fedimint_core::db::{DatabaseTransaction, NonCommittable};
 use fedimint_core::util::Spanned;
+use fedimint_gateway_v1::GatewayClientModule;
 use tracing::info;
 
 use crate::db::GatewayDbtxNcExt;
 use crate::error::{AdminGatewayError, FederationNotConnected};
 use crate::gateway_module_v2::GatewayClientModuleV2;
 use crate::rpc::FederationInfo;
-use crate::state_machine::GatewayClientModule;
 use crate::AdminResult;
 
 /// The first index that the gateway will assign to a federation.

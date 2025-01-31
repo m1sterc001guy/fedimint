@@ -3,13 +3,14 @@ use std::time::SystemTime;
 use fedimint_core::config::FederationId;
 use fedimint_core::core::ModuleKind;
 use fedimint_core::Amount;
-use fedimint_eventlog::{Event, EventKind, PersistedLogEntry};
+use fedimint_eventlog::{
+    filter_events, join_events, Event, EventKind, PersistedLogEntry, StructuredPaymentEvents,
+};
 use fedimint_lnv2_common::contracts::{Commitment, OutgoingContract, PaymentImage};
 use serde::{Deserialize, Serialize};
 use serde_millis;
 
 use super::send_sm::Cancelled;
-use crate::events::{filter_events, join_events, StructuredPaymentEvents};
 
 /// Event that is emitted when an outgoing payment attempt is initiated.
 #[derive(Serialize, Deserialize, Debug)]
