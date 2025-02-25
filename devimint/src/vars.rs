@@ -139,6 +139,7 @@ declare_vars! {
         FM_PORT_FEDIMINTD_BASE: u16 = port_alloc((3 * fed_size).try_into().unwrap())?; env: "FM_PORT_FEDIMINTD_BASE";
         FM_PORT_GW_LND: u16 = port_alloc(1)?; env: "FM_PORT_GW_LND";
         FM_PORT_GW_LDK: u16 = port_alloc(1)?; env: "FM_PORT_GW_LDK";
+        FM_PORT_RECURRINGD: u16 = port_alloc(1)?; env: "FM_PORT_RECURRINGD";
         FM_PORT_FAUCET: u16 = 15243u16; env: "FM_PORT_FAUCET";
 
         FM_LDK_BITCOIND_RPC_URL: String = format!("http://bitcoin:bitcoin@127.0.0.1:{FM_PORT_BTC_RPC}"); env: "FM_LDK_BITCOIND_RPC_URL";

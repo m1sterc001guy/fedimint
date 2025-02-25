@@ -39,6 +39,7 @@ use crate::envs::{
     FM_LIGHTNING_CLI_ENV, FM_LIGHTNINGD_BASE_EXECUTABLE_ENV, FM_LNCLI_BASE_EXECUTABLE_ENV,
     FM_LNCLI_ENV, FM_LND_BASE_EXECUTABLE_ENV, FM_LOAD_TEST_TOOL_BASE_EXECUTABLE_ENV,
     FM_LOGS_DIR_ENV, FM_MINT_CLIENT_ENV, FM_RECOVERYTOOL_BASE_EXECUTABLE_ENV,
+    FM_RECURRINGD_BASE_EXECUTABLE_ENV,
 };
 
 // If a binary doesn't provide a clap version, default to the first stable
@@ -592,6 +593,8 @@ const DEVIMINT_FAUCET_FALLBACK: &str = "devimint";
 
 const FEDIMINT_DBTOOL_FALLBACK: &str = "fedimint-dbtool";
 
+const RECURRINGD_FALLBACK: &str = "fedimint-recurringd";
+
 pub fn get_fedimint_dbtool_cli_path() -> Vec<String> {
     get_command_str_for_alias(
         &[FM_FEDIMINT_DBTOOL_BASE_EXECUTABLE_ENV],
@@ -627,6 +630,24 @@ impl FedimintdCmd {
                 .map(|v| version_hash_to_version(&v).unwrap_or(DEFAULT_VERSION))
                 .unwrap_or(DEFAULT_VERSION),
         }
+    }
+}
+
+pub struct Recurringd;
+impl Recurringd {
+    pub fn cmd(self) -> Command {
+        to_command(get_command_str_for_alias(
+            &[FM_RECURRINGD_BASE_EXECUTABLE_ENV],
+            &[RECURRINGD_FALLBACK],
+        ))
+    }
+
+    pub async fn version() -> Version {
+        let version = cmd!(Recurringd, "--version")
+            .out_string()
+            .await
+            .expect("Recurringd always has --version");
+        parse_clap_version(&version)
     }
 }
 

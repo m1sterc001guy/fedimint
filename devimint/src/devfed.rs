@@ -15,6 +15,7 @@ use crate::external::{
 };
 use crate::federation::{Client, Federation};
 use crate::gatewayd::Gatewayd;
+use crate::recurringd::Recurringd;
 use crate::util::{ProcessManager, supports_lnv2};
 
 async fn spawn_drop<T>(t: T)
@@ -38,6 +39,7 @@ pub struct DevFed {
     pub gw_ldk: Option<Gatewayd>,
     pub electrs: Electrs,
     pub esplora: Esplora,
+    pub recurringd: Recurringd,
 }
 
 impl DevFed {
@@ -51,6 +53,7 @@ impl DevFed {
             gw_ldk,
             electrs,
             esplora,
+            recurringd,
         } = self;
 
         join!(
@@ -62,6 +65,7 @@ impl DevFed {
             spawn_drop(esplora),
             spawn_drop(electrs),
             spawn_drop(bitcoind),
+            spawn_drop(recurringd),
         );
     }
 }
@@ -83,6 +87,7 @@ pub struct DevJitFed {
     gw_ldk: JitArc<Option<Gatewayd>>,
     electrs: JitArc<Electrs>,
     esplora: JitArc<Esplora>,
+    recurringd: JitArc<Recurringd>,
     start_time: std::time::SystemTime,
     gw_lnd_registered: JitArc<()>,
     gw_ldk_connected: JitArc<()>,
@@ -312,6 +317,17 @@ impl DevJitFed {
             }
         });
 
+        let recurringd = JitTryAnyhow::new_try({
+            let process_mgr = process_mgr.to_owned();
+            move || async move {
+                debug!(target: LOG_DEVIMINT, "Starting recurringd...");
+                let start_time = fedimint_core::time::now();
+                let recurringd = Recurringd::new(&process_mgr).await?;
+                info!(target: LOG_DEVIMINT, elapsed_ms = %start_time.elapsed()?.as_millis(), "Started recurringd");
+                Ok(Arc::new(recurringd))
+            }
+        });
+
         Ok(DevJitFed {
             bitcoind,
             cln,
@@ -326,6 +342,7 @@ impl DevJitFed {
             gw_ldk_connected,
             fed_epoch_generated,
             channel_opened,
+            recurringd,
         })
     }
 
@@ -360,6 +377,9 @@ impl DevJitFed {
     }
     pub async fn bitcoind(&self) -> anyhow::Result<&Bitcoind> {
         Ok(self.bitcoind.get_try().await?.deref())
+    }
+    pub async fn recurringd(&self) -> anyhow::Result<&Recurringd> {
+        Ok(self.recurringd.get_try().await?.deref())
     }
 
     pub async fn internal_client(&self) -> anyhow::Result<Client> {
@@ -412,6 +432,7 @@ impl DevJitFed {
             gw_ldk: self.gw_ldk().await?.to_owned(),
             esplora: self.esplora().await?.to_owned(),
             electrs: self.electrs().await?.to_owned(),
+            recurringd: self.recurringd().await?.to_owned(),
         })
     }
 
@@ -424,6 +445,7 @@ impl DevJitFed {
             gw_lnd,
             electrs,
             esplora,
+            recurringd,
             ..
         } = self;
 
@@ -435,6 +457,7 @@ impl DevJitFed {
             spawn_drop(esplora),
             spawn_drop(electrs),
             spawn_drop(bitcoind),
+            spawn_drop(recurringd),
         );
     }
 }

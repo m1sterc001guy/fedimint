@@ -118,6 +118,9 @@ pub const FM_DEVIMINT_FAUCET_BASE_EXECUTABLE_ENV: &str = "FM_DEVIMINT_FAUCET_BAS
 // Env variable to override esplora binary set:
 pub const FM_FEDIMINT_DBTOOL_BASE_EXECUTABLE_ENV: &str = "FM_FEDIMINT_DBTOOL_BASE_EXECUTABLE";
 
+// Env variable to override fedimint-recurringd binary set:
+pub const FM_RECURRINGD_BASE_EXECUTABLE_ENV: &str = "FM_RECURRINGD_BASE_EXECUTABLE";
+
 // Env variable to set the logs directory
 pub const FM_LOGS_DIR_ENV: &str = "FM_LOGS_DIR";
 
@@ -142,3 +145,7 @@ pub const FM_DEVIMINT_RUN_DEPRECATED_TESTS_ENV: &str = "FM_DEVIMINT_RUN_DEPRECAT
 /// Rust code during building, and also checked at runtime to allow
 /// overwriting.
 pub const FM_DEVIMINT_STATIC_DATA_DIR_ENV: &str = "FM_DEVIMINT_STATIC_DATA_DIR";
+
+/// Environment variable that specifies the address the recurringd's HTTP server
+/// should listen on.
+pub const FM_RECURRING_LISTEN_ADDR_ENV: &str = "FM_RECURRING_LISTEN_ADDR";

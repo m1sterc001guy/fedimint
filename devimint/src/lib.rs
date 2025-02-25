@@ -36,6 +36,7 @@ pub mod external;
 pub mod faucet;
 pub mod federation;
 pub mod gatewayd;
+pub mod recurringd;
 pub mod tests;
 pub mod util;
 pub mod vars;

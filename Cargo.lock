@@ -3628,6 +3628,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedimint-recurringd"
+version = "0.7.0-alpha"
+dependencies = [
+ "anyhow",
+ "axum 0.7.9",
+ "clap",
+ "fedimint-build",
+ "fedimint-logging",
+ "reqwest 0.12.9",
+ "thiserror 2.0.11",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "fedimint-rocksdb"
 version = "0.7.0-alpha"
 dependencies = [
