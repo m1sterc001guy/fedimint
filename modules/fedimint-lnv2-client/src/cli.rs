@@ -35,6 +35,8 @@ enum Opts {
     /// Gateway subcommands
     #[command(subcommand)]
     Gateways(GatewaysOpts),
+    /// Register a recurring payment code
+    RegisterRecurring { recurringd_api: SafeUrl },
 }
 
 #[derive(Clone, Subcommand, Serialize)]
@@ -123,6 +125,9 @@ pub(crate) async fn handle_cli_command(
                 json(lightning.module_api.remove_gateway(auth, gateway).await?)
             }
         },
+        Opts::RegisterRecurring { recurringd_api } => {
+            json(lightning.register_recurring_payment(recurringd_api).await?)
+        }
     };
 
     Ok(value)

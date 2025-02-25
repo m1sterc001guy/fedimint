@@ -7,8 +7,9 @@
 mod api;
 #[cfg(feature = "cli")]
 mod cli;
-mod db;
+pub mod db;
 mod receive_sm;
+mod recurring;
 mod send_sm;
 
 use std::collections::BTreeMap;
@@ -41,6 +42,7 @@ use fedimint_core::task::TaskGroup;
 use fedimint_core::time::duration_since_epoch;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::{Amount, OutPoint, TransactionId, apply, async_trait_maybe_send};
+use fedimint_derive_secret::{ChildId, DerivableSecret};
 use fedimint_lnv2_common::config::LightningClientConfig;
 use fedimint_lnv2_common::contracts::{IncomingContract, OutgoingContract, PaymentImage};
 use fedimint_lnv2_common::gateway_api::{
@@ -247,6 +249,7 @@ impl ClientModuleInit for LightningClientInit {
             args.module_root_secret()
                 .clone()
                 .to_secp_key(fedimint_core::secp256k1::SECP256K1),
+            args.module_root_secret().child_key(ChildId(0)),
             self.gateway_conn.clone(),
             args.admin_auth().cloned(),
             args.task_group(),
@@ -272,6 +275,7 @@ pub struct LightningClientModule {
     client_ctx: ClientContext<Self>,
     module_api: DynModuleApi,
     keypair: Keypair,
+    recurring_payment_code_secret: DerivableSecret,
     gateway_conn: Arc<dyn GatewayConnection + Send + Sync>,
     #[allow(unused)] // The field is only used by the cli feature
     admin_auth: Option<ApiAuth>,
@@ -334,6 +338,7 @@ impl LightningClientModule {
         client_ctx: ClientContext<Self>,
         module_api: DynModuleApi,
         keypair: Keypair,
+        recurring_payment_code_secret: DerivableSecret,
         gateway_conn: Arc<dyn GatewayConnection + Send + Sync>,
         admin_auth: Option<ApiAuth>,
         task_group: &TaskGroup,
@@ -353,6 +358,7 @@ impl LightningClientModule {
             client_ctx,
             module_api,
             keypair,
+            recurring_payment_code_secret,
             gateway_conn,
             admin_auth,
         }
