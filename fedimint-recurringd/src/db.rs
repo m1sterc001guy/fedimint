@@ -1,7 +1,9 @@
 use fedimint_core::config::FederationId;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::impl_db_record;
+use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::recurring::{PaymentCodeId, PaymentCodeRootKey};
+use tpe::AggregatePublicKey;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 enum DbKeyPrefix {
@@ -13,6 +15,8 @@ pub struct PaymentCodeEntry {
     pub root_key: PaymentCodeRootKey,
     pub federation_id: FederationId,
     pub payment_code: String,
+    pub agg_pk: AggregatePublicKey,
+    pub gateway: SafeUrl,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Encodable, Decodable)]

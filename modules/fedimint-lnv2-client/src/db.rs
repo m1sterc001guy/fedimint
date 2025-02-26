@@ -4,6 +4,7 @@ use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::secp256k1::PublicKey;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::{impl_db_lookup, impl_db_record};
+use fedimint_lnv2_common::recurring::PaymentCodeId;
 use serde::{Deserialize, Serialize};
 
 #[repr(u8)]
@@ -47,6 +48,7 @@ pub struct RecurringPaymentCodeEntry {
     pub code: String,
     pub recurringd_api: SafeUrl,
     pub creation_time: SystemTime,
+    pub payment_code_id: PaymentCodeId,
 }
 
 impl_db_record!(

@@ -27,10 +27,16 @@ impl LightningClientModule {
         let payment_code_root_key = self.get_payment_code_root_key(next_idx);
 
         let recurringd_client = RecurringdClient::new(recurringd_api.clone());
+        let (gateway, _) = self
+            .select_gateway(None)
+            .await
+            .map_err(|e| RecurringdApiError::GatewayError(e))?;
         let register_response = recurringd_client
             .register_recurring_payment(
                 self.federation_id,
                 PaymentCodeRootKey(payment_code_root_key.public_key()),
+                self.cfg.tpe_agg_pk,
+                gateway,
             )
             .await?;
 
@@ -38,6 +44,8 @@ impl LightningClientModule {
             code: register_response.recurring_payment_code,
             recurringd_api,
             creation_time: fedimint_core::time::now(),
+            payment_code_id: PaymentCodeRootKey(payment_code_root_key.public_key())
+                .to_payment_code_id(),
         };
 
         module_dbtx.commit_tx().await;

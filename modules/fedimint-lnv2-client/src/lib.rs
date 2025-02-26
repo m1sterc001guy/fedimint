@@ -58,7 +58,7 @@ use secp256k1::{Keypair, PublicKey, Scalar, SecretKey, ecdh};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use tpe::{AggregateDecryptionKey, derive_agg_dk};
+use tpe::{AggregateDecryptionKey, AggregatePublicKey, derive_agg_dk};
 use tracing::warn;
 
 use crate::api::LightningFederationApi;
@@ -446,14 +446,17 @@ impl LightningClientModule {
                 .await
                 .filter(|gateway| gateways.contains(gateway))
             {
-                if let Ok(Some(routing_info)) = self.routing_info(&gateway).await {
+                if let Ok(Some(routing_info)) =
+                    Self::routing_info(&gateway, &self.federation_id).await
+                {
                     return Ok((gateway, routing_info));
                 }
             }
         }
 
         for gateway in gateways {
-            if let Ok(Some(routing_info)) = self.routing_info(&gateway).await {
+            if let Ok(Some(routing_info)) = Self::routing_info(&gateway, &self.federation_id).await
+            {
                 return Ok((gateway, routing_info));
             }
         }
@@ -461,12 +464,13 @@ impl LightningClientModule {
         Err(SelectGatewayError::FailedToFetchRoutingInfo)
     }
 
-    async fn routing_info(
-        &self,
+    pub async fn routing_info(
         gateway: &SafeUrl,
+        federation_id: &FederationId,
     ) -> Result<Option<RoutingInfo>, GatewayConnectionError> {
-        self.gateway_conn
-            .routing_info(gateway.clone(), &self.federation_id)
+        let gateway_conn = RealGatewayConnection;
+        gateway_conn
+            .routing_info(gateway.clone(), federation_id)
             .await
     }
 
@@ -518,7 +522,7 @@ impl LightningClientModule {
         let (gateway_api, routing_info) = match gateway {
             Some(gateway_api) => (
                 gateway_api.clone(),
-                self.routing_info(&gateway_api)
+                Self::routing_info(&gateway_api, &self.federation_id)
                     .await
                     .map_err(SendPaymentError::GatewayConnectionError)?
                     .ok_or(SendPaymentError::UnknownFederation)?,
@@ -741,13 +745,30 @@ impl LightningClientModule {
         gateway: Option<SafeUrl>,
         custom_meta: Value,
     ) -> Result<(Bolt11Invoice, OperationId), ReceiveError> {
-        let (gateway, contract, invoice) = self
-            .create_contract_and_fetch_invoice(
+        let (gateway, routing_info) = match gateway {
+            Some(gateway) => (
+                gateway.clone(),
+                Self::routing_info(&gateway, &self.federation_id)
+                    .await
+                    .map_err(ReceiveError::GatewayConnectionError)?
+                    .ok_or(ReceiveError::UnknownFederation)?,
+            ),
+            None => self
+                .select_gateway(None)
+                .await
+                .map_err(ReceiveError::FailedToSelectGateway)?,
+        };
+
+        let (gateway, contract, invoice) =
+            LightningClientModule::create_contract_and_fetch_invoice(
                 self.keypair.public_key(),
                 amount,
                 expiry_secs,
                 description,
                 gateway,
+                routing_info,
+                self.federation_id,
+                self.cfg.tpe_agg_pk,
             )
             .await?;
 
@@ -762,13 +783,15 @@ impl LightningClientModule {
     /// Create an incoming contract locked to a public key derived from the
     /// recipient's static module public key and fetches the corresponding
     /// invoice.
-    async fn create_contract_and_fetch_invoice(
-        &self,
+    pub async fn create_contract_and_fetch_invoice(
         recipient_static_pk: PublicKey,
         amount: Amount,
         expiry_secs: u32,
         description: Bolt11InvoiceDescription,
-        gateway: Option<SafeUrl>,
+        gateway: SafeUrl,
+        routing_info: RoutingInfo,
+        federation_id: FederationId,
+        agg_pk: AggregatePublicKey,
     ) -> Result<(SafeUrl, IncomingContract, Bolt11Invoice), ReceiveError> {
         let (ephemeral_tweak, ephemeral_pk) = generate_ephemeral_tweak(recipient_static_pk);
 
@@ -779,20 +802,6 @@ impl LightningClientModule {
         let preimage = encryption_seed
             .consensus_hash::<sha256::Hash>()
             .to_byte_array();
-
-        let (gateway, routing_info) = match gateway {
-            Some(gateway) => (
-                gateway.clone(),
-                self.routing_info(&gateway)
-                    .await
-                    .map_err(ReceiveError::GatewayConnectionError)?
-                    .ok_or(ReceiveError::UnknownFederation)?,
-            ),
-            None => self
-                .select_gateway(None)
-                .await
-                .map_err(ReceiveError::FailedToSelectGateway)?,
-        };
 
         if !routing_info.receive_fee.le(&PaymentFee::RECEIVE_FEE_LIMIT) {
             return Err(ReceiveError::PaymentFeeExceedsLimit);
@@ -818,7 +827,7 @@ impl LightningClientModule {
             .expect("Tweak is valid");
 
         let contract = IncomingContract::new(
-            self.cfg.tpe_agg_pk,
+            agg_pk,
             encryption_seed,
             preimage,
             PaymentImage::Hash(preimage.consensus_hash()),
@@ -829,11 +838,11 @@ impl LightningClientModule {
             ephemeral_pk,
         );
 
-        let invoice = self
-            .gateway_conn
+        let gateway_conn = RealGatewayConnection;
+        let invoice = gateway_conn
             .bolt11_invoice(
                 gateway.clone(),
-                self.federation_id,
+                federation_id,
                 contract.clone(),
                 amount,
                 description,

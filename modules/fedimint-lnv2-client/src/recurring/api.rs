@@ -5,6 +5,9 @@ use fedimint_lnv2_common::recurring::{
 };
 use reqwest::{Method, StatusCode};
 use thiserror::Error;
+use tpe::AggregatePublicKey;
+
+use crate::SelectGatewayError;
 
 pub struct RecurringdClient {
     client: reqwest::Client,
@@ -23,12 +26,16 @@ impl RecurringdClient {
         &self,
         federation_id: FederationId,
         payment_code_root_key: PaymentCodeRootKey,
+        agg_pk: AggregatePublicKey,
+        gateway: SafeUrl,
     ) -> Result<RecurringPaymentRegistrationResponse, RecurringdApiError> {
         let request = RecurringPaymentRegistrationRequest {
             federation_id,
             payment_code_root_key,
+            agg_pk,
+            gateway,
         };
-        let url = self.base_url.join("/paycode").expect("invalid base url");
+        let url = self.base_url.join("/paycodes").expect("invalid base url");
         let mut builder = self.client.request(Method::PUT, url.to_unsafe());
         builder = builder
             .json(&request)
@@ -49,4 +56,6 @@ pub enum RecurringdApiError {
     BadStatus(StatusCode),
     #[error("Network error: {0}")]
     NetworkError(#[from] reqwest::Error),
+    #[error("Gateway error: {0}")]
+    GatewayError(#[from] SelectGatewayError),
 }
