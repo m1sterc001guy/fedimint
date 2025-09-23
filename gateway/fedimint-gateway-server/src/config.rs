@@ -103,6 +103,10 @@ pub struct GatewayOpts {
     /// Esplora HTTP base URL, e.g. <https://mempool.space/api>
     #[arg(long, env = FM_ESPLORA_URL_ENV)]
     pub esplora_url: Option<SafeUrl>,
+
+    /// Gateway iroh listen address
+    #[arg(long = "iroh-listen", env = envs::FM_GATEWAY_IROH_LISTEN_ADDR_ENV)]
+    iroh_listen: SocketAddr,
 }
 
 impl GatewayOpts {
@@ -125,6 +129,7 @@ impl GatewayOpts {
             network: self.network,
             num_route_hints: self.num_route_hints,
             lightning_module_mode: self.lightning_module_mode,
+            iroh_listen: self.iroh_listen,
         })
     }
 }
@@ -143,6 +148,7 @@ pub struct GatewayParameters {
     pub network: Network,
     pub num_route_hints: u32,
     pub lightning_module_mode: LightningModuleMode,
+    pub iroh_listen: SocketAddr,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

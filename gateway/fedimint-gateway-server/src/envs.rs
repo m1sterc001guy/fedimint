@@ -56,3 +56,7 @@ pub const FM_BITCOIND_PASSWORD_ENV: &str = "FM_BITCOIND_PASSWORD";
 pub const FM_BITCOIND_URL_ENV: &str = "FM_BITCOIND_URL";
 
 pub const FM_ESPLORA_URL_ENV: &str = "FM_ESPLORA_URL";
+
+/// Environment variable that specifies the address the gateway's Iroh endpoint
+/// should listen on.
+pub const FM_GATEWAY_IROH_LISTEN_ADDR_ENV: &str = "FM_GATEWAY_IROH_LISTEN_ADDR";

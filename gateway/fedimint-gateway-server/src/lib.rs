@@ -234,6 +234,14 @@ pub struct Gateway {
 
     // The source of the Bitcoin blockchain data
     chain_source: ChainSource,
+
+    iroh_sk: iroh::SecretKey,
+
+    iroh_listen: SocketAddr,
+
+    iroh_dns: Option<SafeUrl>,
+
+    iroh_relays: Vec<SafeUrl>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -266,6 +274,7 @@ impl Gateway {
         gateway_state: GatewayState,
         lightning_module_mode: LightningModuleMode,
         chain_source: ChainSource,
+        iroh_listen: SocketAddr,
     ) -> anyhow::Result<Gateway> {
         let versioned_api = api_addr
             .join(V1_API_ENDPOINT)
@@ -279,6 +288,7 @@ impl Gateway {
                 network,
                 num_route_hints,
                 lightning_module_mode,
+                iroh_listen,
             },
             gateway_db,
             client_builder,
@@ -444,6 +454,11 @@ impl Gateway {
             num_route_hints,
             network,
             chain_source,
+            // TODO: Get this from database?
+            iroh_sk: iroh::SecretKey::generate(&mut OsRng),
+            iroh_dns: None,
+            iroh_relays: Vec::new(),
+            iroh_listen: gateway_parameters.iroh_listen,
         })
     }
 

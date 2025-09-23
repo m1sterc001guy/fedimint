@@ -252,6 +252,7 @@ impl Fixtures {
         // Module tests do not use the webserver, so any port is ok
         let listen: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let address: SafeUrl = format!("http://{listen}").parse().unwrap();
+        let iroh_listen: SocketAddr = "127.0.0.1:9001".parse().unwrap();
 
         let esplora_server_url = SafeUrl::parse(&format!(
             "http://127.0.0.1:{}",
@@ -286,6 +287,7 @@ impl Fixtures {
             fedimint_gateway_server::GatewayState::Running { lightning_context },
             lightning_module_mode,
             esplora_chain_source,
+            iroh_listen,
         )
         .await
         .expect("Failed to create gateway")

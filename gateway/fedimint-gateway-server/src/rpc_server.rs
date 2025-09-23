@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -11,6 +12,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use bitcoin::hashes::sha256;
 use fedimint_core::config::FederationId;
+use fedimint_core::net::iroh::build_iroh_endpoint;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::FmtCompact;
 use fedimint_gateway_common::{
@@ -40,13 +42,18 @@ use fedimint_lnv2_common::gateway_api::{CreateBolt11InvoicePayload, SendPaymentP
 use fedimint_lnv2_common::lnurl::VerifyResponse;
 use fedimint_logging::LOG_GATEWAY;
 use hex::ToHex;
+use iroh::endpoint::Incoming;
 use serde_json::json;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tracing::{info, instrument, warn};
 
 use crate::Gateway;
 use crate::error::{AdminGatewayError, PublicGatewayError};
+
+const FEDIMINT_GATEWAY_ALPN: &[u8] = b"FEDIMINT_GATEWAY_ALPN";
 
 /// LNURL-compliant error response for verify endpoints
 struct LnurlError {
@@ -86,7 +93,8 @@ pub async fn run_webserver(gateway: Arc<Gateway>) -> anyhow::Result<()> {
     let handle = task_group.make_handle();
     let shutdown_rx = handle.make_shutdown_rx();
     let listener = TcpListener::bind(&gateway.listen).await?;
-    let serve = axum::serve(listener, api_v1.into_make_service());
+    let make_service = api_v1.into_make_service();
+    let serve = axum::serve(listener, make_service);
     task_group.spawn("Gateway Webserver", |_| async {
         let graceful = serve.with_graceful_shutdown(async {
             shutdown_rx.await;
@@ -102,7 +110,133 @@ pub async fn run_webserver(gateway: Arc<Gateway>) -> anyhow::Result<()> {
         }
     });
 
+    info!("Building Iroh Endpoint...");
+    let endpoint = build_iroh_endpoint(
+        gateway.iroh_sk.clone(),
+        gateway.iroh_listen,
+        gateway.iroh_dns.clone(),
+        gateway.iroh_relays.clone(),
+        FEDIMINT_GATEWAY_ALPN,
+    )
+    .await?;
+    let gw_clone = gateway.clone();
+    let tg_clone = task_group.clone();
+    info!("Spawning accept loop...");
+    task_group.spawn("Gateway Iroh", |_| async move {
+        loop {
+            match endpoint.accept().await {
+                Some(incoming) => {
+                    info!("Accepted new connection. Spawning handler...");
+                    tg_clone.spawn_cancellable_silent(
+                        "handle endpoint accept",
+                        handle_incoming_iroh_request(incoming, gw_clone.clone()),
+                    );
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+    });
+
     info!(target: LOG_GATEWAY, listen = %gateway.listen, "Successfully started webserver");
+    Ok(())
+}
+
+async fn handle_incoming_iroh_request(
+    incoming: Incoming,
+    gateway: Arc<Gateway>,
+) -> anyhow::Result<()> {
+    let connection = incoming.accept()?.await?;
+    let remote_node_id = &connection.remote_node_id()?;
+    info!(%remote_node_id, "Handler received connection");
+    while let Ok((s, r)) = connection.accept_bi().await {
+        let connection = tokio::net::TcpStream::connect(gateway.listen).await?;
+        let (read, write) = connection.into_split();
+        info!("Forwarding bidirectional stream to webserver...");
+        forward_bidi(read, write, r, s).await?;
+    }
+    Ok(())
+}
+
+/// Copy from a reader to a quinn stream.
+///
+/// Will send a reset to the other side if the operation is cancelled, and fail
+/// with an error.
+///
+/// Returns the number of bytes copied in case of success.
+async fn copy_to_quinn(
+    mut from: impl AsyncRead + Unpin,
+    mut send: iroh_quinn::SendStream,
+    token: CancellationToken,
+) -> io::Result<u64> {
+    tracing::trace!("copying to quinn");
+    tokio::select! {
+        res = tokio::io::copy(&mut from, &mut send) => {
+            let size = res?;
+            send.finish()?;
+            Ok(size)
+        }
+        _ = token.cancelled() => {
+            // send a reset to the other side immediately
+            send.reset(0u8.into()).ok();
+            Err(io::Error::other("cancelled"))
+        }
+    }
+}
+
+/// Copy from a quinn stream to a writer.
+///
+/// Will send stop to the other side if the operation is cancelled, and fail
+/// with an error.
+///
+/// Returns the number of bytes copied in case of success.
+async fn copy_from_quinn(
+    mut recv: iroh_quinn::RecvStream,
+    mut to: impl AsyncWrite + Unpin,
+    token: CancellationToken,
+) -> io::Result<u64> {
+    tokio::select! {
+        res = tokio::io::copy(&mut recv, &mut to) => {
+            Ok(res?)
+        },
+        _ = token.cancelled() => {
+            recv.stop(0u8.into()).ok();
+            Err(io::Error::other("cancelled"))
+        }
+    }
+}
+
+fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
+    move |x| {
+        token.cancel();
+        x
+    }
+}
+
+/// Bidirectionally forward data from a quinn stream and an arbitrary tokio
+/// reader/writer pair, aborting both sides when either one forwarder is done,
+/// or when control-c is pressed.
+async fn forward_bidi(
+    from1: impl AsyncRead + Send + Sync + Unpin + 'static,
+    to1: impl AsyncWrite + Send + Sync + Unpin + 'static,
+    from2: iroh_quinn::RecvStream,
+    to2: iroh_quinn::SendStream,
+) -> anyhow::Result<()> {
+    let token1 = CancellationToken::new();
+    let token2 = token1.clone();
+    let forward_from_stdin = tokio::spawn(async move {
+        copy_to_quinn(from1, to2, token1.clone())
+            .await
+            .map_err(cancel_token(token1))
+    });
+    let forward_to_stdout = tokio::spawn(async move {
+        copy_from_quinn(from2, to1, token2.clone())
+            .await
+            .map_err(cancel_token(token2))
+    });
+    forward_to_stdout.await??;
+    forward_from_stdin.await??;
     Ok(())
 }
 
