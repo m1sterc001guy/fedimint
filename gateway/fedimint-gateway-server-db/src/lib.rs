@@ -51,19 +51,21 @@ pub trait GatewayDbtxNcExt {
     ) -> Option<FederationConfig>;
     async fn remove_federation_config(&mut self, federation_id: FederationId);
 
+    /*
     /// Returns the keypair that uniquely identifies the gateway.
-    async fn load_gateway_keypair(&mut self) -> Option<Keypair>;
+    async fn load_gateway_keypair(&mut self, identity: GatewayIdentity) -> Option<Keypair>;
 
     /// Returns the keypair that uniquely identifies the gateway.
     ///
     /// # Panics
     /// Gateway keypair does not exist.
-    async fn load_gateway_keypair_assert_exists(&mut self) -> Keypair;
+    async fn load_gateway_keypair_assert_exists(&mut self, identity: GatewayIdentity) -> Keypair;
+    */
 
     /// Returns the keypair that uniquely identifies the gateway, creating it if
     /// it does not exist. Remember to commit the transaction after calling this
     /// method.
-    async fn load_or_create_gateway_keypair(&mut self) -> Keypair;
+    async fn load_or_create_gateway_keypair(&mut self, identity: GatewayIdentity) -> Keypair;
 
     async fn save_new_preimage_authentication(
         &mut self,
@@ -153,25 +155,33 @@ impl<Cap: Send> GatewayDbtxNcExt for DatabaseTransaction<'_, Cap> {
             .await;
     }
 
-    async fn load_gateway_keypair(&mut self) -> Option<Keypair> {
-        self.get_value(&GatewayPublicKey).await
+    /*
+    async fn load_gateway_keypair(&mut self, identity: GatewayIdentity) -> Option<Keypair> {
+        self.get_value(&GatewayPublicKey{ identity }).await
     }
 
-    async fn load_gateway_keypair_assert_exists(&mut self) -> Keypair {
-        self.get_value(&GatewayPublicKey)
+    async fn load_gateway_keypair_assert_exists(&mut self, identity: GatewayIdentity) -> Keypair {
+        self.get_value(&GatewayPublicKey { identity })
             .await
             .expect("Gateway keypair does not exist")
     }
+    */
 
-    async fn load_or_create_gateway_keypair(&mut self) -> Keypair {
-        if let Some(key_pair) = self.get_value(&GatewayPublicKey).await {
+    async fn load_or_create_gateway_keypair(&mut self, identity: GatewayIdentity) -> Keypair {
+        if let Some(key_pair) = self
+            .get_value(&GatewayPublicKey {
+                identity: identity.clone(),
+            })
+            .await
+        {
             key_pair
         } else {
             let context = Secp256k1::new();
             let (secret_key, _public_key) = context.generate_keypair(&mut OsRng);
             let key_pair = Keypair::from_secret_key(&context, &secret_key);
 
-            self.insert_new_entry(&GatewayPublicKey, &key_pair).await;
+            self.insert_new_entry(&GatewayPublicKey { identity }, &key_pair)
+                .await;
             key_pair
         }
     }
@@ -241,10 +251,14 @@ impl<Cap: Send> GatewayDbtxNcExt for DatabaseTransaction<'_, Cap> {
                     );
                 }
                 DbKeyPrefix::GatewayPublicKey => {
-                    if let Some(public_key) = self.load_gateway_keypair().await {
-                        gateway_items
-                            .insert("Gateway Public Key".to_string(), Box::new(public_key));
-                    }
+                    push_db_pair_items!(
+                        self,
+                        GatewayPublicKeyPrefix,
+                        GatewayPublicKey,
+                        Keypair,
+                        gateway_items,
+                        "Gateway Public Key"
+                    );
                 }
                 _ => {}
             }
@@ -390,12 +404,37 @@ impl_db_lookup!(
 );
 
 #[derive(Debug, Clone, Eq, PartialEq, Encodable, Decodable)]
-struct GatewayPublicKey;
+pub enum GatewayIdentity {
+    Http,
+    Iroh,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Encodable, Decodable)]
+struct GatewayPublicKeyV0;
+
+#[derive(Debug, Clone, Eq, PartialEq, Encodable, Decodable)]
+pub struct GatewayPublicKey {
+    identity: GatewayIdentity,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Encodable, Decodable)]
+pub struct GatewayPublicKeyPrefix;
+
+impl_db_record!(
+    key = GatewayPublicKeyV0,
+    value = Keypair,
+    db_prefix = DbKeyPrefix::GatewayPublicKey,
+);
 
 impl_db_record!(
     key = GatewayPublicKey,
     value = Keypair,
     db_prefix = DbKeyPrefix::GatewayPublicKey,
+);
+
+impl_db_lookup!(
+    key = GatewayPublicKey,
+    query_prefix = GatewayPublicKeyPrefix
 );
 
 #[derive(Debug, Clone, Eq, PartialEq, Encodable, Decodable)]
@@ -525,6 +564,10 @@ pub fn get_gatewayd_database_migrations() -> BTreeMap<DatabaseVersion, GeneralDb
     migrations.insert(
         DatabaseVersion(5),
         Box::new(|ctx| migrate_to_v6(ctx).boxed()),
+    );
+    migrations.insert(
+        DatabaseVersion(6),
+        Box::new(|ctx| migrate_to_v7(ctx).boxed()),
     );
     migrations
 }
@@ -719,6 +762,23 @@ async fn migrate_to_v6(mut ctx: GeneralDbMigrationFnContext<'_>) -> Result<(), a
         )
         .await;
     }
+    Ok(())
+}
+
+async fn migrate_to_v7(mut ctx: GeneralDbMigrationFnContext<'_>) -> anyhow::Result<()> {
+    let mut dbtx = ctx.dbtx();
+
+    let gateway_keypair = dbtx.get_value(&GatewayPublicKeyV0).await;
+    if let Some(gateway_keypair) = gateway_keypair {
+        dbtx.insert_new_entry(
+            &GatewayPublicKey {
+                identity: GatewayIdentity::Http,
+            },
+            &gateway_keypair,
+        )
+        .await;
+    }
+
     Ok(())
 }
 

@@ -6,13 +6,16 @@ use std::time::SystemTime;
 use bitcoin::secp256k1::Keypair;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::config::{FederationId, FederationIdPrefix, JsonClientConfig};
-use fedimint_core::db::{Committable, DatabaseTransaction, NonCommittable};
+use fedimint_core::db::{
+    Committable, DatabaseTransaction, IDatabaseTransactionOpsCoreTyped, NonCommittable,
+};
 use fedimint_core::util::{FmtCompactAnyhow as _, Spanned};
 use fedimint_gateway_common::FederationInfo;
-use fedimint_gateway_server_db::GatewayDbtxNcExt as _;
+use fedimint_gateway_server_db::{GatewayDbtxNcExt as _, GatewayPublicKeyPrefix};
 use fedimint_gw_client::GatewayClientModule;
 use fedimint_gwv2_client::GatewayClientModuleV2;
 use fedimint_logging::LOG_GATEWAY;
+use futures::StreamExt;
 use tracing::{info, warn};
 
 use crate::AdminResult;
@@ -63,10 +66,17 @@ impl FederationManager {
     ) -> AdminResult<FederationInfo> {
         let federation_info = self.federation_info(federation_id, dbtx).await?;
 
-        let gateway_keypair = dbtx.load_gateway_keypair_assert_exists().await;
-
-        self.unannounce_from_federation(federation_id, gateway_keypair)
+        let keypairs = dbtx
+            .find_by_prefix(&GatewayPublicKeyPrefix)
+            .await
+            .map(|(_, v)| v)
+            .collect::<Vec<_>>()
             .await;
+
+        for keypair in keypairs {
+            self.unannounce_from_federation(federation_id, keypair)
+                .await;
+        }
 
         self.remove_client(federation_id).await?;
 
