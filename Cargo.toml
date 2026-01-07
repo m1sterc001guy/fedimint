@@ -46,6 +46,7 @@ members = [
     "fedimint-wasm-tests",
     "fedimintd",
     "fedimintd-envs",
+    "frost-playground",
     "fuzz",
     "gateway/fedimint-gateway-client",
     "gateway/fedimint-gateway-common",

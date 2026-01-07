@@ -1,0 +1,22 @@
+[package]
+description = "test binary for the frost crate"
+edition = { workspace = true }
+homepage = { workspace = true }
+keywords = { workspace = true }
+license = { workspace = true }
+name = "frost-playground"
+readme = { workspace = true }
+repository = { workspace = true }
+version = { workspace = true }
+
+[[bin]]
+name = "frost-playground"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+frost-secp256k1 = "2.2.0"
+rand = { workspace = true }
+
+[lints]
+workspace = true
