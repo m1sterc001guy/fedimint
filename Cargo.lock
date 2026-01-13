@@ -5417,6 +5417,7 @@ name = "frost-playground"
 version = "0.13.0-alpha"
 dependencies = [
  "anyhow",
+ "bitcoin",
  "frost-secp256k1",
  "rand 0.8.5",
 ]

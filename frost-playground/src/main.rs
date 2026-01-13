@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use bitcoin::PublicKey;
 use frost_secp256k1 as frost;
 
 fn main() -> anyhow::Result<()> {
@@ -89,6 +90,13 @@ fn main() -> anyhow::Result<()> {
         frost::keys::dkg::part3(round2_secret_package, round1_packages, round2_packages)?;
     println!("Key Package: {:?}", key_package);
     println!("Pubkey Package: {:?}", pubkey_package);
+
+    let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
+    let pubkey = PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
+    let (xonly, _parity) = pubkey.inner.x_only_public_key();
+    let descriptor_str = format!("tr({xonly})");
+    println!("Taproot Descriptor: {descriptor_str}");
+
     println!();
 
     println!("Doing final key generation for participant 2...");
@@ -100,6 +108,12 @@ fn main() -> anyhow::Result<()> {
         frost::keys::dkg::part3(round2_secret_package, round1_packages, round2_packages)?;
     println!("Key Package: {:?}", key_package);
     println!("Pubkey Package: {:?}", pubkey_package);
+
+    let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
+    let pubkey = PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
+    let (xonly, _parity) = pubkey.inner.x_only_public_key();
+    let descriptor_str = format!("tr({xonly})");
+    println!("Taproot Descriptor: {descriptor_str}");
 
     println!("frost playground finished");
 
