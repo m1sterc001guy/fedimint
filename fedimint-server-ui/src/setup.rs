@@ -66,7 +66,7 @@ pub fn setup_layout(title: &str, content: Markup) -> Markup {
                     }
                 }
                 script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous" {}
-                script src="/assets/html5-qrcode.min.js" {}
+                script type="module" src="/assets/qr-scanner.min.js" {}
             }
         }
     }
@@ -401,7 +401,7 @@ async fn federation_setup(
                         button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" {}
                     }
                     div class="modal-body" {
-                        div id="qr-reader" style="width: 100%;" {}
+                        video id="qr-reader" style="width: 100%; display: block;" {}
                         div id="qr-reader-error" class="alert alert-danger mt-3 d-none" {}
                     }
                     div class="modal-footer" {
@@ -414,27 +414,24 @@ async fn federation_setup(
         // QR Scanner JavaScript
         script {
             (PreEscaped(r#"
-            var html5QrCode = null;
-            var qrScannerModal = null;
+            let qrScanner = null;
+            let qrScannerModal = null;
 
             function startQrScanner() {
-                var modalEl = document.getElementById('qrScannerModal');
+                const modalEl = document.getElementById('qrScannerModal');
                 qrScannerModal = new bootstrap.Modal(modalEl);
 
-                // Reset error message
-                var errorEl = document.getElementById('qr-reader-error');
+                const errorEl = document.getElementById('qr-reader-error');
                 errorEl.classList.add('d-none');
                 errorEl.textContent = '';
 
                 qrScannerModal.show();
 
-                // Wait for modal to be shown before starting camera
                 modalEl.addEventListener('shown.bs.modal', function onShown() {
                     modalEl.removeEventListener('shown.bs.modal', onShown);
                     initializeScanner();
                 });
 
-                // Clean up when modal is hidden
                 modalEl.addEventListener('hidden.bs.modal', function onHidden() {
                     modalEl.removeEventListener('hidden.bs.modal', onHidden);
                     stopQrScanner();
@@ -442,37 +439,31 @@ async fn federation_setup(
             }
 
             function initializeScanner() {
-                html5QrCode = new Html5Qrcode("qr-reader");
+                const videoElem = document.getElementById('qr-reader');
 
-                var config = {
-                    fps: 10,
-                    qrbox: { width: 250, height: 250 },
-                    aspectRatio: 1.0
-                };
-
-                html5QrCode.start(
-                    { facingMode: "environment" },
-                    config,
-                    function(decodedText, decodedResult) {
-                        // Success - populate input and close modal
-                        document.getElementById('peer_info').value = decodedText;
+                qrScanner = new QrScanner(
+                    videoElem,
+                    result => {
+                        document.getElementById('peer_info').value = result.data;
                         qrScannerModal.hide();
                     },
-                    function(errorMessage) {
-                        // Ignore scan errors (happens constantly while searching)
+                    {
+                        preferredCamera: 'environment',
+                        maxScansPerSecond: 10,
+                        returnDetailedScanResult: true
                     }
-                ).catch(function(err) {
-                    var errorEl = document.getElementById('qr-reader-error');
+                );
+
+                qrScanner.start().catch(err => {
+                    const errorEl = document.getElementById('qr-reader-error');
                     errorEl.textContent = 'Unable to access camera: ' + err;
                     errorEl.classList.remove('d-none');
                 });
             }
 
             function stopQrScanner() {
-                if (html5QrCode && html5QrCode.isScanning) {
-                    html5QrCode.stop().catch(function(err) {
-                        console.error('Error stopping scanner:', err);
-                    });
+                if (qrScanner) {
+                    qrScanner.stop();
                 }
             }
             "#))
