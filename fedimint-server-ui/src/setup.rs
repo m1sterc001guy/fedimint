@@ -366,9 +366,9 @@ async fn federation_setup(
                     div class="col-4" {
                         @if use_mobile_mode {
                             // Mobile mode: file input for QR scanning
+                            // Using label instead of button+onclick for reliable mobile support
                             input type="file" id="qr-file-input" accept="image/*" capture="environment" class="d-none" {}
-                            button type="button" id="scan-qr-btn" class="btn btn-outline-secondary w-100 d-none"
-                                onclick="document.getElementById('qr-file-input').click()" {
+                            label for="qr-file-input" id="scan-qr-btn" class="btn btn-outline-secondary w-100 d-none" style="cursor: pointer; margin: 0;" {
                                 "Scan QR Code"
                             }
                         } @else {
