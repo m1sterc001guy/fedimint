@@ -66,7 +66,7 @@ pub fn setup_layout(title: &str, content: Markup) -> Markup {
                     }
                 }
                 script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous" {}
-                script src="/assets/qr-scanner.umd.min.js" {}
+                script src="/assets/jsQR.min.js" {}
             }
         }
     }
@@ -401,7 +401,7 @@ async fn federation_setup(
                         button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" {}
                     }
                     div class="modal-body" {
-                        video id="qr-reader" style="width: 100%; display: block;" {}
+                        canvas id="qr-reader" style="width: 100%; background: #000;" {}
                         div id="qr-reader-error" class="alert alert-danger mt-3 d-none" {}
                     }
                     div class="modal-footer" {
@@ -414,8 +414,12 @@ async fn federation_setup(
         // QR Scanner JavaScript
         script {
             (PreEscaped(r#"
-            let qrScanner = null;
+            let videoStream = null;
             let qrScannerModal = null;
+            let scanAnimationId = null;
+            const videoElem = document.createElement('video');
+            const canvasElem = document.getElementById('qr-reader');
+            const canvasCtx = canvasElem.getContext('2d', { willReadFrequently: true });
 
             function startQrScanner() {
                 const modalEl = document.getElementById('qrScannerModal');
@@ -439,31 +443,66 @@ async fn federation_setup(
             }
 
             function initializeScanner() {
-                const videoElem = document.getElementById('qr-reader');
+                if (typeof jsQR === 'undefined') {
+                    const errorEl = document.getElementById('qr-reader-error');
+                    errorEl.textContent = 'jsQR library not loaded';
+                    errorEl.classList.remove('d-none');
+                    return;
+                }
 
-                qrScanner = new QrScanner(
-                    videoElem,
-                    result => {
-                        document.getElementById('peer_info').value = result.data;
-                        qrScannerModal.hide();
-                    },
-                    {
-                        preferredCamera: 'environment',
-                        maxScansPerSecond: 10,
-                        returnDetailedScanResult: true
-                    }
-                );
-
-                qrScanner.start().catch(err => {
+                navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' }
+                }).then(stream => {
+                    videoStream = stream;
+                    videoElem.srcObject = stream;
+                    videoElem.setAttribute('playsinline', 'true');
+                    videoElem.play();
+                    scanFrame();
+                }).catch(err => {
                     const errorEl = document.getElementById('qr-reader-error');
                     errorEl.textContent = 'Unable to access camera: ' + err;
                     errorEl.classList.remove('d-none');
                 });
             }
 
+            function scanFrame() {
+                if (!videoStream) return;
+
+                if (videoElem.readyState === videoElem.HAVE_ENOUGH_DATA) {
+                    const width = videoElem.videoWidth || 640;
+                    const height = videoElem.videoHeight || 480;
+
+                    canvasElem.width = width;
+                    canvasElem.height = height;
+                    canvasCtx.drawImage(videoElem, 0, 0, width, height);
+
+                    const imageData = canvasCtx.getImageData(0, 0, width, height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                        inversionAttempts: 'dontInvert'
+                    });
+
+                    if (code && code.data) {
+                        document.getElementById('peer_info').value = code.data;
+                        stopQrScanner();
+                        return;
+                    }
+                }
+
+                scanAnimationId = requestAnimationFrame(scanFrame);
+            }
+
             function stopQrScanner() {
-                if (qrScanner) {
-                    qrScanner.stop();
+                if (scanAnimationId) {
+                    cancelAnimationFrame(scanAnimationId);
+                    scanAnimationId = null;
+                }
+                if (videoStream) {
+                    videoStream.getTracks().forEach(track => track.stop());
+                    videoStream = null;
+                }
+                if (qrScannerModal) {
+                    qrScannerModal.hide();
+                    qrScannerModal = null;
                 }
             }
             "#))
