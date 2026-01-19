@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use axum_extra::extract::Form;
 use axum_extra::extract::cookie::CookieJar;
 use fedimint_core::core::ModuleKind;
+use fedimint_core::envs::{FM_UI_MOBILE_MODE_ENV, is_env_var_set};
 use fedimint_core::module::ApiAuth;
 use fedimint_server_core::setup_ui::DynSetupApi;
 use fedimint_ui_common::assets::WithStaticRoutesExt;
@@ -300,6 +301,7 @@ async fn federation_setup(
         .expect("Successful authentication ensures that the local parameters have been set");
 
     let connected_peers = state.api.connected_peers().await;
+    let use_mobile_mode = is_env_var_set(FM_UI_MOBILE_MODE_ENV);
 
     let content = html! {
         section class="mb-4" {
@@ -362,9 +364,19 @@ async fn federation_setup(
                     }
 
                     div class="col-4" {
-                        button type="button" id="scan-qr-btn" class="btn btn-outline-secondary w-100 d-none"
-                            data-bs-toggle="modal" data-bs-target="#qrScannerModal" {
-                            "Scan QR Code"
+                        @if use_mobile_mode {
+                            // Mobile mode: file input for QR scanning
+                            input type="file" id="qr-file-input" accept="image/*" capture="environment" class="d-none" {}
+                            button type="button" id="scan-qr-btn" class="btn btn-outline-secondary w-100 d-none"
+                                onclick="document.getElementById('qr-file-input').click()" {
+                                "Scan QR Code"
+                            }
+                        } @else {
+                            // Desktop mode: camera stream via modal
+                            button type="button" id="scan-qr-btn" class="btn btn-outline-secondary w-100 d-none"
+                                data-bs-toggle="modal" data-bs-target="#qrScannerModal" {
+                                "Scan QR Code"
+                            }
                         }
                     }
 
@@ -376,70 +388,98 @@ async fn federation_setup(
 
             form id="reset-form" method="post" action=(RESET_SETUP_CODES_ROUTE) class="d-none" {}
 
-            // QR Scanner Modal
-            div class="modal fade" id="qrScannerModal" tabindex="-1" aria-labelledby="qrScannerModalLabel" aria-hidden="true" {
-                div class="modal-dialog modal-dialog-centered" {
-                    div class="modal-content" {
-                        div class="modal-header" {
-                            h5 class="modal-title" id="qrScannerModalLabel" { "Scan Guardian's QR Code" }
-                            button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" {}
+            @if use_mobile_mode {
+                // Mobile mode: simple file-based QR scanning
+                script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" {}
+                script {
+                    (PreEscaped(r#"
+                    document.addEventListener('DOMContentLoaded', function() {
+                        // Only show scan button if library loaded successfully
+                        if (typeof Html5Qrcode !== 'undefined') {
+                            document.getElementById('scan-qr-btn').classList.remove('d-none');
                         }
-                        div class="modal-body" {
-                            div id="qr-reader" style="width: 100%;" {}
-                            div id="qr-reader-error" class="alert alert-danger mt-2 d-none" {}
-                        }
-                        div class="modal-footer" {
-                            button type="button" class="btn btn-secondary" data-bs-dismiss="modal" { "Cancel" }
+
+                        document.getElementById('qr-file-input').addEventListener('change', function(e) {
+                            const file = e.target.files[0];
+                            if (!file) return;
+
+                            Html5Qrcode.scanFile(file, true)
+                                .then(function(decodedText) {
+                                    document.getElementById('peer_info').value = decodedText;
+                                    document.querySelector('form[action="/add_setup_code"]').submit();
+                                })
+                                .catch(function(err) {
+                                    alert('Could not find QR code in image. Please try again.');
+                                });
+                        });
+                    });
+                    "#))
+                }
+            } @else {
+                // Desktop mode: camera stream modal
+                div class="modal fade" id="qrScannerModal" tabindex="-1" aria-labelledby="qrScannerModalLabel" aria-hidden="true" {
+                    div class="modal-dialog modal-dialog-centered" {
+                        div class="modal-content" {
+                            div class="modal-header" {
+                                h5 class="modal-title" id="qrScannerModalLabel" { "Scan Guardian's QR Code" }
+                                button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" {}
+                            }
+                            div class="modal-body" {
+                                div id="qr-reader" style="width: 100%;" {}
+                                div id="qr-reader-error" class="alert alert-danger mt-2 d-none" {}
+                            }
+                            div class="modal-footer" {
+                                button type="button" class="btn btn-secondary" data-bs-dismiss="modal" { "Cancel" }
+                            }
                         }
                     }
                 }
-            }
 
-            // Load html5-qrcode from CDN
-            script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" {}
-            script {
-                (PreEscaped(r#"
-                document.addEventListener('DOMContentLoaded', function() {
-                    // Only show scan button if library loaded successfully
-                    if (typeof Html5Qrcode !== 'undefined') {
-                        document.getElementById('scan-qr-btn').classList.remove('d-none');
-                    }
+                script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" {}
+                script {
+                    (PreEscaped(r#"
+                    document.addEventListener('DOMContentLoaded', function() {
+                        // Only show scan button if library loaded successfully
+                        if (typeof Html5Qrcode !== 'undefined') {
+                            document.getElementById('scan-qr-btn').classList.remove('d-none');
+                        }
 
-                    let html5QrCode = null;
-                    const modal = document.getElementById('qrScannerModal');
+                        let html5QrCode = null;
+                        const modal = document.getElementById('qrScannerModal');
 
-                    modal.addEventListener('shown.bs.modal', function() {
-                        const errorDiv = document.getElementById('qr-reader-error');
-                        errorDiv.classList.add('d-none');
+                        modal.addEventListener('shown.bs.modal', function() {
+                            const errorDiv = document.getElementById('qr-reader-error');
+                            errorDiv.classList.add('d-none');
 
-                        html5QrCode = new Html5Qrcode("qr-reader");
+                            html5QrCode = new Html5Qrcode("qr-reader");
 
-                        html5QrCode.start(
-                            { facingMode: "environment" },
-                            { fps: 10, qrbox: { width: 250, height: 250 } },
-                            function(decodedText) {
-                                html5QrCode.stop().then(function() {
-                                    document.getElementById('peer_info').value = decodedText;
-                                    bootstrap.Modal.getInstance(modal).hide();
-                                    document.querySelector('form[action="/add_setup_code"]').submit();
-                                });
-                            },
-                            function(errorMessage) {
-                                // Ignore per-frame scan errors
+                            html5QrCode.start(
+                                { facingMode: "environment" },
+                                { fps: 10, qrbox: { width: 250, height: 250 } },
+                                function(decodedText) {
+                                    html5QrCode.stop().then(function() {
+                                        document.getElementById('peer_info').value = decodedText;
+                                        bootstrap.Modal.getInstance(modal).hide();
+                                        document.querySelector('form[action="/add_setup_code"]').submit();
+                                    });
+                                },
+                                function(errorMessage) {
+                                    // Ignore per-frame scan errors
+                                }
+                            ).catch(function(err) {
+                                errorDiv.textContent = 'Camera error: ' + err;
+                                errorDiv.classList.remove('d-none');
+                            });
+                        });
+
+                        modal.addEventListener('hidden.bs.modal', function() {
+                            if (html5QrCode && html5QrCode.isScanning) {
+                                html5QrCode.stop();
                             }
-                        ).catch(function(err) {
-                            errorDiv.textContent = 'Camera error: ' + err;
-                            errorDiv.classList.remove('d-none');
                         });
                     });
-
-                    modal.addEventListener('hidden.bs.modal', function() {
-                        if (html5QrCode && html5QrCode.isScanning) {
-                            html5QrCode.stop();
-                        }
-                    });
-                });
-                "#))
+                    "#))
+                }
             }
         }
 
