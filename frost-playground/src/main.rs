@@ -1,7 +1,12 @@
 use std::collections::BTreeMap;
 
-use bitcoin::PublicKey;
+use bitcoin::{PublicKey, secp256k1};
+use fedimint_wallet_common::keys::CompressedPublicKey;
+use fedimint_wallet_common::tweakable::Tweakable;
 use frost_secp256k1 as frost;
+use miniscript::Descriptor;
+use miniscript::descriptor::Tr;
+use rand::rngs::OsRng;
 
 fn main() -> anyhow::Result<()> {
     let mut rng = rand::rngs::OsRng;
@@ -73,14 +78,6 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Final Key Generation
-    //let mut key_packages = BTreeMap::new();
-
-    //let mut pubkey_packages = BTreeMap::new();
-
-    // Each participant will do this on their own
-    // Right now I'm just doing it for participant 1
-
     println!("Doing final key generation for participant 1...");
     let participant_identifier = 1.try_into().expect("should be nonzero");
     let round2_secret_package = &round2_secret_packages[&participant_identifier];
@@ -93,9 +90,10 @@ fn main() -> anyhow::Result<()> {
 
     let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
     let pubkey = PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
-    let (xonly, _parity) = pubkey.inner.x_only_public_key();
-    let descriptor_str = format!("tr({xonly})");
-    println!("Taproot Descriptor: {descriptor_str}");
+    let compressed = CompressedPublicKey { key: pubkey.inner };
+    let descriptor =
+        Descriptor::Tr(Tr::new(compressed, None).expect("Could not create Taproot descriptor"));
+    println!("Taproot Descriptor: {descriptor}");
 
     println!();
 
@@ -111,9 +109,18 @@ fn main() -> anyhow::Result<()> {
 
     let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
     let pubkey = PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
-    let (xonly, _parity) = pubkey.inner.x_only_public_key();
-    let descriptor_str = format!("tr({xonly})");
-    println!("Taproot Descriptor: {descriptor_str}");
+    let compressed = CompressedPublicKey { key: pubkey.inner };
+    let descriptor =
+        Descriptor::Tr(Tr::new(compressed, None).expect("Could not create Taproot descriptor"));
+    println!("Taproot Descriptor: {descriptor}");
+
+    let secp = secp256k1::Secp256k1::new();
+    let tweak_key = secp.generate_keypair(&mut OsRng);
+    let public_tweak_key = tweak_key.1;
+    let address = descriptor
+        .tweak(&public_tweak_key, &secp)
+        .address(bitcoin::Network::Regtest)?;
+    println!("Address: {address}");
 
     println!("frost playground finished");
 

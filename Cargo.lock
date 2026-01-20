@@ -5418,7 +5418,9 @@ version = "0.13.0-alpha"
 dependencies = [
  "anyhow",
  "bitcoin",
+ "fedimint-wallet-common",
  "frost-secp256k1",
+ "miniscript",
  "rand 0.8.5",
 ]
 

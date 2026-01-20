@@ -16,7 +16,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 bitcoin = { workspace = true }
+fedimint-wallet-common = { workspace = true }
 frost-secp256k1 = "2.2.0"
+miniscript = { workspace = true }
 rand = { workspace = true }
 
 [lints]
