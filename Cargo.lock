@@ -5418,10 +5418,14 @@ version = "0.13.0-alpha"
 dependencies = [
  "anyhow",
  "bitcoin",
+ "devimint",
+ "fedimint-core",
  "fedimint-wallet-common",
  "frost-secp256k1",
  "miniscript",
  "rand 0.8.5",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
