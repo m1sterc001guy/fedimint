@@ -43,7 +43,7 @@ use tonic_lnd::routerrpc::{
 };
 use tonic_lnd::tonic::Code;
 use tonic_lnd::walletrpc::AddrRequest;
-use tonic_lnd::{Client as LndClient, connect};
+use tonic_lnd::{Client as LndClient, ClientBuilder};
 use tracing::{debug, info, trace, warn};
 
 use super::{
@@ -94,6 +94,10 @@ impl GatewayLndClient {
     }
 
     async fn connect(&self) -> Result<LndClient, LightningRpcError> {
+        let client_builder = ClientBuilder::new()
+            .address(self.address.clone())
+            .cert_path(self.tls_cert.clone())
+            .macaroon_path(self.macaroon.clone());
         let mut retries = 0;
         let client = loop {
             if retries >= MAX_LIGHTNING_RETRIES {
@@ -102,13 +106,7 @@ impl GatewayLndClient {
 
             retries += 1;
 
-            match connect(
-                self.address.clone(),
-                self.tls_cert.clone(),
-                self.macaroon.clone(),
-            )
-            .await
-            {
+            match client_builder.clone().build().await {
                 Ok(client) => break client,
                 Err(err) => {
                     debug!(target: LOG_LIGHTNING, err = %err.fmt_compact(), "Couldn't connect to LND, retrying in 1 second...");
@@ -230,6 +228,7 @@ impl GatewayLndClient {
                 index_offset: 0,
                 num_max_invoices: u64::MAX,
                 reversed: false,
+                ..Default::default()
             })
             .await
             .map_err(|status| {
@@ -450,6 +449,7 @@ impl GatewayLndClient {
             preimage: vec![],
             failure_message: vec![],
             failure_code: FailureCode::TemporaryChannelFailure.into(),
+            ..Default::default()
         };
         Self::send_lnd_response(lnd_sender, response).await
     }
@@ -691,6 +691,7 @@ impl ILnRpcClient for GatewayLndClient {
                 public_only: false,
                 private_only: false,
                 peer: vec![],
+                peer_alias_lookup: false,
             })
             .await
             .map_err(|status| LightningRpcError::FailedToGetRouteHints {
@@ -709,6 +710,7 @@ impl ILnRpcClient for GatewayLndClient {
                 .lightning()
                 .get_chan_info(ChanInfoRequest {
                     chan_id: chan.chan_id,
+                    ..Default::default()
                 })
                 .await
                 .map_err(|status| LightningRpcError::FailedToGetRouteHints {
@@ -1008,6 +1010,7 @@ impl ILnRpcClient for GatewayLndClient {
                 preimage: preimage.0.to_vec(),
                 failure_message: vec![],
                 failure_code: FailureCode::TemporaryChannelFailure.into(),
+                ..Default::default()
             };
 
             Self::send_lnd_response(lnd_sender, response).await?;
@@ -1133,6 +1136,7 @@ impl ILnRpcClient for GatewayLndClient {
                 label: String::new(),
                 min_confs: 0,
                 spend_unconfirmed: true,
+                ..Default::default()
             },
             BitcoinAmountOrAll::Amount(amount) => SendCoinsRequest {
                 addr: address.assume_checked().to_string(),
@@ -1144,6 +1148,7 @@ impl ILnRpcClient for GatewayLndClient {
                 label: String::new(),
                 min_confs: 0,
                 spend_unconfirmed: true,
+                ..Default::default()
             },
         };
 
@@ -1244,6 +1249,7 @@ impl ILnRpcClient for GatewayLndClient {
                 public_only: false,
                 private_only: false,
                 peer: pubkey.serialize().to_vec(),
+                peer_alias_lookup: false,
             })
             .await
             .map_err(|e| LightningRpcError::FailedToCloseChannelsWithPeer {
@@ -1320,6 +1326,7 @@ impl ILnRpcClient for GatewayLndClient {
                 public_only: false,
                 private_only: false,
                 peer: vec![],
+                peer_alias_lookup: true,
             })
             .await
         {
@@ -1376,7 +1383,9 @@ impl ILnRpcClient for GatewayLndClient {
 
         let wallet_balance_response = client
             .lightning()
-            .wallet_balance(WalletBalanceRequest {})
+            .wallet_balance(WalletBalanceRequest {
+                ..Default::default()
+            })
             .await
             .map_err(|e| LightningRpcError::FailedToGetBalances {
                 failure_reason: format!("Failed to get on-chain balance {e:?}"),

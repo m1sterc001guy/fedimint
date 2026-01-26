@@ -26,6 +26,7 @@ use tokio::task::spawn_blocking;
 use tokio::time::Instant;
 use tonic_lnd::Client as LndClient;
 use tonic_lnd::lnrpc::GetInfoRequest;
+use tonic_lnd::routerrpc::SendPaymentRequest;
 use tracing::{debug, info, trace, warn};
 
 use crate::util::{ProcessHandle, ProcessManager, poll};
@@ -495,14 +496,14 @@ impl Lnd {
         install_crypto_provider().await;
 
         let client = poll("lnd_connect", || async {
-            tonic_lnd::connect(
-                lnd_rpc_addr.clone(),
-                lnd_tls_cert.clone(),
-                lnd_macaroon.clone(),
-            )
-            .await
-            .context("lnd connect")
-            .map_err(ControlFlow::Continue)
+            tonic_lnd::ClientBuilder::new()
+                .address(lnd_rpc_addr.clone())
+                .cert_path(lnd_tls_cert.clone())
+                .macaroon_path(lnd_macaroon.clone())
+                .build()
+                .await
+                .context("lnd connect")
+                .map_err(ControlFlow::Continue)
         })
         .await?;
 
@@ -521,6 +522,13 @@ impl Lnd {
     ) -> Result<MappedMutexGuard<'_, tonic_lnd::InvoicesClient>> {
         let guard = self.client.lock().await;
         Ok(MutexGuard::map(guard, |client| client.invoices()))
+    }
+
+    pub async fn router_client_lock(
+        &self,
+    ) -> Result<MappedMutexGuard<'_, tonic_lnd::RouterClient>> {
+        let guard = self.client.lock().await;
+        Ok(MutexGuard::map(guard, |client| client.router()))
     }
 
     pub async fn pub_key(&self) -> Result<String> {
@@ -553,32 +561,25 @@ impl Lnd {
     }
 
     pub async fn pay_bolt11_invoice(&self, invoice: String) -> anyhow::Result<()> {
-        let payment = self
-            .lightning_client_lock()
+        let mut payment = self
+            .router_client_lock()
             .await?
-            .send_payment_sync(tonic_lnd::lnrpc::SendRequest {
+            .send_payment_v2(SendPaymentRequest {
                 payment_request: invoice.clone(),
                 ..Default::default()
             })
             .await?
             .into_inner();
-        let payment_status = self
-            .lightning_client_lock()
-            .await?
-            .list_payments(tonic_lnd::lnrpc::ListPaymentsRequest {
-                include_incomplete: true,
-                ..Default::default()
-            })
-            .await?
-            .into_inner()
-            .payments
-            .into_iter()
-            .find(|p| p.payment_hash == payment.payment_hash.encode_hex::<String>())
-            .context("payment not in list")?
-            .status();
-        anyhow::ensure!(payment_status == tonic_lnd::lnrpc::payment::PaymentStatus::Succeeded);
 
-        Ok(())
+        while let Some(update) = payment.message().await? {
+            match update.status() {
+                tonic_lnd::lnrpc::payment::PaymentStatus::Succeeded => return Ok(()),
+                tonic_lnd::lnrpc::payment::PaymentStatus::InFlight => {}
+                _ => return Err(anyhow!("LND lightning payment failed")),
+            }
+        }
+
+        Err(anyhow!("LND lightning payment unknown status"))
     }
 
     pub async fn wait_bolt11_invoice(&self, payment_hash: Vec<u8>) -> anyhow::Result<()> {
