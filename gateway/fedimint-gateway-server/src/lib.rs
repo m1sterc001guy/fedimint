@@ -71,16 +71,16 @@ use fedimint_eventlog::{DBTransactionEventLogExt, EventLogId, StructuredPaymentE
 use fedimint_gateway_common::{
     BackupPayload, ChainSource, CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse,
     ConnectFedPayload, ConnectorType, CreateInvoiceForOperatorPayload, CreateOfferPayload,
-    CreateOfferResponse, DepositAddressPayload, DepositAddressRecheckPayload,
+    CreateOfferResponse, DepositAddressPayload, DepositAddressRecheckPayload, EcashExposure,
     FederationBalanceInfo, FederationConfig, FederationInfo, GatewayBalances, GatewayFedConfig,
     GatewayInfo, GetInvoiceRequest, GetInvoiceResponse, LeaveFedPayload, LightningInfo,
     LightningMode, ListTransactionsPayload, ListTransactionsResponse, MnemonicResponse,
     OpenChannelRequest, PayInvoiceForOperatorPayload, PayOfferPayload, PayOfferResponse,
     PaymentLogPayload, PaymentLogResponse, PaymentStats, PaymentSummaryPayload,
     PaymentSummaryResponse, ReceiveEcashPayload, ReceiveEcashResponse, RegisteredProtocol,
-    SendOnchainRequest, SetFeesPayload, SetMnemonicPayload, SpendEcashPayload, SpendEcashResponse,
-    V1_API_ENDPOINT, WithdrawPayload, WithdrawPreviewPayload, WithdrawPreviewResponse,
-    WithdrawResponse,
+    SendOnchainRequest, SetEcashExposurePayload, SetFeesPayload, SetMnemonicPayload,
+    SpendEcashPayload, SpendEcashResponse, V1_API_ENDPOINT, WithdrawPayload,
+    WithdrawPreviewPayload, WithdrawPreviewResponse, WithdrawResponse,
 };
 use fedimint_gateway_server_db::{GatewayDbtxNcExt as _, get_gatewayd_database_migrations};
 pub use fedimint_gateway_ui::IAdminGateway;
@@ -1763,6 +1763,7 @@ impl IAdminGateway for Gateway {
             transaction_fee: self.default_transaction_fees,
             // Note: deprecated, unused
             _connector: ConnectorType::Tcp,
+            ecash_exposure: EcashExposure::default(),
         };
 
         let mnemonic = Self::load_mnemonic(&self.gateway_db)
@@ -1843,6 +1844,33 @@ impl IAdminGateway for Gateway {
         );
 
         Ok(federation_info)
+    }
+
+    async fn handle_set_ecash_exposure_msg(
+        &self,
+        payload: SetEcashExposurePayload,
+    ) -> AdminResult<()> {
+        let mut dbtx = self.gateway_db.begin_transaction().await;
+        let mut fed_config = dbtx
+            .load_federation_config(payload.federation_id)
+            .await
+            .ok_or(FederationNotConnected {
+                federation_id_prefix: payload.federation_id.to_prefix(),
+            })?;
+
+        // TODO: Add some basic sanity checks here
+
+        if let Some(target) = payload.target {
+            fed_config.ecash_exposure.target = Some(target);
+        }
+
+        if let Some(threshold) = payload.threshold {
+            fed_config.ecash_exposure.threshold = Some(threshold);
+        }
+
+        dbtx.save_federation_config(&fed_config).await;
+        dbtx.commit_tx().await;
+        Ok(())
     }
 
     /// Handles a request to change the lightning or transaction fees for all

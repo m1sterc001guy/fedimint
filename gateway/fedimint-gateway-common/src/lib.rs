@@ -49,6 +49,7 @@ pub const PAY_OFFER_FOR_OPERATOR_ENDPOINT: &str = "/pay_offer_for_operator";
 pub const PAYMENT_LOG_ENDPOINT: &str = "/payment_log";
 pub const PAYMENT_SUMMARY_ENDPOINT: &str = "/payment_summary";
 pub const RECEIVE_ECASH_ENDPOINT: &str = "/receive_ecash";
+pub const SET_ECASH_EXPOSURE_ENDPOINT: &str = "/set_ecash_exposure";
 pub const SET_FEES_ENDPOINT: &str = "/set_fees";
 pub const STOP_ENDPOINT: &str = "/stop";
 pub const SEND_ONCHAIN_ENDPOINT: &str = "/send_onchain";
@@ -147,6 +148,14 @@ pub struct FederationConfig {
     pub transaction_fee: PaymentFee,
     #[allow(deprecated)] // only here for decoding backward-compat
     pub _connector: ConnectorType,
+    #[serde(default)]
+    pub ecash_exposure: EcashExposure,
+}
+
+#[derive(Default, Debug, Clone, Eq, PartialEq, Encodable, Decodable, Serialize, Deserialize)]
+pub struct EcashExposure {
+    pub target: Option<Amount>,
+    pub threshold: Option<Amount>,
 }
 
 /// Information about one of the feds we are connected to
@@ -185,6 +194,13 @@ pub struct SetFeesPayload {
     pub lightning_parts_per_million: Option<u64>,
     pub transaction_base: Option<Amount>,
     pub transaction_parts_per_million: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SetEcashExposurePayload {
+    pub federation_id: FederationId,
+    pub target: Option<Amount>,
+    pub threshold: Option<Amount>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

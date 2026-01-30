@@ -14,7 +14,7 @@ use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::{Amount, impl_db_lookup, impl_db_record, push_db_pair_items, secp256k1};
 use fedimint_gateway_common::envs::FM_GATEWAY_IROH_SECRET_KEY_OVERRIDE_ENV;
-use fedimint_gateway_common::{ConnectorType, FederationConfig, RegisteredProtocol};
+use fedimint_gateway_common::{ConnectorType, EcashExposure, FederationConfig, RegisteredProtocol};
 use fedimint_ln_common::serde_routing_fees;
 use fedimint_lnv2_common::contracts::{IncomingContract, PaymentImage};
 use fedimint_lnv2_common::gateway_api::PaymentFee;
@@ -634,6 +634,7 @@ async fn migrate_to_v4(mut ctx: GeneralDbMigrationFnContext<'_>) -> Result<(), a
                 transaction_fee: PaymentFee::TRANSACTION_FEE_DEFAULT,
                 // Note: deprecated, unused
                 _connector: ConnectorType::Tcp,
+                ecash_exposure: EcashExposure::default(),
             };
             let new_key = FederationConfigKey { id: fed_id.id };
             dbtx.insert_new_entry(&new_key, &new_fed_config).await;

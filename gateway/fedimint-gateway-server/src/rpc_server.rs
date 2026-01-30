@@ -25,8 +25,9 @@ use fedimint_gateway_common::{
     PAY_INVOICE_FOR_OPERATOR_ENDPOINT, PAY_OFFER_FOR_OPERATOR_ENDPOINT, PAYMENT_LOG_ENDPOINT,
     PAYMENT_SUMMARY_ENDPOINT, PayInvoiceForOperatorPayload, PayOfferPayload, PaymentLogPayload,
     PaymentSummaryPayload, RECEIVE_ECASH_ENDPOINT, ReceiveEcashPayload, SEND_ONCHAIN_ENDPOINT,
-    SET_FEES_ENDPOINT, SPEND_ECASH_ENDPOINT, STOP_ENDPOINT, SendOnchainRequest, SetFeesPayload,
-    SetMnemonicPayload, SpendEcashPayload, V1_API_ENDPOINT, WITHDRAW_ENDPOINT, WithdrawPayload,
+    SET_ECASH_EXPOSURE_ENDPOINT, SET_FEES_ENDPOINT, SPEND_ECASH_ENDPOINT, STOP_ENDPOINT,
+    SendOnchainRequest, SetEcashExposurePayload, SetFeesPayload, SetMnemonicPayload,
+    SpendEcashPayload, V1_API_ENDPOINT, WITHDRAW_ENDPOINT, WithdrawPayload,
 };
 use fedimint_gateway_ui::IAdminGateway;
 use fedimint_ln_common::gateway_endpoint_constants::{
@@ -410,6 +411,13 @@ fn routes(gateway: Arc<Gateway>, task_group: TaskGroup, handlers: &mut Handlers)
     );
     let authenticated_routes = register_post_handler(
         handlers,
+        SET_ECASH_EXPOSURE_ENDPOINT,
+        set_ecash_exposure,
+        is_authenticated,
+        authenticated_routes,
+    );
+    let authenticated_routes = register_post_handler(
+        handlers,
         SET_FEES_ENDPOINT,
         set_fees,
         is_authenticated,
@@ -544,6 +552,15 @@ async fn backup(
     Json(payload): Json<BackupPayload>,
 ) -> Result<Json<serde_json::Value>, GatewayError> {
     gateway.handle_backup_msg(payload).await?;
+    Ok(Json(json!(())))
+}
+
+#[instrument(target = LOG_GATEWAY, skip_all, err, fields(?payload))]
+async fn set_ecash_exposure(
+    Extension(gateway): Extension<Arc<Gateway>>,
+    Json(payload): Json<SetEcashExposurePayload>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    gateway.handle_set_ecash_exposure_msg(payload).await?;
     Ok(Json(json!(())))
 }
 

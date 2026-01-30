@@ -27,9 +27,9 @@ use fedimint_gateway_common::{
     GatewayInfo, LeaveFedPayload, LightningMode, ListTransactionsPayload, ListTransactionsResponse,
     MnemonicResponse, OpenChannelRequest, PayInvoiceForOperatorPayload, PaymentLogPayload,
     PaymentLogResponse, PaymentSummaryPayload, PaymentSummaryResponse, ReceiveEcashPayload,
-    ReceiveEcashResponse, SendOnchainRequest, SetFeesPayload, SetMnemonicPayload,
-    SpendEcashPayload, SpendEcashResponse, WithdrawPayload, WithdrawPreviewPayload,
-    WithdrawPreviewResponse, WithdrawResponse,
+    ReceiveEcashResponse, SendOnchainRequest, SetEcashExposurePayload, SetFeesPayload,
+    SetMnemonicPayload, SpendEcashPayload, SpendEcashResponse, WithdrawPayload,
+    WithdrawPreviewPayload, WithdrawPreviewResponse, WithdrawResponse,
 };
 use fedimint_ln_common::contracts::Preimage;
 use fedimint_logging::LOG_GATEWAY_UI;
@@ -134,6 +134,11 @@ pub trait IAdminGateway {
     ) -> Result<FederationInfo, Self::Error>;
 
     async fn handle_set_fees_msg(&self, payload: SetFeesPayload) -> Result<(), Self::Error>;
+
+    async fn handle_set_ecash_exposure_msg(
+        &self,
+        payload: SetEcashExposurePayload,
+    ) -> Result<(), Self::Error>;
 
     async fn handle_mnemonic_msg(&self) -> Result<MnemonicResponse, Self::Error>;
 

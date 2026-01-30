@@ -2,8 +2,10 @@ use clap::Subcommand;
 use fedimint_core::Amount;
 use fedimint_core::config::FederationId;
 use fedimint_core::util::SafeUrl;
-use fedimint_gateway_client::{get_config, get_info, set_fees, set_mnemonic};
-use fedimint_gateway_common::{ConfigPayload, SetFeesPayload, SetMnemonicPayload};
+use fedimint_gateway_client::{get_config, get_info, set_ecash_exposure, set_fees, set_mnemonic};
+use fedimint_gateway_common::{
+    ConfigPayload, SetEcashExposurePayload, SetFeesPayload, SetMnemonicPayload,
+};
 use fedimint_ln_common::client::GatewayApi;
 
 use crate::print_response;
@@ -19,6 +21,17 @@ pub enum ConfigCommands {
     Display {
         #[clap(long)]
         federation_id: Option<FederationId>,
+    },
+    /// Configure the gateway's ecash exposure to a specific federation
+    SetEcashExposure {
+        #[clap(long)]
+        federation_id: FederationId,
+
+        #[clap(long)]
+        target: Option<Amount>,
+
+        #[clap(long)]
+        threshold: Option<Amount>,
     },
     /// Set the gateway's lightning or transaction fees
     SetFees {
@@ -66,6 +79,22 @@ impl ConfigCommands {
                     })
                     .collect::<Vec<_>>();
                 print_response(federations);
+            }
+            Self::SetEcashExposure {
+                federation_id,
+                target,
+                threshold,
+            } => {
+                set_ecash_exposure(
+                    client,
+                    base_url,
+                    SetEcashExposurePayload {
+                        federation_id,
+                        target,
+                        threshold,
+                    },
+                )
+                .await?;
             }
             Self::SetFees {
                 federation_id,

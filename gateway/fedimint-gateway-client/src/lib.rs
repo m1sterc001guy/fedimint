@@ -17,9 +17,9 @@ use fedimint_gateway_common::{
     PAYMENT_LOG_ENDPOINT, PAYMENT_SUMMARY_ENDPOINT, PayInvoiceForOperatorPayload, PayOfferPayload,
     PayOfferResponse, PaymentLogPayload, PaymentLogResponse, PaymentSummaryPayload,
     PaymentSummaryResponse, RECEIVE_ECASH_ENDPOINT, ReceiveEcashPayload, ReceiveEcashResponse,
-    SEND_ONCHAIN_ENDPOINT, SET_FEES_ENDPOINT, SPEND_ECASH_ENDPOINT, STOP_ENDPOINT,
-    SendOnchainRequest, SetFeesPayload, SetMnemonicPayload, SpendEcashPayload, SpendEcashResponse,
-    WITHDRAW_ENDPOINT, WithdrawPayload, WithdrawResponse,
+    SEND_ONCHAIN_ENDPOINT, SET_ECASH_EXPOSURE_ENDPOINT, SET_FEES_ENDPOINT, SPEND_ECASH_ENDPOINT,
+    STOP_ENDPOINT, SendOnchainRequest, SetEcashExposurePayload, SetFeesPayload, SetMnemonicPayload,
+    SpendEcashPayload, SpendEcashResponse, WITHDRAW_ENDPOINT, WithdrawPayload, WithdrawResponse,
 };
 use fedimint_ln_common::Method;
 use fedimint_ln_common::client::GatewayApi;
@@ -93,6 +93,21 @@ pub async fn backup(
 ) -> ServerResult<()> {
     client
         .request(base_url, Method::POST, BACKUP_ENDPOINT, Some(payload))
+        .await
+}
+
+pub async fn set_ecash_exposure(
+    client: &GatewayApi,
+    base_url: &SafeUrl,
+    payload: SetEcashExposurePayload,
+) -> ServerResult<()> {
+    client
+        .request(
+            base_url,
+            Method::POST,
+            SET_ECASH_EXPOSURE_ENDPOINT,
+            Some(payload),
+        )
         .await
 }
 

@@ -7,7 +7,7 @@ use fedimint_core::db::Database;
 use fedimint_core::db::mem_impl::MemDatabase;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::util::SafeUrl;
-use fedimint_gateway_common::{ConnectorType, RegisteredProtocol};
+use fedimint_gateway_common::{ConnectorType, EcashExposure, RegisteredProtocol};
 use fedimint_lnv2_common::gateway_api::PaymentFee;
 use fedimint_logging::TracingSetup;
 use fedimint_testing::db::{
@@ -191,6 +191,7 @@ async fn test_isolated_db_migration() -> anyhow::Result<()> {
             transaction_fee: PaymentFee::TRANSACTION_FEE_DEFAULT,
             // Note: deprecated, unused
             _connector: ConnectorType::Tcp,
+            ecash_exposure: EcashExposure::default(),
         },
     )
     .await;
@@ -211,6 +212,7 @@ async fn test_isolated_db_migration() -> anyhow::Result<()> {
             transaction_fee: PaymentFee::TRANSACTION_FEE_DEFAULT,
             // Note: deprecated, unused
             _connector: ConnectorType::Tcp,
+            ecash_exposure: EcashExposure::default(),
         },
     )
     .await;
