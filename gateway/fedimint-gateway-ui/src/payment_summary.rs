@@ -7,8 +7,8 @@ use fedimint_core::module::serde_json;
 use fedimint_core::time::now;
 use fedimint_eventlog::{Event, EventKind, EventLogId};
 use fedimint_gateway_common::{
-    FederationInfo, PaymentLogPayload, PaymentLogResponse, PaymentStats, PaymentSummaryPayload,
-    PaymentSummaryResponse,
+    EcashExposureWithdraw, FederationInfo, PaymentLogPayload, PaymentLogResponse, PaymentStats,
+    PaymentSummaryPayload, PaymentSummaryResponse,
 };
 use fedimint_gwv2_client::events::{
     CompleteLightningPaymentSucceeded, IncomingPaymentFailed, IncomingPaymentStarted,
@@ -42,6 +42,7 @@ const LIGHTNING_EVENTS: &[(&str, EventKind)] = &[
 const WALLET_EVENTS: &[(&str, EventKind)] = &[
     ("Withdraw Request", WithdrawRequest::KIND),
     ("Deposit Confirmed", DepositConfirmed::KIND),
+    ("Auto Withdraw Request", EcashExposureWithdraw::KIND),
 ];
 
 /// Event categories for UI display - E-cash events

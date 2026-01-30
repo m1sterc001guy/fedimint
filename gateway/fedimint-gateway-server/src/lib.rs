@@ -74,14 +74,14 @@ use fedimint_gateway_common::{
     BackupPayload, ChainSource, CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse,
     ConnectFedPayload, ConnectorType, CreateInvoiceForOperatorPayload, CreateOfferPayload,
     CreateOfferResponse, DepositAddressPayload, DepositAddressRecheckPayload, EcashExposure,
-    FederationBalanceInfo, FederationConfig, FederationInfo, GatewayBalances, GatewayFedConfig,
-    GatewayInfo, GetInvoiceRequest, GetInvoiceResponse, LeaveFedPayload, LightningInfo,
-    LightningMode, ListTransactionsPayload, ListTransactionsResponse, MnemonicResponse,
-    OpenChannelRequest, PayInvoiceForOperatorPayload, PayOfferPayload, PayOfferResponse,
-    PaymentLogPayload, PaymentLogResponse, PaymentStats, PaymentSummaryPayload,
-    PaymentSummaryResponse, ReceiveEcashPayload, ReceiveEcashResponse, RegisteredProtocol,
-    SendOnchainRequest, SetEcashExposurePayload, SetFeesPayload, SetMnemonicPayload,
-    SpendEcashPayload, SpendEcashResponse, V1_API_ENDPOINT, WithdrawPayload,
+    EcashExposureWithdraw, FederationBalanceInfo, FederationConfig, FederationInfo,
+    GatewayBalances, GatewayFedConfig, GatewayInfo, GetInvoiceRequest, GetInvoiceResponse,
+    LeaveFedPayload, LightningInfo, LightningMode, ListTransactionsPayload,
+    ListTransactionsResponse, MnemonicResponse, OpenChannelRequest, PayInvoiceForOperatorPayload,
+    PayOfferPayload, PayOfferResponse, PaymentLogPayload, PaymentLogResponse, PaymentStats,
+    PaymentSummaryPayload, PaymentSummaryResponse, ReceiveEcashPayload, ReceiveEcashResponse,
+    RegisteredProtocol, SendOnchainRequest, SetEcashExposurePayload, SetFeesPayload,
+    SetMnemonicPayload, SpendEcashPayload, SpendEcashResponse, V1_API_ENDPOINT, WithdrawPayload,
     WithdrawPreviewPayload, WithdrawPreviewResponse, WithdrawResponse,
 };
 use fedimint_gateway_server_db::{GatewayDbtxNcExt as _, get_gatewayd_database_migrations};
@@ -748,6 +748,11 @@ impl Gateway {
                 match withdraw_response {
                     Ok(withdraw) => {
                         info!(target: LOG_GATEWAY, txid = %withdraw.txid, ?withdraw.fees, "Successfully issued auto withdraw due to ecash exposure");
+                        let event: EcashExposureWithdraw = withdraw.into();
+                        let wallet_module = client
+                            .get_first_module::<WalletClientModule>()
+                            .expect("No wallet module available");
+                        client.log_event(Some(wallet_module.id), event).await;
                     }
                     Err(err) => {
                         warn!(target: LOG_GATEWAY, err = %err.fmt_compact(), "Error while pegging out due to ecash exposure");
@@ -1169,6 +1174,9 @@ impl Gateway {
             .expect("Must have client module")
             .allocate_deposit_address_expert_only(())
             .await?;
+        //let wallet =
+        // self.select_client(payload.federation_id).await?.value().
+        // get_first_module::<WalletClientModule>()?;
         Ok(address)
     }
 

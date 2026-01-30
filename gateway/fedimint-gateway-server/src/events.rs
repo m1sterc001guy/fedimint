@@ -5,6 +5,7 @@ use fedimint_client::ClientHandle;
 use fedimint_eventlog::{
     DBTransactionEventLogExt, Event, EventKind, EventLogId, PersistedLogEntry,
 };
+use fedimint_gateway_common::EcashExposureWithdraw;
 use fedimint_gwv2_client::events::{
     CompleteLightningPaymentSucceeded, IncomingPaymentFailed, IncomingPaymentStarted,
     IncomingPaymentSucceeded, OutgoingPaymentFailed, OutgoingPaymentStarted,
@@ -13,7 +14,7 @@ use fedimint_gwv2_client::events::{
 use fedimint_mint_client::event::{OOBNotesReissued, OOBNotesSpent};
 use fedimint_wallet_client::events::{DepositConfirmed, WithdrawRequest};
 
-pub const ALL_GATEWAY_EVENTS: [EventKind; 11] = [
+pub const ALL_GATEWAY_EVENTS: [EventKind; 12] = [
     OutgoingPaymentStarted::KIND,
     OutgoingPaymentSucceeded::KIND,
     OutgoingPaymentFailed::KIND,
@@ -25,6 +26,7 @@ pub const ALL_GATEWAY_EVENTS: [EventKind; 11] = [
     OOBNotesReissued::KIND,
     WithdrawRequest::KIND,
     DepositConfirmed::KIND,
+    EcashExposureWithdraw::KIND,
 ];
 
 /// Searches through the event log for all events that occurred within the

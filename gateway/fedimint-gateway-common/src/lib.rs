@@ -5,18 +5,20 @@ use std::time::{Duration, SystemTime};
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::hashes::sha256;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{Address, Network, OutPoint};
+use bitcoin::{Address, Network, OutPoint, Txid};
 use clap::Subcommand;
 use envs::{
     FM_LDK_ALIAS_ENV, FM_LND_MACAROON_ENV, FM_LND_RPC_ADDR_ENV, FM_LND_TLS_CERT_ENV, FM_PORT_LDK,
 };
 use fedimint_core::config::{FederationId, JsonClientConfig};
-use fedimint_core::core::OperationId;
+use fedimint_core::core::{ModuleKind, OperationId};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::util::{SafeUrl, get_average, get_median};
 use fedimint_core::{Amount, BitcoinAmountOrAll, secp256k1};
-use fedimint_eventlog::{EventKind, EventLogId, PersistedLogEntry, StructuredPaymentEvents};
+use fedimint_eventlog::{
+    Event, EventKind, EventLogId, EventPersistence, PersistedLogEntry, StructuredPaymentEvents,
+};
 use fedimint_lnv2_common::gateway_api::PaymentFee;
 use fedimint_mint_client::OOBNotes;
 use fedimint_wallet_client::PegOutFees;
@@ -562,4 +564,27 @@ pub enum RegisteredProtocol {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SetMnemonicPayload {
     pub words: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct EcashExposureWithdraw {
+    pub txid: Txid,
+    pub fees: PegOutFees,
+}
+
+impl Event for EcashExposureWithdraw {
+    const MODULE: Option<ModuleKind> = Some(fedimint_wallet_client::KIND);
+
+    const KIND: EventKind = EventKind::from_static("auto-withdraw-request");
+
+    const PERSISTENCE: fedimint_eventlog::EventPersistence = EventPersistence::Persistent;
+}
+
+impl From<WithdrawResponse> for EcashExposureWithdraw {
+    fn from(response: WithdrawResponse) -> Self {
+        EcashExposureWithdraw {
+            txid: response.txid,
+            fees: response.fees,
+        }
+    }
 }
