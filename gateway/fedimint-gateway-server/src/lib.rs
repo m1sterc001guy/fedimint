@@ -52,7 +52,9 @@ use fedimint_client::secret::RootSecretStrategy;
 use fedimint_client::{Client, ClientHandleArc};
 use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
-use fedimint_core::db::{Committable, Database, DatabaseTransaction, apply_migrations};
+use fedimint_core::db::{
+    Committable, Database, DatabaseTransaction, NonCommittable, apply_migrations,
+};
 use fedimint_core::envs::is_env_var_set;
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::CommonModuleInit;
@@ -651,6 +653,7 @@ impl Gateway {
         self.load_clients().await?;
         self.start_gateway(runtime, mnemonic_receiver.resubscribe());
         self.spawn_backup_task();
+        self.spawn_ecash_exposure_task();
         // start metrics server
         fedimint_metrics::spawn_api_server(self.metrics_listen, self.task_group.clone()).await?;
         // start webserver last to avoid handling requests before fully initialized
@@ -678,6 +681,80 @@ impl Gateway {
                     }
                 }
             });
+    }
+
+    fn spawn_ecash_exposure_task(&self) {
+        let self_copy = self.clone();
+        self.task_group
+            .spawn_cancellable_silent("ecash exposure", async move {
+                const ECASH_EXPOSURE_INTERVAL: Duration = Duration::from_secs(30);
+                let mut interval = tokio::time::interval(ECASH_EXPOSURE_INTERVAL);
+                interval.tick().await;
+                loop {
+                    let mut dbtx = self_copy.gateway_db.begin_transaction_nc().await;
+                    self_copy.check_ecash_exposure(&mut dbtx).await;
+                    interval.tick().await;
+                }
+            });
+    }
+
+    async fn check_ecash_exposure(&self, dbtx: &mut DatabaseTransaction<'_, NonCommittable>) {
+        let fed_configs = dbtx.load_federation_configs().await;
+        for (fed_id, fed_config) in fed_configs.iter() {
+            // Unless the threshold is set, there is nothing to do
+            let Some(threshold) = fed_config.ecash_exposure.threshold else {
+                continue;
+            };
+
+            // Unless the target is set, there is nothing to do
+            let Some(target) = fed_config.ecash_exposure.target else {
+                continue;
+            };
+
+            // if the balance of the current federation has breached the threshold, we need
+            // to do a pegout transaction to our own onchain wallet
+            let fed_manager = self.federation_manager.read().await;
+            let client = fed_manager
+                .client(fed_id)
+                .expect("FederationConfig and client are out of sync")
+                .value();
+            let Ok(balance) = client.get_balance_for_btc().await else {
+                continue;
+            };
+
+            if balance >= threshold {
+                let Some(peg_out_amount) = balance.checked_sub(target) else {
+                    warn!(target: LOG_GATEWAY, balance = %balance, target = %target, "Invalid target amount for auto peg-out");
+                    continue;
+                };
+
+                let Ok(address) = self.handle_get_ln_onchain_address_msg().await else {
+                    warn!(target: LOG_GATEWAY, federation_id = %fed_id, "Could not get onchain address for auto peg-out due to ecash exposure");
+                    continue;
+                };
+
+                info!(target: LOG_GATEWAY, balance = %balance, threshold = %threshold, target = %target, peg_out_amount = %peg_out_amount, address = %address, "Issuing auto peg-out due to ecash exposure");
+                let withdraw_response = self
+                    .handle_withdraw_msg(WithdrawPayload {
+                        federation_id: *fed_id,
+                        amount: BitcoinAmountOrAll::Amount(bitcoin::Amount::from_sat(
+                            peg_out_amount.sats_round_down(),
+                        )),
+                        address: address.into_unchecked(),
+                        quoted_fees: None,
+                    })
+                    .await;
+
+                match withdraw_response {
+                    Ok(withdraw) => {
+                        info!(target: LOG_GATEWAY, txid = %withdraw.txid, ?withdraw.fees, "Successfully issued auto withdraw due to ecash exposure");
+                    }
+                    Err(err) => {
+                        warn!(target: LOG_GATEWAY, err = %err.fmt_compact(), "Error while pegging out due to ecash exposure");
+                    }
+                }
+            }
+        }
     }
 
     /// Loops through all federations and checks their last save backup time. If
@@ -1850,6 +1927,7 @@ impl IAdminGateway for Gateway {
         &self,
         payload: SetEcashExposurePayload,
     ) -> AdminResult<()> {
+        info!(target: LOG_GATEWAY, "Handling set_ecash_exposure request...");
         let mut dbtx = self.gateway_db.begin_transaction().await;
         let mut fed_config = dbtx
             .load_federation_config(payload.federation_id)
@@ -1870,6 +1948,7 @@ impl IAdminGateway for Gateway {
 
         dbtx.save_federation_config(&fed_config).await;
         dbtx.commit_tx().await;
+        info!(target: LOG_GATEWAY, "Successfully set ecash exposure");
         Ok(())
     }
 
