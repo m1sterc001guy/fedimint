@@ -120,6 +120,47 @@ async fn transaction_with_invalid_signature_is_rejected() -> anyhow::Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_send_oob_notes() -> anyhow::Result<()> {
+    // Give client1 initial balance
+    let fed = fixtures().new_fed_degraded().await;
+    let (client1, _) = fed.two_clients().await;
+    issue_ecash(&client1, sats(10000)).await?;
+
+    let client1_mint = client1.get_first_module::<MintClientModule>()?;
+    let notes = client1_mint
+        .send_oob_notes(Amount::from_sats(100), ())
+        .await?;
+    let total_amount = notes.total_amount();
+    info!(target: LOG_TEST, %total_amount, "Sent sats");
+
+    let notes = client1_mint
+        .send_oob_notes(Amount::from_sats(100), ())
+        .await?;
+    let total_amount = notes.total_amount();
+    info!(target: LOG_TEST, %total_amount, "Sent sats");
+
+    let notes = client1_mint
+        .send_oob_notes(Amount::from_sats(100), ())
+        .await?;
+    let total_amount = notes.total_amount();
+    info!(target: LOG_TEST, %total_amount, "Sent sats");
+
+    let notes = client1_mint
+        .send_oob_notes(Amount::from_sats(100), ())
+        .await?;
+    let total_amount = notes.total_amount();
+    info!(target: LOG_TEST, %total_amount, "Sent sats");
+
+    let notes = client1_mint
+        .send_oob_notes(Amount::from_sats(100), ())
+        .await?;
+    let total_amount = notes.total_amount();
+    info!(target: LOG_TEST, %total_amount, "Sent sats");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sends_ecash_out_of_band() -> anyhow::Result<()> {
     // Give client1 initial balance
     let fed = fixtures().new_fed_degraded().await;
