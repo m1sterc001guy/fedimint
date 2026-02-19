@@ -154,3 +154,8 @@ pub const FM_GATEWAY_IROH_LISTEN_ADDR_ENV: &str = "FM_GATEWAY_IROH_LISTEN_ADDR";
 
 // Env variable to set the metrics listen addr for the gateway
 pub const FM_GATEWAY_METRICS_LISTEN_ADDR_ENV: &str = "FM_GATEWAY_METRICS_LISTEN_ADDR";
+
+// payjoin.rs
+
+// Env variable to override payjoin-mailroom binary
+pub const FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE_ENV: &str = "FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE";

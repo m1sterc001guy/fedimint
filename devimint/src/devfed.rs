@@ -8,13 +8,13 @@ use fedimint_logging::LOG_DEVIMINT;
 use tokio::join;
 use tracing::{debug, info};
 
-use crate::LightningNode;
 use crate::external::{Bitcoind, Esplora, Lnd, NamedGateway, open_channels_between_gateways};
 use crate::federation::{Client, Federation};
 use crate::gatewayd::Gatewayd;
 use crate::recurringd::Recurringd;
 use crate::recurringdv2::Recurringdv2;
 use crate::util::{ProcessManager, supports_lnv2};
+use crate::{LightningNode, PayjoinMailroom};
 
 async fn spawn_drop<T>(t: T)
 where
@@ -38,6 +38,7 @@ pub struct DevFed {
     pub esplora: Esplora,
     pub recurringd: Recurringd,
     pub recurringdv2: Recurringdv2,
+    pub payjoin: PayjoinMailroom,
 }
 
 impl DevFed {
@@ -52,6 +53,7 @@ impl DevFed {
             esplora,
             recurringd,
             recurringdv2,
+            payjoin,
         } = self;
 
         join!(
@@ -64,6 +66,7 @@ impl DevFed {
             spawn_drop(bitcoind),
             spawn_drop(recurringd),
             spawn_drop(recurringdv2),
+            spawn_drop(payjoin),
         );
     }
 }
@@ -93,6 +96,7 @@ pub struct DevJitFed {
     fed_epoch_generated: JitArc<()>,
     channel_opened: JitArc<()>,
     recurringd_connected: JitArc<()>,
+    payjoin: JitArc<PayjoinMailroom>,
 
     skip_setup: bool,
     pre_dkg: bool,
@@ -364,6 +368,17 @@ impl DevJitFed {
             }
         });
 
+        let payjoin = JitTryAnyhow::new_try({
+            let process_mgr = process_mgr.to_owned();
+            move || async move {
+                debug!(target: LOG_DEVIMINT, "Starting payjoin-mailroom...");
+                let start_time = fedimint_core::time::now();
+                let payjoin = PayjoinMailroom::new(&process_mgr).await?;
+                info!(target: LOG_DEVIMINT, elapsed_ms = %start_time.elapsed()?.as_millis(), "Started recurringdv2");
+                Ok(Arc::new(payjoin))
+            }
+        });
+
         Ok(DevJitFed {
             bitcoind,
             lnd,
@@ -383,6 +398,7 @@ impl DevJitFed {
             recurringd_connected,
             skip_setup,
             pre_dkg,
+            payjoin,
         })
     }
 
@@ -444,6 +460,10 @@ impl DevJitFed {
         Ok(self.recurringdv2.get_try().await?.deref())
     }
 
+    pub async fn payjoin(&self) -> anyhow::Result<&PayjoinMailroom> {
+        Ok(self.payjoin.get_try().await?.deref())
+    }
+
     pub async fn finalize(&self, process_mgr: &ProcessManager) -> anyhow::Result<()> {
         let fed_size = process_mgr.globals.FM_FED_SIZE;
         let offline_nodes = process_mgr.globals.FM_OFFLINE_NODES;
@@ -487,6 +507,7 @@ impl DevJitFed {
             esplora: self.esplora().await?.to_owned(),
             recurringd: self.recurringd().await?.to_owned(),
             recurringdv2: self.recurringdv2().await?.to_owned(),
+            payjoin: self.payjoin().await?.to_owned(),
         })
     }
 

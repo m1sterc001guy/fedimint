@@ -33,6 +33,10 @@
       url = "github:rustsec/advisory-db";
       flake = false;
     };
+    rust-payjoin = {
+      url = "github:payjoin/rust-payjoin";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -88,6 +92,7 @@
             (final: prev: {
               cargo-deluxe = cargo-deluxe.packages.${system}.default;
               cargo-audit = nixpkgs-unstable.legacyPackages.${system}.cargo-audit;
+              payjoin-mailroom = inputs.rust-payjoin.packages.${system}.payjoin-mailroom;
             })
           ];
         };
@@ -334,6 +339,9 @@
                     pkgs.nil
                     pkgs.convco
                     pkgs.nodePackages.bash-language-server
+
+                    # Payjoin testing infrastructure
+                    pkgs.payjoin-mailroom
                   ]
                   ++ lib.optionals (!stdenv.isAarch64 && !stdenv.isDarwin) [ pkgs.semgrep ]
                   ++ lib.optionals (!stdenv.isDarwin) [

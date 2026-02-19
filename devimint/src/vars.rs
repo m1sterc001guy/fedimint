@@ -159,6 +159,7 @@ declare_vars! {
         FM_PORT_FAUCET: u16 = 15243u16; env: "FM_PORT_FAUCET";
         FM_PORT_RECURRINGD: u16 = port_alloc(1)?; env: "FM_PORT_RECURRINGD";
         FM_PORT_RECURRINGDV2: u16 = port_alloc(1)?; env: "FM_PORT_RECURRINGDV2";
+        FM_PORT_PAYJOIN_MAILROOM: u16 = port_alloc(1)?; env: "FM_PORT_PAYJOIN_MAILROOM";
 
         FM_FEDERATION_BASE_PORT: u16 = federation_base_ports; env: "FM_FEDERATION_BASE_PORT";
         fedimintd_overrides: FederationsNetOverrides = FederationsNetOverrides::new(FM_FEDERATION_BASE_PORT, num_feds, NumPeers::from(fed_size)); env: "NOT_USED_FOR_ANYTHING";
@@ -171,6 +172,7 @@ declare_vars! {
         FM_CLIENT_BASE_DIR: PathBuf = mkdir(FM_TEST_DIR.join("clients")).await?; env: "FM_CLIENT_BASE_DIR";
         FM_CLIENT_DIR: PathBuf = mkdir(FM_TEST_DIR.join("clients").join("default-0")).await?; env: "FM_CLIENT_DIR";
         FM_ESPLORA_DIR: PathBuf = mkdir(FM_TEST_DIR.join("esplora")).await?; env: "FM_ESPLORA_DIR";
+        FM_PAYJOIN_DIR: PathBuf = mkdir(FM_TEST_DIR.join("payjoin")).await?; env: "FM_PAYJOIN_DIR";
         FM_READY_FILE: PathBuf = FM_TEST_DIR.join("ready"); env: "FM_READY_FILE";
 
         FM_LND_RPC_ADDR: String = f!("https://localhost:{FM_PORT_LND_RPC}"); env: "FM_LND_RPC_ADDR";
@@ -218,6 +220,10 @@ declare_vars! {
         FM_DEFAULT_BITCOIN_RPC_KIND: String = "bitcoind"; env: FM_DEFAULT_BITCOIN_RPC_KIND_ENV;
 
         FM_ROCKSDB_WRITE_BUFFER_SIZE : String = (1 << 20).to_string(); env: "FM_ROCKSDB_WRITE_BUFFER_SIZE";
+
+        // Payjoin testing infrastructure
+        FM_PAYJOIN_DIRECTORY_URL: String = f!("http://127.0.0.1:{FM_PORT_PAYJOIN_MAILROOM}"); env: "FM_PAYJOIN_DIRECTORY_URL";
+        FM_PAYJOIN_OHTTP_RELAY_URL: String = f!("http://127.0.0.1:{FM_PORT_PAYJOIN_MAILROOM}"); env: "FM_PAYJOIN_OHTTP_RELAY_URL";
     }
 }
 

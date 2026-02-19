@@ -34,7 +34,8 @@ use crate::envs::{
     FM_GATEWAY_CLI_BASE_EXECUTABLE_ENV, FM_GATEWAYD_BASE_EXECUTABLE_ENV, FM_GWCLI_LDK_ENV,
     FM_GWCLI_LND_ENV, FM_LNCLI_BASE_EXECUTABLE_ENV, FM_LNCLI_ENV, FM_LND_BASE_EXECUTABLE_ENV,
     FM_LOAD_TEST_TOOL_BASE_EXECUTABLE_ENV, FM_LOGS_DIR_ENV, FM_MINT_CLIENT_ENV,
-    FM_RECOVERYTOOL_BASE_EXECUTABLE_ENV, FM_RECURRINGD_BASE_EXECUTABLE_ENV,
+    FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE_ENV, FM_RECOVERYTOOL_BASE_EXECUTABLE_ENV,
+    FM_RECURRINGD_BASE_EXECUTABLE_ENV,
 };
 
 // If a binary doesn't provide a clap version, default to the first stable
@@ -279,6 +280,11 @@ impl Command {
 
     pub fn kill_on_drop(mut self, kill: bool) -> Self {
         self.cmd.kill_on_drop(kill);
+        self
+    }
+
+    pub fn current_dir<P: AsRef<std::path::Path>>(mut self, dir: P) -> Self {
+        self.cmd.current_dir(dir);
         self
     }
 
@@ -1003,6 +1009,16 @@ impl Recurringd {
         to_command(get_command_str_for_alias(
             &[FM_RECURRINGD_BASE_EXECUTABLE_ENV],
             &["fedimint-recurringd"],
+        ))
+    }
+}
+
+pub struct PayjoinMailroom;
+impl PayjoinMailroom {
+    pub fn cmd(self) -> Command {
+        to_command(get_command_str_for_alias(
+            &[FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE_ENV],
+            &["payjoin-mailroom"],
         ))
     }
 }
