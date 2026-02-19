@@ -34,8 +34,8 @@ use crate::envs::{
     FM_GATEWAY_CLI_BASE_EXECUTABLE_ENV, FM_GATEWAYD_BASE_EXECUTABLE_ENV, FM_GWCLI_LDK_ENV,
     FM_GWCLI_LND_ENV, FM_LNCLI_BASE_EXECUTABLE_ENV, FM_LNCLI_ENV, FM_LND_BASE_EXECUTABLE_ENV,
     FM_LOAD_TEST_TOOL_BASE_EXECUTABLE_ENV, FM_LOGS_DIR_ENV, FM_MINT_CLIENT_ENV,
-    FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE_ENV, FM_RECOVERYTOOL_BASE_EXECUTABLE_ENV,
-    FM_RECURRINGD_BASE_EXECUTABLE_ENV,
+    FM_PAYJOIN_CLI_BASE_EXECUTABLE_ENV, FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE_ENV,
+    FM_RECOVERYTOOL_BASE_EXECUTABLE_ENV, FM_RECURRINGD_BASE_EXECUTABLE_ENV,
 };
 
 // If a binary doesn't provide a clap version, default to the first stable
@@ -1020,6 +1020,30 @@ impl PayjoinMailroom {
             &[FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE_ENV],
             &["payjoin-mailroom"],
         ))
+    }
+}
+
+pub struct PayjoinCli;
+impl PayjoinCli {
+    pub fn cmd(self, globals: &super::vars::Global) -> Command {
+        Command {
+            cmd: tokio::process::Command::new(
+                get_command_str_for_alias(&[FM_PAYJOIN_CLI_BASE_EXECUTABLE_ENV], &["payjoin-cli"])
+                    [0]
+                .clone(),
+            ),
+            args_debug: vec![],
+        }
+        .envs([
+            ("RPCUSER", "bitcoin"),
+            ("RPCPASSWORD", "bitcoin"),
+            (
+                "RPCHOST",
+                &format!("http://localhost:{}/wallet=", globals.FM_PORT_BTC_RPC),
+            ),
+            ("PJ_DIRECTORY", &globals.FM_PAYJOIN_DIRECTORY_URL),
+            ("OHTTP_RELAYS", &globals.FM_PAYJOIN_OHTTP_RELAY_URL),
+        ])
     }
 }
 

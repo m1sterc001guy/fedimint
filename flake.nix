@@ -93,6 +93,7 @@
               cargo-deluxe = cargo-deluxe.packages.${system}.default;
               cargo-audit = nixpkgs-unstable.legacyPackages.${system}.cargo-audit;
               payjoin-mailroom = inputs.rust-payjoin.packages.${system}.payjoin-mailroom;
+              payjoin-cli = inputs.rust-payjoin.packages.${system}.payjoin-cli;
             })
           ];
         };
@@ -342,6 +343,7 @@
 
                     # Payjoin testing infrastructure
                     pkgs.payjoin-mailroom
+                    pkgs.payjoin-cli
                   ]
                   ++ lib.optionals (!stdenv.isAarch64 && !stdenv.isDarwin) [ pkgs.semgrep ]
                   ++ lib.optionals (!stdenv.isDarwin) [

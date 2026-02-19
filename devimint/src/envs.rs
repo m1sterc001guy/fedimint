@@ -159,3 +159,6 @@ pub const FM_GATEWAY_METRICS_LISTEN_ADDR_ENV: &str = "FM_GATEWAY_METRICS_LISTEN_
 
 // Env variable to override payjoin-mailroom binary
 pub const FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE_ENV: &str = "FM_PAYJOIN_MAILROOM_BASE_EXECUTABLE";
+
+// Env variable to override payjoin-cli binary
+pub const FM_PAYJOIN_CLI_BASE_EXECUTABLE_ENV: &str = "FM_PAYJOIN_CLI_BASE_EXECUTABLE";
