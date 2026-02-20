@@ -35,33 +35,34 @@ impl PayjoinMailroom {
     /// provides privacy by hiding client IPs from the directory).
     pub async fn new(process_mgr: &ProcessManager) -> Result<Self> {
         let port = process_mgr.globals.FM_PORT_PAYJOIN_MAILROOM;
+        let payjoin_dir = utf8(&process_mgr.globals.FM_PAYJOIN_DIR);
+
+        info!(target: LOG_DEVIMINT, %payjoin_dir, %port, "Starting payjoin-mailroom with config");
 
         // Create the configuration file for payjoin-mailroom
         let config = format!(
             r#"# Payjoin Mailroom configuration for devimint testing
-
-[server]
 # Listen on localhost only for testing
-bind = "127.0.0.1:{port}"
+listener = "127.0.0.1:{port}"
 
-[directory]
 # Store sessions in /tmp for testing (auto-cleaned on reboot)
-db_path = "/tmp/payjoin-mailroom-{port}/sessions"
+storage_dir = "/tmp/payjoin-mailroom-{port}/sessions"
 # Short timeout for testing (5 minutes)
-timeout_secs = 300
+timeout = 300
 "#,
             port = port,
         );
 
-        write_overwrite_async(
-            process_mgr.globals.FM_PAYJOIN_DIR.join("config.toml"),
-            config,
-        )
-        .await?;
-
         let config_path = process_mgr.globals.FM_PAYJOIN_DIR.join("config.toml");
+        write_overwrite_async(config_path.clone(), config).await?;
+
+        info!(target: LOG_DEVIMINT, config_path = ?config_path, "Config written");
+
         let cmd =
-            cmd!(crate::util::PayjoinMailroom, "--config", utf8(&config_path)).current_dir("/tmp");
+            //cmd!(crate::util::PayjoinMailroom, "--config", utf8(&config_path)).current_dir("/tmp");
+            cmd!(crate::util::PayjoinMailroom, "--config", utf8(&config_path));
+
+        info!(target: LOG_DEVIMINT, "Spawning payjoin-mailroom process");
 
         let process = process_mgr
             .spawn_daemon("payjoin-mailroom", cmd)
@@ -70,6 +71,8 @@ timeout_secs = 300
 
         let directory_url = format!("http://127.0.0.1:{}", port);
         let ohttp_relay_url = directory_url.clone();
+
+        info!(target: LOG_DEVIMINT, %directory_url, "Waiting for payjoin-mailroom to be ready");
 
         let mailroom = Self {
             _process: process,
@@ -108,6 +111,7 @@ timeout_secs = 300
                 Err(err) => {
                     debug!(
                         target: LOG_DEVIMINT,
+                        %url,
                         err = %err.fmt_compact(),
                         "Payjoin mailroom not ready yet"
                     );

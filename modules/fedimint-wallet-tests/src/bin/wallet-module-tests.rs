@@ -20,6 +20,7 @@ pub enum TestCli {
     Recovery1,
     Recovery2,
     CircularDeposit,
+    Payjoin,
 }
 
 #[tokio::main]
@@ -30,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
         TestCli::Recovery1 => wallet_recovery_test_1().await,
         TestCli::Recovery2 => wallet_recovery_test_2().await,
         TestCli::CircularDeposit => circular_deposit_test().await,
+        TestCli::Payjoin => payjoin_test().await,
     }
 }
 
@@ -411,6 +413,18 @@ async fn circular_deposit_test() -> anyhow::Result<()> {
                 .await?;
             transfer(&send_client, &dust_receive_client, bitcoind, 900).await?;
             assert_eq!(dust_receive_client.balance().await?, 0);
+
+            Ok(())
+        })
+        .await
+}
+
+async fn payjoin_test() -> anyhow::Result<()> {
+    devimint::run_devfed_test()
+        .call(|dev_fed, _process_mgr| async move {
+            let _payjoin_mailroom = dev_fed.payjoin().await?;
+
+            info!("Payjoin test successful");
 
             Ok(())
         })

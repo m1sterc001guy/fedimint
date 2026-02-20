@@ -374,7 +374,7 @@ impl DevJitFed {
                 debug!(target: LOG_DEVIMINT, "Starting payjoin-mailroom...");
                 let start_time = fedimint_core::time::now();
                 let payjoin = PayjoinMailroom::new(&process_mgr).await?;
-                info!(target: LOG_DEVIMINT, elapsed_ms = %start_time.elapsed()?.as_millis(), "Started recurringdv2");
+                info!(target: LOG_DEVIMINT, elapsed_ms = %start_time.elapsed()?.as_millis(), "Started payjoin-mailroom");
                 Ok(Arc::new(payjoin))
             }
         });
