@@ -7,7 +7,7 @@ use bitcoincore_rpc::bitcoin::address::Address;
 use clap::Parser;
 use devimint::cmd;
 use devimint::federation::Client;
-use devimint::util::almost_equal;
+use devimint::util::{PayjoinCli, almost_equal};
 use fedimint_core::encoding::Decodable;
 use fedimint_core::module::serde_json;
 use fedimint_core::util::{backoff_util, retry};
@@ -421,10 +421,37 @@ async fn circular_deposit_test() -> anyhow::Result<()> {
 
 async fn payjoin_test() -> anyhow::Result<()> {
     devimint::run_devfed_test()
-        .call(|dev_fed, _process_mgr| async move {
-            let _payjoin_mailroom = dev_fed.payjoin().await?;
+        .call(|dev_fed, process_mgr| async move {
+            let dev_fed = dev_fed.to_dev_fed(&process_mgr).await?;
 
-            info!("Payjoin test successful");
+            let rpcuser = &process_mgr.globals.FM_BITCOIND_USERNAME;
+            let rpcpassword = &process_mgr.globals.FM_BITCOIND_PASSWORD;
+            let rpchost = format!(
+                "http://127.0.0.1:{}/wallet/",
+                process_mgr.globals.FM_PORT_BTC_RPC
+            );
+            let pj_directory = dev_fed.payjoin_directory.url();
+            let ohttp_relays = dev_fed.payjoin_relay.url();
+
+            let receive = cmd!(
+                PayjoinCli,
+                "--rpcuser",
+                rpcuser,
+                "--rpcpassword",
+                rpcpassword,
+                "--rpchost",
+                rpchost,
+                "--ohttp-relays",
+                ohttp_relays,
+                "receive",
+                "--pj-directory",
+                pj_directory,
+                "10000"
+            )
+            .out_string()
+            .await?;
+
+            info!(?receive, "Payjoin test successful");
 
             Ok(())
         })

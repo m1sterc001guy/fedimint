@@ -1,0 +1,13 @@
+Using OHTTP Keys from config
+Receive session established
+Request Payjoin by sharing this Payjoin Uri:
+bitcoin:bcrt1qzjk4ksw0v83v3u0wkmne5zw6vts9tkvc0tazsj?amount=0.0001&pjos=0&pj=HTTP://127.0.0.1:24498/90GJPDLVCW7Q2%23EX1CTEEJ6G-OH1QYP9MJCWELRHF2D7CYWU2MY54N7Z6PQ3223KCWECRYQ3L9QPSR84CYS-RK1QT3CG3KLPWMV9FVK6UWH7DKU6M7HLQMPFN95J2JL70FGN5NWE8X9S
+Using OHTTP Keys from config
+Polling receive request...
+Polling receive request...
+Got a request from the sender. Responding with a Payjoin proposal.
+Fallback transaction received. Consider broadcasting this to get paid if the Payjoin fails:
+020000000001012b89ae4b4eb267565bd0876e2debbef55f361dc0271d608404f7a207f32cad0f0000000000fdffffff02102700000000000016001414ad5b41cf61e2c8f1eeb6e79a09da62e055d99863b9f505000000001600140e71345827e9b25dad6867f7df524a87cbfb4756024730440220231b1a60eff0847a0ea92588c6be3aaec2b8cd3206b537f481b3a3ff80b25ac1022023d6558a833e6017f73abd2c1acfed9272ae7fc602ce5efb5f716c81bfe4d8040121031dd52079b6613339dfbe0a185a71711ea9cc887e4a34b7fde3478d7a3d2f237700000000
+Using OHTTP Keys from config
+Response successful. Watch mempool for successful Payjoin. TXID: 90c93e69a83975f109114fd69fed7629a8ebae133e9c34358060634ac9bddc86
+Payjoin transaction detected in the mempool!

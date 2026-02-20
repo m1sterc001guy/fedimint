@@ -2,6 +2,9 @@ procs:
   user:
     shell: bash --init-file scripts/dev/mprocs/user-shell.sh
     stop: SIGKILL
+  user2:
+    shell: bash --init-file scripts/dev/mprocs/user-shell.sh
+    stop: SIGKILL
   fedimint0:
     shell: tail -n +0 -F $FM_LOGS_DIR/fedimintd-default-0.log
   fedimint1:
@@ -28,5 +31,7 @@ procs:
     shell: tail -n +0 -F $FM_LOGS_DIR/devimint-outer.log
   recurringd:
     shell: tail -n +0 -F $FM_LOGS_DIR/recurringd.log
-  payjoin-mailroom:
-    shell: tail -n +0 -F $FM_LOGS_DIR/payjoin-mailroom.log
+  payjoin-directory:
+    shell: tail -n +0 -F $FM_LOGS_DIR/payjoin-directory.log
+  payjoin-relay:
+    shell: tail -n +0 -F $FM_LOGS_DIR/payjoin-relay.log

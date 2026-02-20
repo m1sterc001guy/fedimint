@@ -38,7 +38,8 @@ pub struct DevFed {
     pub esplora: Esplora,
     pub recurringd: Recurringd,
     pub recurringdv2: Recurringdv2,
-    pub payjoin: PayjoinMailroom,
+    pub payjoin_directory: PayjoinMailroom,
+    pub payjoin_relay: PayjoinMailroom,
 }
 
 impl DevFed {
@@ -53,7 +54,8 @@ impl DevFed {
             esplora,
             recurringd,
             recurringdv2,
-            payjoin,
+            payjoin_directory,
+            payjoin_relay,
         } = self;
 
         join!(
@@ -66,7 +68,8 @@ impl DevFed {
             spawn_drop(bitcoind),
             spawn_drop(recurringd),
             spawn_drop(recurringdv2),
-            spawn_drop(payjoin),
+            spawn_drop(payjoin_directory),
+            spawn_drop(payjoin_relay),
         );
     }
 }
@@ -96,7 +99,8 @@ pub struct DevJitFed {
     fed_epoch_generated: JitArc<()>,
     channel_opened: JitArc<()>,
     recurringd_connected: JitArc<()>,
-    payjoin: JitArc<PayjoinMailroom>,
+    payjoin_directory: JitArc<PayjoinMailroom>,
+    payjoin_relay: JitArc<PayjoinMailroom>,
 
     skip_setup: bool,
     pre_dkg: bool,
@@ -368,13 +372,24 @@ impl DevJitFed {
             }
         });
 
-        let payjoin = JitTryAnyhow::new_try({
+        let payjoin_directory = JitTryAnyhow::new_try({
             let process_mgr = process_mgr.to_owned();
             move || async move {
-                debug!(target: LOG_DEVIMINT, "Starting payjoin-mailroom...");
+                debug!(target: LOG_DEVIMINT, "Starting payjoin-directory...");
                 let start_time = fedimint_core::time::now();
-                let payjoin = PayjoinMailroom::new(&process_mgr).await?;
-                info!(target: LOG_DEVIMINT, elapsed_ms = %start_time.elapsed()?.as_millis(), "Started payjoin-mailroom");
+                let payjoin = PayjoinMailroom::new_directory(&process_mgr).await?;
+                info!(target: LOG_DEVIMINT, elapsed_ms = %start_time.elapsed()?.as_millis(), "Started payjoin-directory");
+                Ok(Arc::new(payjoin))
+            }
+        });
+
+        let payjoin_relay = JitTryAnyhow::new_try({
+            let process_mgr = process_mgr.to_owned();
+            move || async move {
+                debug!(target: LOG_DEVIMINT, "Starting payjoin-relay...");
+                let start_time = fedimint_core::time::now();
+                let payjoin = PayjoinMailroom::new_relay(&process_mgr).await?;
+                info!(target: LOG_DEVIMINT, elapsed_ms = %start_time.elapsed()?.as_millis(), "Started payjoin-relay");
                 Ok(Arc::new(payjoin))
             }
         });
@@ -398,7 +413,8 @@ impl DevJitFed {
             recurringd_connected,
             skip_setup,
             pre_dkg,
-            payjoin,
+            payjoin_directory,
+            payjoin_relay,
         })
     }
 
@@ -460,8 +476,12 @@ impl DevJitFed {
         Ok(self.recurringdv2.get_try().await?.deref())
     }
 
-    pub async fn payjoin(&self) -> anyhow::Result<&PayjoinMailroom> {
-        Ok(self.payjoin.get_try().await?.deref())
+    pub async fn payjoin_directory(&self) -> anyhow::Result<&PayjoinMailroom> {
+        Ok(self.payjoin_directory.get_try().await?.deref())
+    }
+
+    pub async fn payjoin_relay(&self) -> anyhow::Result<&PayjoinMailroom> {
+        Ok(self.payjoin_relay.get_try().await?.deref())
     }
 
     pub async fn finalize(&self, process_mgr: &ProcessManager) -> anyhow::Result<()> {
@@ -507,7 +527,8 @@ impl DevJitFed {
             esplora: self.esplora().await?.to_owned(),
             recurringd: self.recurringd().await?.to_owned(),
             recurringdv2: self.recurringdv2().await?.to_owned(),
-            payjoin: self.payjoin().await?.to_owned(),
+            payjoin_directory: self.payjoin_directory().await?.to_owned(),
+            payjoin_relay: self.payjoin_relay().await?.to_owned(),
         })
     }
 

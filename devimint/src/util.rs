@@ -1025,25 +1025,11 @@ impl PayjoinMailroom {
 
 pub struct PayjoinCli;
 impl PayjoinCli {
-    pub fn cmd(self, globals: &super::vars::Global) -> Command {
-        Command {
-            cmd: tokio::process::Command::new(
-                get_command_str_for_alias(&[FM_PAYJOIN_CLI_BASE_EXECUTABLE_ENV], &["payjoin-cli"])
-                    [0]
-                .clone(),
-            ),
-            args_debug: vec![],
-        }
-        .envs([
-            ("RPCUSER", "bitcoin"),
-            ("RPCPASSWORD", "bitcoin"),
-            (
-                "RPCHOST",
-                &format!("http://localhost:{}/wallet=", globals.FM_PORT_BTC_RPC),
-            ),
-            ("PJ_DIRECTORY", &globals.FM_PAYJOIN_DIRECTORY_URL),
-            ("OHTTP_RELAYS", &globals.FM_PAYJOIN_OHTTP_RELAY_URL),
-        ])
+    pub fn cmd(self) -> Command {
+        to_command(get_command_str_for_alias(
+            &[FM_PAYJOIN_CLI_BASE_EXECUTABLE_ENV],
+            &["payjoin-cli"],
+        ))
     }
 }
 

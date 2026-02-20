@@ -159,7 +159,8 @@ declare_vars! {
         FM_PORT_FAUCET: u16 = 15243u16; env: "FM_PORT_FAUCET";
         FM_PORT_RECURRINGD: u16 = port_alloc(1)?; env: "FM_PORT_RECURRINGD";
         FM_PORT_RECURRINGDV2: u16 = port_alloc(1)?; env: "FM_PORT_RECURRINGDV2";
-        FM_PORT_PAYJOIN_MAILROOM: u16 = port_alloc(1)?; env: "FM_PORT_PAYJOIN_MAILROOM";
+        FM_PORT_PAYJOIN_DIRECTORY: u16 = port_alloc(1)?; env: "FM_PORT_PAYJOIN_DIRECTORY";
+        FM_PORT_PAYJOIN_RELAY: u16 = port_alloc(1)?; env: "FM_PORT_PAYJOIN_RELAY";
 
         FM_FEDERATION_BASE_PORT: u16 = federation_base_ports; env: "FM_FEDERATION_BASE_PORT";
         fedimintd_overrides: FederationsNetOverrides = FederationsNetOverrides::new(FM_FEDERATION_BASE_PORT, num_feds, NumPeers::from(fed_size)); env: "NOT_USED_FOR_ANYTHING";
@@ -221,9 +222,10 @@ declare_vars! {
 
         FM_ROCKSDB_WRITE_BUFFER_SIZE : String = (1 << 20).to_string(); env: "FM_ROCKSDB_WRITE_BUFFER_SIZE";
 
-        // Payjoin testing infrastructure
-        FM_PAYJOIN_DIRECTORY_URL: String = f!("http://127.0.0.1:{FM_PORT_PAYJOIN_MAILROOM}"); env: "FM_PAYJOIN_DIRECTORY_URL";
-        FM_PAYJOIN_OHTTP_RELAY_URL: String = f!("http://127.0.0.1:{FM_PORT_PAYJOIN_MAILROOM}"); env: "FM_PAYJOIN_OHTTP_RELAY_URL";
+        // Payjoin testing infrastructure - separate directory and relay instances
+        // to avoid same-instance sentinel check rejection
+        FM_PAYJOIN_DIRECTORY_URL: String = f!("http://127.0.0.1:{FM_PORT_PAYJOIN_DIRECTORY}"); env: "FM_PAYJOIN_DIRECTORY_URL";
+        FM_PAYJOIN_OHTTP_RELAY_URL: String = f!("http://127.0.0.1:{FM_PORT_PAYJOIN_RELAY}"); env: "FM_PAYJOIN_OHTTP_RELAY_URL";
     }
 }
 

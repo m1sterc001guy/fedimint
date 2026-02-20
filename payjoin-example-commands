@@ -1,0 +1,25 @@
+# Payjoin V2 Example Commands
+
+## Setup
+
+First, fetch OHTTP keys from the directory:
+
+```bash
+curl -s http://127.0.0.1:24498/.well-known/ohttp-gateway > /tmp/ohttp-keys.ikm
+```
+
+Replace `24498` with your directory port.
+
+## Receive Command
+
+```bash
+payjoin-cli --rpcuser bitcoin --rpcpassword bitcoin --rpchost http://127.0.0.1:24479/wallet/receiver --ohttp-keys /tmp/ohttp-keys.ikm --ohttp-relays http://127.0.0.1:24499 receive --pj-directory http://127.0.0.1:24498 10000
+```
+
+## Send Command
+
+```bash
+payjoin-cli --rpcuser bitcoin --rpcpassword bitcoin --rpchost http://127.0.0.1:24479/wallet/sender --ohttp-relays http://127.0.0.1:24499 send --fee-rate 1 "bitcoin:bcrt1qpx730mvswwa5qj9xn4620jzuhst6md2q3y7lpc?amount=0.0001&pjos=0&pj=HTTP://127.0.0.1:24498/T4XNGH04K76DV%23EX1PRMFJ6G-OH1QYP9MJCWELRHF2D7CYWU2MY54N7Z6PQ3223KCWECRYQ3L9QPSR84CYS-RK1QGC4Q770E6GRWVXT0XJJ6RRK80D0TGN40EDNWR3K5EMDYHRY3AANV"
+```
+
+Note: The send command uses the Payjoin URI returned by the receive command.
