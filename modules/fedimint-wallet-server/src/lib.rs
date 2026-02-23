@@ -63,7 +63,7 @@ use fedimint_core::net::auth::check_auth;
 use fedimint_core::task::TaskGroup;
 #[cfg(not(target_family = "wasm"))]
 use fedimint_core::task::sleep;
-use fedimint_core::util::{FmtCompact, FmtCompactAnyhow as _, backoff_util, retry};
+use fedimint_core::util::{FmtCompact, FmtCompactAnyhow as _, SafeUrl, backoff_util, retry};
 use fedimint_core::{
     Feerate, InPoint, NumPeersExt, OutPoint, PeerId, apply, async_trait_maybe_send,
     get_network_for_address, push_db_key_items, push_db_pair_items,
@@ -80,8 +80,9 @@ use fedimint_wallet_common::config::{FeeConsensus, WalletClientConfig, WalletCon
 use fedimint_wallet_common::endpoint_constants::{
     ACTIVATE_CONSENSUS_VERSION_VOTING_ENDPOINT, BITCOIN_KIND_ENDPOINT, BITCOIN_RPC_CONFIG_ENDPOINT,
     BLOCK_COUNT_ENDPOINT, BLOCK_COUNT_LOCAL_ENDPOINT, MODULE_CONSENSUS_VERSION_ENDPOINT,
-    PEG_OUT_FEES_ENDPOINT, RECOVERY_COUNT_ENDPOINT, RECOVERY_SLICE_ENDPOINT,
-    SUPPORTED_MODULE_CONSENSUS_VERSION_ENDPOINT, UTXO_CONFIRMED_ENDPOINT, WALLET_SUMMARY_ENDPOINT,
+    PAYJOIN_RECEIVE_ENDPOINT, PEG_OUT_FEES_ENDPOINT, RECOVERY_COUNT_ENDPOINT,
+    RECOVERY_SLICE_ENDPOINT, SUPPORTED_MODULE_CONSENSUS_VERSION_ENDPOINT, UTXO_CONFIRMED_ENDPOINT,
+    WALLET_SUMMARY_ENDPOINT,
 };
 use fedimint_wallet_common::envs::FM_PORT_ESPLORA_ENV;
 use fedimint_wallet_common::keys::CompressedPublicKey;
@@ -99,6 +100,8 @@ use metrics::{
 };
 use miniscript::psbt::PsbtExt;
 use miniscript::{Descriptor, TranslatePk, translate_hash_fail};
+use payjoin::persist::{NoopSessionPersister, OptionalTransitionOutcome};
+use payjoin::receive::v2::{Initialized, Receiver};
 use rand::rngs::OsRng;
 use serde::Serialize;
 use strum::IntoEnumIterator;
@@ -1081,6 +1084,25 @@ impl ServerModule for Wallet {
                     Ok(get_recovery_slice(&mut dbtx, range).await)
                 }
             },
+            api_endpoint! {
+                PAYJOIN_RECEIVE_ENDPOINT,
+                ApiVersion::new(0, 3),
+                async |module: &Wallet, context, params: (Address<NetworkUnchecked>, u64)| -> String {
+                    let (address, amount_sats) = params;
+                    let amount = bitcoin::Amount::from_sat(amount_sats);
+                    info!(target: LOG_MODULE_WALLET, ?address, "Payjoin Receive");
+                    let pj_uri = module.create_pj_uri(address.assume_checked(), amount).await.map_err(|err| {
+                        warn!(target: LOG_MODULE_WALLET, err = %err.fmt_compact_anyhow(), "Error creating pj_uri");
+                        ApiError::server_error("Error creating payjoin URI".to_string())
+                    });
+                    match pj_uri {
+                        Ok(pj_uri) => Ok(pj_uri),
+                        Err(err) => {
+                            Err(err)
+                        }
+                    }
+                }
+            },
         ]
     }
 }
@@ -1197,6 +1219,70 @@ impl Wallet {
         };
 
         Ok(wallet)
+    }
+
+    async fn create_pj_uri(
+        &self,
+        address: Address,
+        amount: bitcoin::Amount,
+    ) -> anyhow::Result<String> {
+        // TODO: Get this from the config
+        let directory_port = std::env::var("FM_PORT_PAYJOIN_DIRECTORY")?;
+        let directory = SafeUrl::parse(&format!("http://127.0.0.1:{directory_port}"))?;
+
+        // TODO: Get this from the config
+        let relay_port = std::env::var("FM_PORT_PAYJOIN_RELAY")?;
+        let relay = SafeUrl::parse(&format!("http://127.0.0.1:{relay_port}"))?;
+        let ohttp_keys_url = format!("http://127.0.0.1:{directory_port}/.well-known/ohttp-gateway");
+        let ohttp_keys_bytes = reqwest::Client::new()
+            .get(&ohttp_keys_url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
+        let ohttp_keys = payjoin::OhttpKeys::decode(&ohttp_keys_bytes)?;
+
+        // TODO: Use real database
+        let persister = NoopSessionPersister::default();
+
+        let session = Receiver::create_session(
+            address,
+            directory.to_unsafe(),
+            ohttp_keys,
+            Some(Duration::from_secs(60 * 5)),
+        )
+        .save(&persister)?;
+        let mut pj_uri = session.pj_uri();
+        pj_uri.amount = Some(amount);
+
+        self.spawn_payjoin_session_poll(session, relay);
+
+        Ok(pj_uri.to_string())
+    }
+
+    fn spawn_payjoin_session_poll(&self, mut session: Receiver<Initialized>, ohttp_relay: SafeUrl) {
+        self.task_group.spawn_cancellable("payjoin session poll", async move {
+            let http_client = reqwest::Client::new();
+            let ohttp_relay_url = ohttp_relay.to_unsafe();
+            let persister = NoopSessionPersister::default();
+            loop {
+                let (req, ohttp_ctx) = session.extract_req(ohttp_relay_url.clone()).expect("Could not extract request");
+                info!(target: LOG_MODULE_WALLET, "Waiting for sender payjoin proposal...");
+                let response = http_client.post(req.url.as_str()).header("Content-Type", req.content_type).body(req.body).send().await.expect("Could not get response");
+                let response_bytes = response.bytes().await.expect("Could not get bytes");
+                match session.process_res(&response_bytes, ohttp_ctx).save(&persister).expect("Error when processing response") {
+                    OptionalTransitionOutcome::Progress(next_state) => {
+                        info!(target: LOG_MODULE_WALLET, "Received a proposal from sender!");
+                        break;
+                    }
+                    OptionalTransitionOutcome::Stasis(current_state) => {
+                        // No proposal yet, server timed out
+                        warn!(target: LOG_MODULE_WALLET, "Server timed out waiting for payjoin proposal");
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     /// Try to attach signatures to a pending peg-out tx.

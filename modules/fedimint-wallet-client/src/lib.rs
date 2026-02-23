@@ -60,8 +60,8 @@ use fedimint_core::task::{MaybeSend, MaybeSync, TaskGroup, sleep};
 use fedimint_core::util::backoff_util::background_backoff;
 use fedimint_core::util::{BoxStream, backoff_util, retry};
 use fedimint_core::{
-    BitcoinHash, OutPoint, TransactionId, apply, async_trait_maybe_send, push_db_pair_items,
-    runtime, secp256k1,
+    BitcoinHash, OutPoint, PeerId, TransactionId, apply, async_trait_maybe_send,
+    push_db_pair_items, runtime, secp256k1,
 };
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use fedimint_logging::LOG_CLIENT_MODULE_WALLET;
@@ -1559,6 +1559,19 @@ impl WalletClientModule {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn payjoin_receive(
+        &self,
+        peer_id: PeerId,
+        amount_sats: u64,
+    ) -> anyhow::Result<(OperationId, String, TweakIdx)> {
+        let (op_id, address, tweak_idx) = self.allocate_deposit_address_expert_only(()).await?;
+        let pj_uri = self
+            .module_api
+            .payjoin_receive(peer_id, address.clone().into_unchecked(), amount_sats)
+            .await?;
+        Ok((op_id, pj_uri, tweak_idx))
     }
 }
 

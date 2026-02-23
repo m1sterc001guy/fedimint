@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use bitcoin::address::NetworkUnchecked;
 use bitcoin::{Address, Amount};
 use fedimint_api_client::api::{
     FederationApiExt, FederationError, FederationResult, IModuleFederationApi, ServerResult,
@@ -11,8 +12,8 @@ use fedimint_core::{NumPeersExt, PeerId, apply, async_trait_maybe_send};
 use fedimint_wallet_common::endpoint_constants::{
     ACTIVATE_CONSENSUS_VERSION_VOTING_ENDPOINT, BITCOIN_KIND_ENDPOINT, BITCOIN_RPC_CONFIG_ENDPOINT,
     BLOCK_COUNT_ENDPOINT, BLOCK_COUNT_LOCAL_ENDPOINT, MODULE_CONSENSUS_VERSION_ENDPOINT,
-    PEG_OUT_FEES_ENDPOINT, RECOVERY_COUNT_ENDPOINT, RECOVERY_SLICE_ENDPOINT,
-    UTXO_CONFIRMED_ENDPOINT, WALLET_SUMMARY_ENDPOINT,
+    PAYJOIN_RECEIVE_ENDPOINT, PEG_OUT_FEES_ENDPOINT, RECOVERY_COUNT_ENDPOINT,
+    RECOVERY_SLICE_ENDPOINT, UTXO_CONFIRMED_ENDPOINT, WALLET_SUMMARY_ENDPOINT,
 };
 use fedimint_wallet_common::{PegOutFees, RecoveryItem, WalletSummary};
 
@@ -46,6 +47,13 @@ pub trait WalletFederationApi {
     /// Fetches recovery items in the range `[start, end)` via consensus
     async fn fetch_recovery_slice(&self, start: u64, end: u64)
     -> anyhow::Result<Vec<RecoveryItem>>;
+
+    async fn payjoin_receive(
+        &self,
+        peer_id: PeerId,
+        address: Address<NetworkUnchecked>,
+        amount_sats: u64,
+    ) -> FederationResult<String>;
 }
 
 #[apply(async_trait_maybe_send!)]
@@ -194,5 +202,19 @@ where
         )
         .await
         .map_err(|e| anyhow!("{e}"))
+    }
+
+    async fn payjoin_receive(
+        &self,
+        peer_id: PeerId,
+        address: Address<NetworkUnchecked>,
+        amount_sats: u64,
+    ) -> FederationResult<String> {
+        self.request_single_peer_federation(
+            PAYJOIN_RECEIVE_ENDPOINT.to_string(),
+            ApiRequestErased::new((address, amount_sats)),
+            peer_id,
+        )
+        .await
     }
 }

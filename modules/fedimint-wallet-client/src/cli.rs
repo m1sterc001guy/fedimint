@@ -41,6 +41,10 @@ enum Opts {
         #[arg(long)]
         tweak_idx: Option<TweakIdx>,
     },
+    PayjoinReceive {
+        peer_id: u16,
+        amount_sats: u64,
+    },
 }
 
 pub(crate) async fn handle_cli_command(
@@ -137,6 +141,20 @@ pub(crate) async fn handle_cli_command(
             serde_json::json! {
                 {
                     "address": address,
+                    "operation_id": operation_id,
+                    "tweak_idx": tweak_idx.0
+                }
+            }
+        }
+        Opts::PayjoinReceive {
+            peer_id,
+            amount_sats,
+        } => {
+            let (operation_id, pj_uri, tweak_idx) =
+                module.payjoin_receive(peer_id.into(), amount_sats).await?;
+            serde_json::json! {
+                {
+                    "pj_uri": pj_uri,
                     "operation_id": operation_id,
                     "tweak_idx": tweak_idx.0
                 }
