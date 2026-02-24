@@ -101,11 +101,12 @@ use metrics::{
 use miniscript::psbt::PsbtExt;
 use miniscript::{Descriptor, TranslatePk, translate_hash_fail};
 use payjoin::persist::{NoopSessionPersister, OptionalTransitionOutcome};
+use payjoin::receive::InputPair;
 use payjoin::receive::v2::{Initialized, Receiver};
 use rand::rngs::OsRng;
 use serde::Serialize;
 use strum::IntoEnumIterator;
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Notify, oneshot, watch};
 use tracing::{debug, info, instrument, trace, warn};
 
 use crate::db::{
@@ -703,6 +704,13 @@ impl ServerModule for Wallet {
                     "Wallet module does not support new consensus version, please upgrade the module"
                 );
             }
+            WalletConsensusItem::PayjoinSignature {
+                txid,
+                psbt: _,
+                signature,
+            } => {
+                info!(target: LOG_MODULE_WALLET, %txid, ?signature, "Need to handle PayjoinSignatureConsensusItem");
+            }
             WalletConsensusItem::Default { variant, .. } => {
                 panic!("Received wallet consensus item with unknown variant {variant}");
             }
@@ -1246,7 +1254,7 @@ impl Wallet {
         let persister = NoopSessionPersister::default();
 
         let session = Receiver::create_session(
-            address,
+            address.clone(),
             directory.to_unsafe(),
             ohttp_keys,
             Some(Duration::from_secs(60 * 5)),
@@ -1255,12 +1263,22 @@ impl Wallet {
         let mut pj_uri = session.pj_uri();
         pj_uri.amount = Some(amount);
 
-        self.spawn_payjoin_session_poll(session, relay);
+        self.spawn_payjoin_session_poll(session, relay, address.script_pubkey());
 
         Ok(pj_uri.to_string())
     }
 
-    fn spawn_payjoin_session_poll(&self, mut session: Receiver<Initialized>, ohttp_relay: SafeUrl) {
+    fn spawn_payjoin_session_poll(
+        &self,
+        mut session: Receiver<Initialized>,
+        ohttp_relay: SafeUrl,
+        receiver_script: ScriptBuf,
+    ) {
+        let db = self.db.clone();
+        let descriptor = self.cfg.consensus.peg_in_descriptor.clone();
+        let secp = self.secp.clone();
+        let secret_key = self.cfg.private.peg_in_key.clone();
+        let task_group = self.task_group.make_subgroup();
         self.task_group.spawn_cancellable("payjoin session poll", async move {
             let http_client = reqwest::Client::new();
             let ohttp_relay_url = ohttp_relay.to_unsafe();
@@ -1272,7 +1290,129 @@ impl Wallet {
                 let response_bytes = response.bytes().await.expect("Could not get bytes");
                 match session.process_res(&response_bytes, ohttp_ctx).save(&persister).expect("Error when processing response") {
                     OptionalTransitionOutcome::Progress(next_state) => {
-                        info!(target: LOG_MODULE_WALLET, "Received a proposal from sender!");
+                        info!(target: LOG_MODULE_WALLET, "Received an unchecked proposal from sender!");
+
+                        // TODO: Instead of assume an interactive receiver, we should validate that the sent proposal is a valid bitcoin transaction
+                        info!(target: LOG_MODULE_WALLET, "Assuming interactive receiver...");
+                        let proposal = next_state.assume_interactive_receiver().save(&persister).expect("Could not move to MaybeInputsOwned");
+
+                        info!(target: LOG_MODULE_WALLET, "Building UTXO BTreeSet...");
+                        let mut dbtx = db.begin_transaction_nc().await;
+                        let utxos = dbtx.find_by_prefix(&UTXOPrefixKey)
+                            .await
+                            .collect::<Vec<(UTXOKey, SpendableUTXO)>>()
+                            .await;
+                        let federation_scripts: BTreeSet<ScriptBuf> = utxos.iter().map(|(_, utxo)| {
+                            descriptor.tweak(&utxo.tweak, &secp).script_pubkey()
+                        })
+                        .collect();
+
+                        info!(target: LOG_MODULE_WALLET, "Checking proposal for inputs...");
+                        let proposal = proposal.check_inputs_not_owned(|script| Ok(federation_scripts.contains(script))).save(&persister).expect("Could not move to MaybeInputsSeen");
+
+                        // TODO: Will need to implement proper relay protection by keeping track of which inputs have been seen
+                        info!(target: LOG_MODULE_WALLET, "Assuming inputs have no been seen before...");
+                        let proposal = proposal.check_no_inputs_seen_before(|_outpoint| Ok(false)).save(&persister).expect("Could not move to OutputsUnknown");
+
+                        // Identify that output that will be used for the pegin
+                        info!(target: LOG_MODULE_WALLET, "Identifying receiver outputs...");
+                        let proposal = proposal.identify_receiver_outputs(|script| Ok(script == &receiver_script)).save(&persister).expect("Could not move to WantsOutput");
+
+                        // Commit the outputs, we don't need to add anything additional (we just want to add an input)
+                        info!(target: LOG_MODULE_WALLET, "Committing outputs...");
+                        let proposal = proposal.commit_outputs().save(&persister).expect("Could not move to WantsInput");
+
+                        info!(target: LOG_MODULE_WALLET, "Building input pairs...");
+                        let input_pairs: Vec<payjoin::receive::InputPair> = utxos.iter().filter_map(|(utxo_key, utxo)| {
+                            let tweaked = descriptor.tweak(&utxo.tweak, &secp);
+                            let script_pubkey = tweaked.script_pubkey();
+                            let witness_script = tweaked.script_code().expect("Failed to get witness script");
+                            let txout = TxOut {
+                                value: utxo.amount,
+                                script_pubkey,
+                            };
+
+                            InputPair::new_p2wsh(txout, utxo_key.0, witness_script, None).ok()
+                        })
+                        .collect();
+
+                        if input_pairs.is_empty() {
+                            warn!(target: LOG_MODULE_WALLET, "No UTXOs available for payjoin contribution");
+                            break;
+                        }
+
+                        info!(target: LOG_MODULE_WALLET, "Selecting a privacy preserving input...");
+                        let selected_input = match proposal.try_preserving_privacy(input_pairs.clone()) {
+                            Ok(input) => input,
+                            Err(err) => {
+                                warn!(target: LOG_MODULE_WALLET, err = %err, "Could not select privacy-preserving input");
+                                break;
+                            }
+                        };
+
+                        info!(target: LOG_MODULE_WALLET, "Contributing input...");
+                        let proposal = proposal.contribute_inputs(vec![selected_input]).expect("Could not contribute input");
+
+                        info!(target: LOG_MODULE_WALLET, "Committing inputs...");
+                        let proposal = proposal.commit_inputs().save(&persister).expect("Could not move to ProvisionalProposal");
+
+                        let utxo_map: BTreeMap<bitcoin::OutPoint, SpendableUTXO> = utxos.iter().map(|(key, utxo)| (key.0, utxo.clone())).collect();
+
+                        info!(target: LOG_MODULE_WALLET, "Finalizing proposal...");
+                        let proposal = proposal.finalize_proposal(|psbt| {
+                            let mut psbt = psbt.clone();
+
+                            // Attach tweaks to PSBT before signing
+                            info!(target: LOG_MODULE_WALLET, "Attaching tweaks to inputs...");
+                            for (i, tx_input) in psbt.unsigned_tx.input.iter().enumerate() {
+                                if let Some(utxo) = utxo_map.get(&tx_input.previous_output) {
+                                    info!(target: LOG_MODULE_WALLET, "Found one of our inputs. Attaching tweak...");
+                                    psbt.inputs[i].proprietary.insert(proprietary_tweak_key(), utxo.tweak.to_vec());
+                                }
+                            }
+
+                            let wallet = StatelessWallet {
+                                descriptor: &descriptor,
+                                secret_key: &secret_key,
+                                secp: &secp,
+                            };
+                            info!(target: LOG_MODULE_WALLET, "Signing Psbt...");
+                            wallet.sign_psbt(&mut psbt);
+
+                            /*
+                            let txid = psbt.unsigned_tx.compute_txid();
+                            info!(target: LOG_MODULE_WALLET, %txid, "Extracting signatures from Psbt...");
+                            let sigs: Vec<secp256k1::ecdsa::Signature> = psbt.inputs.iter_mut().filter_map(|input| {
+                                if input.partial_sigs.is_empty() {
+                                    return None;
+                                }
+
+                                let sig = std::mem::take(&mut input.partial_sigs).into_values().next()?;
+                                secp256k1::ecdsa::Signature::from_der(&sig.to_vec()[..sig.to_vec().len() - 1]).ok()
+                            }).collect();
+
+                            info!(target: LOG_MODULE_WALLET, num_signatures = %sigs.len(), "Need to start consensus signing...");
+                            */
+
+                            let (sender, receiver) = oneshot::channel::<Psbt>();
+                            task_group.spawn_cancellable("payjoin get signatures", async move {
+                                info!(target: LOG_MODULE_WALLET, "payjoin get signatures async task");
+
+                                fedimint_core::task::sleep(Duration::from_secs(20)).await;
+                                let _ = sender.send(psbt);
+                            });
+
+                            let finalized_psbt = receiver.blocking_recv().expect("Error when receiving over channel");
+                            Ok(finalized_psbt)
+                            //Ok(psbt.clone())
+                        },
+                        None,
+                        None)
+                        .save(&persister)
+                        .expect("Could not finalize proposal");
+
+                        info!(target: LOG_MODULE_WALLET, "Done. Breaking");
+
                         break;
                     }
                     OptionalTransitionOutcome::Stasis(current_state) => {

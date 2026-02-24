@@ -10,7 +10,7 @@ use std::hash::Hasher;
 
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::psbt::raw::ProprietaryKey;
-use bitcoin::{Address, Amount, BlockHash, TxOut, Txid, secp256k1};
+use bitcoin::{Address, Amount, BlockHash, Psbt, TxOut, Txid, secp256k1};
 use config::WalletClientConfig;
 use fedimint_core::core::{Decoder, ModuleInstanceId, ModuleKind};
 use fedimint_core::encoding::btc::NetworkLegacyEncodingWrapper;
@@ -56,6 +56,11 @@ pub enum WalletConsensusItem {
     Feerate(Feerate),
     PegOutSignature(PegOutSignatureItem),
     ModuleConsensusVersion(ModuleConsensusVersion),
+    PayjoinSignature {
+        txid: Txid,
+        psbt: Psbt,
+        signature: Vec<secp256k1::ecdsa::Signature>,
+    },
     #[encodable_default]
     Default {
         variant: u64,
@@ -85,6 +90,9 @@ impl std::fmt::Display for WalletConsensusItem {
                     "Wallet Consensus Version {}.{}",
                     version.major, version.minor
                 )
+            }
+            WalletConsensusItem::PayjoinSignature { txid, .. } => {
+                write!(f, "Wallet Payjoin Signature for Bitcoin Txid: {txid}")
             }
             WalletConsensusItem::Default { variant, .. } => {
                 write!(f, "Unknown Wallet CI variant={variant}")
