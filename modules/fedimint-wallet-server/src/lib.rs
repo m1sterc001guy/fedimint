@@ -102,11 +102,11 @@ use miniscript::psbt::PsbtExt;
 use miniscript::{Descriptor, TranslatePk, translate_hash_fail};
 use payjoin::persist::{NoopSessionPersister, OptionalTransitionOutcome};
 use payjoin::receive::InputPair;
-use payjoin::receive::v2::{Initialized, Receiver};
+use payjoin::receive::v2::{Initialized, Receiver, ReceiverBuilder};
 use rand::rngs::OsRng;
 use serde::Serialize;
 use strum::IntoEnumIterator;
-use tokio::sync::{Notify, oneshot, watch};
+use tokio::sync::{Notify, watch};
 use tracing::{debug, info, instrument, trace, warn};
 
 use crate::db::{
@@ -1253,15 +1253,13 @@ impl Wallet {
         // TODO: Use real database
         let persister = NoopSessionPersister::default();
 
-        let session = Receiver::create_session(
-            address.clone(),
-            directory.to_unsafe(),
-            ohttp_keys,
-            Some(Duration::from_secs(60 * 5)),
-        )
-        .save(&persister)?;
-        let mut pj_uri = session.pj_uri();
-        pj_uri.amount = Some(amount);
+        let session =
+            ReceiverBuilder::new(address.clone(), directory.to_unsafe().as_str(), ohttp_keys)?
+                .with_expiration(Duration::from_secs(60 * 5))
+                .with_amount(amount)
+                .build()
+                .save(&persister)?;
+        let pj_uri = session.pj_uri();
 
         self.spawn_payjoin_session_poll(session, relay, address.script_pubkey());
 
@@ -1284,11 +1282,11 @@ impl Wallet {
             let ohttp_relay_url = ohttp_relay.to_unsafe();
             let persister = NoopSessionPersister::default();
             loop {
-                let (req, ohttp_ctx) = session.extract_req(ohttp_relay_url.clone()).expect("Could not extract request");
+                let (req, ohttp_ctx) = session.create_poll_request(ohttp_relay_url.as_str()).expect("Could not extract request");
                 info!(target: LOG_MODULE_WALLET, "Waiting for sender payjoin proposal...");
                 let response = http_client.post(req.url.as_str()).header("Content-Type", req.content_type).body(req.body).send().await.expect("Could not get response");
                 let response_bytes = response.bytes().await.expect("Could not get bytes");
-                match session.process_res(&response_bytes, ohttp_ctx).save(&persister).expect("Error when processing response") {
+                match session.process_response(&response_bytes, ohttp_ctx).save(&persister).expect("Error when processing response") {
                     OptionalTransitionOutcome::Progress(next_state) => {
                         info!(target: LOG_MODULE_WALLET, "Received an unchecked proposal from sender!");
 
@@ -1308,15 +1306,15 @@ impl Wallet {
                         .collect();
 
                         info!(target: LOG_MODULE_WALLET, "Checking proposal for inputs...");
-                        let proposal = proposal.check_inputs_not_owned(|script| Ok(federation_scripts.contains(script))).save(&persister).expect("Could not move to MaybeInputsSeen");
+                        let proposal = proposal.check_inputs_not_owned(&mut |script| Ok(federation_scripts.contains(script))).save(&persister).expect("Could not move to MaybeInputsSeen");
 
                         // TODO: Will need to implement proper relay protection by keeping track of which inputs have been seen
                         info!(target: LOG_MODULE_WALLET, "Assuming inputs have no been seen before...");
-                        let proposal = proposal.check_no_inputs_seen_before(|_outpoint| Ok(false)).save(&persister).expect("Could not move to OutputsUnknown");
+                        let proposal = proposal.check_no_inputs_seen_before(&mut |_outpoint| Ok(false)).save(&persister).expect("Could not move to OutputsUnknown");
 
                         // Identify that output that will be used for the pegin
                         info!(target: LOG_MODULE_WALLET, "Identifying receiver outputs...");
-                        let proposal = proposal.identify_receiver_outputs(|script| Ok(script == &receiver_script)).save(&persister).expect("Could not move to WantsOutput");
+                        let proposal = proposal.identify_receiver_outputs(&mut |script| Ok(script == &receiver_script)).save(&persister).expect("Could not move to WantsOutput");
 
                         // Commit the outputs, we don't need to add anything additional (we just want to add an input)
                         info!(target: LOG_MODULE_WALLET, "Committing outputs...");
@@ -1326,13 +1324,13 @@ impl Wallet {
                         let input_pairs: Vec<payjoin::receive::InputPair> = utxos.iter().filter_map(|(utxo_key, utxo)| {
                             let tweaked = descriptor.tweak(&utxo.tweak, &secp);
                             let script_pubkey = tweaked.script_pubkey();
-                            let witness_script = tweaked.script_code().expect("Failed to get witness script");
+                            let expected_weight = tweaked.max_weight_to_satisfy().expect("Failed to get expected weight");
                             let txout = TxOut {
                                 value: utxo.amount,
                                 script_pubkey,
                             };
 
-                            InputPair::new_p2wsh(txout, utxo_key.0, witness_script, None).ok()
+                            InputPair::new_p2wsh(txout, utxo_key.0, None, expected_weight).ok()
                         })
                         .collect();
 
@@ -1354,60 +1352,103 @@ impl Wallet {
                         let proposal = proposal.contribute_inputs(vec![selected_input]).expect("Could not contribute input");
 
                         info!(target: LOG_MODULE_WALLET, "Committing inputs...");
-                        let proposal = proposal.commit_inputs().save(&persister).expect("Could not move to ProvisionalProposal");
+                        let proposal = proposal.commit_inputs().save(&persister).expect("Could not move to WantsFeeRange");
+
+                        info!(target: LOG_MODULE_WALLET, "Applying fee range...");
+                        let proposal = proposal.apply_fee_range(None, None).save(&persister).expect("Could not move to ProvisionalProposal");
 
                         let utxo_map: BTreeMap<bitcoin::OutPoint, SpendableUTXO> = utxos.iter().map(|(key, utxo)| (key.0, utxo.clone())).collect();
 
                         info!(target: LOG_MODULE_WALLET, "Finalizing proposal...");
-                        let proposal = proposal.finalize_proposal(|psbt| {
-                            let mut psbt = psbt.clone();
 
-                            // Attach tweaks to PSBT before signing
-                            info!(target: LOG_MODULE_WALLET, "Attaching tweaks to inputs...");
-                            for (i, tx_input) in psbt.unsigned_tx.input.iter().enumerate() {
-                                if let Some(utxo) = utxo_map.get(&tx_input.previous_output) {
-                                    info!(target: LOG_MODULE_WALLET, "Found one of our inputs. Attaching tweak...");
-                                    psbt.inputs[i].proprietary.insert(proprietary_tweak_key(), utxo.tweak.to_vec());
-                                }
-                            }
+                        // Use spawn_blocking to allow async operations inside the synchronous finalize_proposal callback.
+                        // The payjoin library's finalize_proposal takes a sync FnOnce, but we need to do async work
+                        // (database writes/reads for consensus signing). spawn_blocking moves this to a blocking
+                        // thread pool where we can use block_on to run async code.
+                        let rt_handle = tokio::runtime::Handle::current();
+                        let proposal = tokio::task::block_in_place(move || {
+                            proposal.finalize_proposal(|psbt| {
+                                let mut psbt = psbt.clone();
 
-                            let wallet = StatelessWallet {
-                                descriptor: &descriptor,
-                                secret_key: &secret_key,
-                                secp: &secp,
-                            };
-                            info!(target: LOG_MODULE_WALLET, "Signing Psbt...");
-                            wallet.sign_psbt(&mut psbt);
+                                // Attach tweaks and witness scripts to PSBT before signing
+                                info!(target: LOG_MODULE_WALLET, "Attaching tweaks and witness scripts to inputs...");
+                                for (i, tx_input) in psbt.unsigned_tx.input.iter().enumerate() {
+                                    if let Some(utxo) = utxo_map.get(&tx_input.previous_output) {
+                                        info!(target: LOG_MODULE_WALLET, "Found one of our inputs. Attaching tweak and witness script...");
+                                        psbt.inputs[i].proprietary.insert(proprietary_tweak_key(), utxo.tweak.to_vec());
 
-                            /*
-                            let txid = psbt.unsigned_tx.compute_txid();
-                            info!(target: LOG_MODULE_WALLET, %txid, "Extracting signatures from Psbt...");
-                            let sigs: Vec<secp256k1::ecdsa::Signature> = psbt.inputs.iter_mut().filter_map(|input| {
-                                if input.partial_sigs.is_empty() {
-                                    return None;
+                                        // Attach witness script required for P2WSH signing (BIP-143 sighash calculation)
+                                        let tweaked = descriptor.tweak(&utxo.tweak, &secp);
+                                        let witness_script = tweaked.script_code().expect("Failed to get witness script");
+                                        psbt.inputs[i].witness_script = Some(witness_script);
+                                    }
                                 }
 
-                                let sig = std::mem::take(&mut input.partial_sigs).into_values().next()?;
-                                secp256k1::ecdsa::Signature::from_der(&sig.to_vec()[..sig.to_vec().len() - 1]).ok()
-                            }).collect();
+                                // Sign only the inputs that belong to the federation (have tweaks attached)
+                                // We can't use wallet.sign_psbt() because it expects ALL inputs to have tweaks,
+                                // but in a payjoin PSBT, the sender's inputs don't have tweaks.
+                                info!(target: LOG_MODULE_WALLET, "Signing Psbt (only federation inputs)...");
+                                let mut tx_hasher = SighashCache::new(&psbt.unsigned_tx);
+                                for (idx, psbt_input) in psbt.inputs.iter_mut().enumerate() {
+                                    // Only sign inputs that have our tweak (federation-owned inputs)
+                                    let Some(tweak) = psbt_input.proprietary.get(&proprietary_tweak_key()) else {
+                                        continue;
+                                    };
 
-                            info!(target: LOG_MODULE_WALLET, num_signatures = %sigs.len(), "Need to start consensus signing...");
-                            */
+                                    let tweaked_secret = secret_key.tweak(tweak, &secp);
 
-                            let (sender, receiver) = oneshot::channel::<Psbt>();
-                            task_group.spawn_cancellable("payjoin get signatures", async move {
-                                info!(target: LOG_MODULE_WALLET, "payjoin get signatures async task");
+                                    let witness_script = psbt_input
+                                        .witness_script
+                                        .as_ref()
+                                        .expect("Missing witness script for federation input");
+                                    let witness_utxo = psbt_input
+                                        .witness_utxo
+                                        .as_ref()
+                                        .expect("Missing UTXO for federation input");
 
-                                fedimint_core::task::sleep(Duration::from_secs(20)).await;
-                                let _ = sender.send(psbt);
-                            });
+                                    let tx_hash = tx_hasher
+                                        .p2wsh_signature_hash(
+                                            idx,
+                                            witness_script,
+                                            witness_utxo.value,
+                                            EcdsaSighashType::All,
+                                        )
+                                        .expect("Failed to create segwit sighash");
 
-                            let finalized_psbt = receiver.blocking_recv().expect("Error when receiving over channel");
-                            Ok(finalized_psbt)
-                            //Ok(psbt.clone())
-                        },
-                        None,
-                        None)
+                                    let signature = secp.sign_ecdsa(
+                                        &Message::from_digest_slice(&tx_hash[..]).expect("Invalid hash length"),
+                                        &tweaked_secret,
+                                    );
+
+                                    psbt_input.partial_sigs.insert(
+                                        bitcoin::PublicKey {
+                                            compressed: true,
+                                            inner: secp256k1::PublicKey::from_secret_key(&secp, &tweaked_secret),
+                                        },
+                                        EcdsaSig::sighash_all(signature),
+                                    );
+
+                                    info!(target: LOG_MODULE_WALLET, idx = idx, "Signed federation input");
+                                }
+
+                                // Use block_on to run async code inside this sync callback
+                                // This is where you would do database writes/reads for consensus signing
+                                let signed_psbt = rt_handle.block_on(async {
+                                    info!(target: LOG_MODULE_WALLET, "Starting async consensus signing placeholder...");
+
+                                    // TODO: Replace this placeholder with actual consensus signing logic:
+                                    // 1. Write signature request to database
+                                    // 2. Wait for other federation members to sign
+                                    // 3. Collect and combine signatures
+                                    fedimint_core::task::sleep(Duration::from_secs(5)).await;
+
+                                    info!(target: LOG_MODULE_WALLET, "Async consensus signing placeholder complete");
+                                    psbt
+                                });
+
+                                Ok(signed_psbt)
+                            })
+                        })
                         .save(&persister)
                         .expect("Could not finalize proposal");
 
