@@ -1609,6 +1609,8 @@ mod fedimint_migration_tests {
                     DbKeyPrefix::RecoveryItem => {
                         // Recovery items are new and won't be in old snapshots
                     }
+                    DbKeyPrefix::UnsignedPayjoin => {}
+                    DbKeyPrefix::PayjoinSignature => {}
                 }
             }
             Ok(())

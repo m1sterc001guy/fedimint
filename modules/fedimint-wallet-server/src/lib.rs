@@ -27,7 +27,7 @@ use bitcoin::ecdsa::Signature as EcdsaSig;
 use bitcoin::hashes::{Hash as BitcoinHash, HashEngine, Hmac, HmacEngine, sha256};
 use bitcoin::policy::DEFAULT_MIN_RELAY_TX_FEE;
 use bitcoin::psbt::{Input, Psbt};
-use bitcoin::secp256k1::{self, All, Message, Scalar, Secp256k1, Verification};
+use bitcoin::secp256k1::{self, All, Message, Scalar, Secp256k1, SecretKey, Verification};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::{Address, BlockHash, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid};
 use common::config::WalletConfigConsensus;
@@ -114,9 +114,10 @@ use crate::db::{
     ClaimedPegInOutpointKey, ClaimedPegInOutpointPrefixKey, ConsensusVersionVoteKey,
     ConsensusVersionVotePrefix, ConsensusVersionVotingActivationKey,
     ConsensusVersionVotingActivationPrefix, DbKeyPrefix, FeeRateVoteKey, FeeRateVotePrefix,
-    PegOutBitcoinTransaction, PegOutBitcoinTransactionPrefix, PegOutNonceKey, PegOutTxSignatureCI,
-    PegOutTxSignatureCIPrefix, PendingTransactionKey, PendingTransactionPrefixKey, UTXOKey,
-    UTXOPrefixKey, UnsignedTransactionKey, UnsignedTransactionPrefixKey, UnspentTxOutKey,
+    PayjoinSignatureCI, PayjoinSignatureCIPrefix, PegOutBitcoinTransaction,
+    PegOutBitcoinTransactionPrefix, PegOutNonceKey, PegOutTxSignatureCI, PegOutTxSignatureCIPrefix,
+    PendingTransactionKey, PendingTransactionPrefixKey, UTXOKey, UTXOPrefixKey, UnsignedPayjoinCI,
+    UnsignedPayjoinCIPrefix, UnsignedTransactionKey, UnsignedTransactionPrefixKey, UnspentTxOutKey,
     UnspentTxOutPrefix, migrate_to_v1, migrate_to_v2,
 };
 use crate::metrics::WALLET_BLOCK_COUNT;
@@ -277,6 +278,26 @@ impl ModuleInit for WalletInit {
                         "Recovery Items"
                     );
                 }
+                DbKeyPrefix::UnsignedPayjoin => {
+                    push_db_pair_items!(
+                        dbtx,
+                        UnsignedPayjoinCIPrefix,
+                        UnsignedPayjoinCI,
+                        Psbt,
+                        wallet,
+                        "Payjoin Psbt"
+                    );
+                }
+                DbKeyPrefix::PayjoinSignature => {
+                    push_db_pair_items!(
+                        dbtx,
+                        PayjoinSignatureCIPrefix,
+                        PayjoinSignatureCI,
+                        Vec<secp256k1::ecdsa::Signature>,
+                        wallet,
+                        "Payjoin Signature"
+                    );
+                }
             }
         }
 
@@ -289,7 +310,6 @@ fn default_finality_delay(network: Network) -> u32 {
     match network {
         Network::Bitcoin | Network::Regtest => 10,
         Network::Testnet | Network::Signet | Network::Testnet4 => 2,
-        _ => panic!("Unsupported network"),
     }
 }
 
@@ -304,7 +324,6 @@ fn default_client_bitcoin_rpc(network: Network) -> BitcoinRpcConfig {
             "http://127.0.0.1:{}/",
             std::env::var(FM_PORT_ESPLORA_ENV).unwrap_or_else(|_| String::from("50002"))
         ),
-        _ => panic!("Unsupported network"),
     };
 
     BitcoinRpcConfig {
@@ -501,6 +520,18 @@ impl ServerModule for Wallet {
             })
             .collect::<Vec<WalletConsensusItem>>()
             .await;
+
+        let payjoin_psbts = dbtx
+            .find_by_prefix(&UnsignedPayjoinCIPrefix)
+            .await
+            .collect::<Vec<_>>()
+            .await;
+        for (txid, psbt) in payjoin_psbts {
+            if dbtx.get_value(&PayjoinSignatureCI(txid.0)).await.is_none() {
+                // No signature for this PSBT yet
+                items.push(WalletConsensusItem::PayjoinPsbt { txid: txid.0, psbt });
+            }
+        }
 
         // If we are unable to get a block count from the node we skip adding a block
         // count vote to consensus items.
@@ -704,12 +735,26 @@ impl ServerModule for Wallet {
                     "Wallet module does not support new consensus version, please upgrade the module"
                 );
             }
-            WalletConsensusItem::PayjoinSignature {
-                txid,
-                psbt: _,
-                signature,
-            } => {
-                info!(target: LOG_MODULE_WALLET, %txid, ?signature, "Need to handle PayjoinSignatureConsensusItem");
+            WalletConsensusItem::PayjoinPsbt { txid, mut psbt } => {
+                if dbtx.get_value(&PayjoinSignatureCI(txid)).await.is_none() {
+                    info!(target: LOG_MODULE_WALLET, %txid,from_peer_id = %peer, "Received payjoin psbt");
+                    let secret_key = &self.cfg.private.peg_in_key;
+                    let sigs = Self::sign_payjoin_psbt(&mut psbt, secret_key, &self.secp);
+                    info!(target: LOG_MODULE_WALLET, %txid, from_peer_id = %peer, "Signed PSBT");
+
+                    let txid = psbt.unsigned_tx.compute_txid();
+                    if dbtx.get_value(&UnsignedPayjoinCI(txid)).await.is_some() {
+                        info!(target: LOG_MODULE_WALLET, %txid, from_peer_id = %peer, "We are the coordinating guardian. Saving signed psbt..");
+                        dbtx.insert_entry(&UnsignedPayjoinCI(txid), &psbt).await;
+                    }
+
+                    info!(target: LOG_MODULE_WALLET, %txid, from_peer_id = %peer, "Saving signatures...");
+                    dbtx.insert_new_entry(&PayjoinSignatureCI(txid), &sigs)
+                        .await;
+                }
+            }
+            WalletConsensusItem::PayjoinSignature { txid, sigs: _ } => {
+                info!(target: LOG_MODULE_WALLET, %txid, "Need to handle PayjoinSignature");
             }
             WalletConsensusItem::Default { variant, .. } => {
                 panic!("Received wallet consensus item with unknown variant {variant}");
@@ -1268,7 +1313,7 @@ impl Wallet {
 
     fn spawn_payjoin_session_poll(
         &self,
-        mut session: Receiver<Initialized>,
+        session: Receiver<Initialized>,
         ohttp_relay: SafeUrl,
         receiver_script: ScriptBuf,
     ) {
@@ -1276,7 +1321,6 @@ impl Wallet {
         let descriptor = self.cfg.consensus.peg_in_descriptor.clone();
         let secp = self.secp.clone();
         let secret_key = self.cfg.private.peg_in_key.clone();
-        let task_group = self.task_group.make_subgroup();
         self.task_group.spawn_cancellable("payjoin session poll", async move {
             let http_client = reqwest::Client::new();
             let ohttp_relay_url = ohttp_relay.to_unsafe();
@@ -1366,6 +1410,7 @@ impl Wallet {
                         // (database writes/reads for consensus signing). spawn_blocking moves this to a blocking
                         // thread pool where we can use block_on to run async code.
                         let rt_handle = tokio::runtime::Handle::current();
+                        let db = db.clone();
                         let proposal = tokio::task::block_in_place(move || {
                             proposal.finalize_proposal(|psbt| {
                                 let mut psbt = psbt.clone();
@@ -1384,57 +1429,14 @@ impl Wallet {
                                     }
                                 }
 
-                                // Sign only the inputs that belong to the federation (have tweaks attached)
-                                // We can't use wallet.sign_psbt() because it expects ALL inputs to have tweaks,
-                                // but in a payjoin PSBT, the sender's inputs don't have tweaks.
-                                info!(target: LOG_MODULE_WALLET, "Signing Psbt (only federation inputs)...");
-                                let mut tx_hasher = SighashCache::new(&psbt.unsigned_tx);
-                                for (idx, psbt_input) in psbt.inputs.iter_mut().enumerate() {
-                                    // Only sign inputs that have our tweak (federation-owned inputs)
-                                    let Some(tweak) = psbt_input.proprietary.get(&proprietary_tweak_key()) else {
-                                        continue;
-                                    };
-
-                                    let tweaked_secret = secret_key.tweak(tweak, &secp);
-
-                                    let witness_script = psbt_input
-                                        .witness_script
-                                        .as_ref()
-                                        .expect("Missing witness script for federation input");
-                                    let witness_utxo = psbt_input
-                                        .witness_utxo
-                                        .as_ref()
-                                        .expect("Missing UTXO for federation input");
-
-                                    let tx_hash = tx_hasher
-                                        .p2wsh_signature_hash(
-                                            idx,
-                                            witness_script,
-                                            witness_utxo.value,
-                                            EcdsaSighashType::All,
-                                        )
-                                        .expect("Failed to create segwit sighash");
-
-                                    let signature = secp.sign_ecdsa(
-                                        &Message::from_digest_slice(&tx_hash[..]).expect("Invalid hash length"),
-                                        &tweaked_secret,
-                                    );
-
-                                    psbt_input.partial_sigs.insert(
-                                        bitcoin::PublicKey {
-                                            compressed: true,
-                                            inner: secp256k1::PublicKey::from_secret_key(&secp, &tweaked_secret),
-                                        },
-                                        EcdsaSig::sighash_all(signature),
-                                    );
-
-                                    info!(target: LOG_MODULE_WALLET, idx = idx, "Signed federation input");
-                                }
-
                                 // Use block_on to run async code inside this sync callback
                                 // This is where you would do database writes/reads for consensus signing
                                 let signed_psbt = rt_handle.block_on(async {
                                     info!(target: LOG_MODULE_WALLET, "Starting async consensus signing placeholder...");
+                                    let txid = psbt.unsigned_tx.compute_txid();
+                                    let mut dbtx = db.begin_transaction().await;
+                                    dbtx.insert_new_entry(&UnsignedPayjoinCI(txid), &psbt).await;
+                                    dbtx.commit_tx().await;
 
                                     // TODO: Replace this placeholder with actual consensus signing logic:
                                     // 1. Write signature request to database
@@ -1464,6 +1466,74 @@ impl Wallet {
                 }
             }
         });
+    }
+
+    fn sign_payjoin_psbt(
+        psbt: &mut Psbt,
+        secret_key: &SecretKey,
+        secp: &Secp256k1<All>,
+    ) -> Vec<secp256k1::ecdsa::Signature> {
+        // Sign only the inputs that belong to the federation (have tweaks attached)
+        // We can't use wallet.sign_psbt() because it expects ALL inputs to have tweaks,
+        // but in a payjoin PSBT, the sender's inputs don't have tweaks.
+        info!(target: LOG_MODULE_WALLET, "Signing Psbt (only federation inputs)...");
+        let mut tx_hasher = SighashCache::new(&psbt.unsigned_tx);
+        for (idx, psbt_input) in psbt.inputs.iter_mut().enumerate() {
+            // Only sign inputs that have our tweak (federation-owned inputs)
+            let Some(tweak) = psbt_input.proprietary.get(&proprietary_tweak_key()) else {
+                continue;
+            };
+
+            let tweaked_secret = secret_key.tweak(tweak, &secp);
+
+            let witness_script = psbt_input
+                .witness_script
+                .as_ref()
+                .expect("Missing witness script for federation input");
+            let witness_utxo = psbt_input
+                .witness_utxo
+                .as_ref()
+                .expect("Missing UTXO for federation input");
+
+            let tx_hash = tx_hasher
+                .p2wsh_signature_hash(
+                    idx,
+                    witness_script,
+                    witness_utxo.value,
+                    EcdsaSighashType::All,
+                )
+                .expect("Failed to create segwit sighash");
+
+            let signature = secp.sign_ecdsa(
+                &Message::from_digest_slice(&tx_hash[..]).expect("Invalid hash length"),
+                &tweaked_secret,
+            );
+
+            psbt_input.partial_sigs.insert(
+                bitcoin::PublicKey {
+                    compressed: true,
+                    inner: secp256k1::PublicKey::from_secret_key(&secp, &tweaked_secret),
+                },
+                EcdsaSig::sighash_all(signature),
+            );
+
+            info!(target: LOG_MODULE_WALLET, idx = idx, "Signed federation input");
+        }
+
+        let sigs: Vec<secp256k1::ecdsa::Signature> = psbt
+            .inputs
+            .iter()
+            .filter_map(|input| {
+                if !input.proprietary.contains_key(&proprietary_tweak_key()) {
+                    return None;
+                }
+
+                let sig = input.partial_sigs.values().next()?;
+                secp256k1::ecdsa::Signature::from_der(&sig.to_vec()[..sig.to_vec().len() - 1]).ok()
+            })
+            .collect();
+
+        sigs
     }
 
     /// Try to attach signatures to a pending peg-out tx.

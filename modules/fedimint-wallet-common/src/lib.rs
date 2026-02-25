@@ -56,10 +56,13 @@ pub enum WalletConsensusItem {
     Feerate(Feerate),
     PegOutSignature(PegOutSignatureItem),
     ModuleConsensusVersion(ModuleConsensusVersion),
-    PayjoinSignature {
+    PayjoinPsbt {
         txid: Txid,
         psbt: Psbt,
-        signature: Vec<secp256k1::ecdsa::Signature>,
+    },
+    PayjoinSignature {
+        txid: Txid,
+        sigs: Vec<secp256k1::ecdsa::Signature>,
     },
     #[encodable_default]
     Default {
@@ -90,6 +93,9 @@ impl std::fmt::Display for WalletConsensusItem {
                     "Wallet Consensus Version {}.{}",
                     version.major, version.minor
                 )
+            }
+            WalletConsensusItem::PayjoinPsbt { txid, .. } => {
+                write!(f, "Wallet Payjoin Signature for Bitcoin Txid: {txid}")
             }
             WalletConsensusItem::PayjoinSignature { txid, .. } => {
                 write!(f, "Wallet Payjoin Signature for Bitcoin Txid: {txid}")

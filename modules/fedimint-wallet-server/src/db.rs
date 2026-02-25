@@ -1,5 +1,5 @@
 use bitcoin::secp256k1::ecdsa::Signature;
-use bitcoin::{BlockHash, OutPoint, TxOut, Txid};
+use bitcoin::{BlockHash, OutPoint, Psbt, TxOut, Txid};
 use fedimint_core::db::IDatabaseTransactionOpsCoreTyped;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::ModuleConsensusVersion;
@@ -35,6 +35,8 @@ pub enum DbKeyPrefix {
     // was started with fedimint 0.8 or later
     BlockHashByHeight = 0x43,
     RecoveryItem = 0x44,
+    UnsignedPayjoin = 0x45,
+    PayjoinSignature = 0x46,
 }
 
 impl std::fmt::Display for DbKeyPrefix {
@@ -299,6 +301,40 @@ impl_db_record!(
     db_prefix = DbKeyPrefix::RecoveryItem,
 );
 impl_db_lookup!(key = RecoveryItemKey, query_prefix = RecoveryItemKeyPrefix);
+
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct UnsignedPayjoinCI(pub Txid);
+
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct UnsignedPayjoinCIPrefix;
+
+impl_db_record!(
+    key = UnsignedPayjoinCI,
+    value = Psbt,
+    db_prefix = DbKeyPrefix::UnsignedPayjoin
+);
+
+impl_db_lookup!(
+    key = UnsignedPayjoinCI,
+    query_prefix = UnsignedPayjoinCIPrefix
+);
+
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct PayjoinSignatureCI(pub Txid);
+
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct PayjoinSignatureCIPrefix;
+
+impl_db_record!(
+    key = PayjoinSignatureCI,
+    value = Vec<Signature>,
+    db_prefix = DbKeyPrefix::PayjoinSignature
+);
+
+impl_db_lookup!(
+    key = PayjoinSignatureCI,
+    query_prefix = PayjoinSignatureCIPrefix
+);
 
 /// Migrate to v2, backfilling recovery items from module history
 pub async fn migrate_to_v2(
