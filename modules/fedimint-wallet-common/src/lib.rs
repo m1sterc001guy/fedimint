@@ -564,3 +564,23 @@ pub enum ProcessPegOutSigError {
     #[error("Error finalizing PSBT {0:?}")]
     ErrorFinalizingPsbt(Vec<miniscript::psbt::Error>),
 }
+
+#[derive(Debug, Error)]
+pub enum ProcessPayjoinSigError {
+    #[error("Expected {0} signatures, got {1}")]
+    WrongSignatureCount(usize, usize),
+    #[error("Bad Sighash")]
+    SighashError,
+    #[error("Invalid signature")]
+    InvalidSignature,
+    #[error("Duplicate signature from peer")]
+    DuplicateSignature,
+    #[error("Missing tweak on federation input")]
+    MissingTweak,
+    #[error("Missing witness script on federation input")]
+    MissingWitnessScript,
+    #[error("Missing UTXO on federation input")]
+    MissingUtxo,
+    #[error("Not enough signatures: have {have}, need {need}")]
+    NotEnoughSignatures { have: usize, need: usize },
+}

@@ -37,6 +37,7 @@ pub enum DbKeyPrefix {
     RecoveryItem = 0x44,
     UnsignedPayjoin = 0x45,
     PayjoinSignature = 0x46,
+    FinalizedPayjoin = 0x47,
 }
 
 impl std::fmt::Display for DbKeyPrefix {
@@ -334,6 +335,24 @@ impl_db_record!(
 impl_db_lookup!(
     key = PayjoinSignatureCI,
     query_prefix = PayjoinSignatureCIPrefix
+);
+
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FinalizedPayjoin(pub Txid);
+
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FinalizedPayjoinPrefix;
+
+impl_db_record!(
+    key = FinalizedPayjoin,
+    value = Psbt,
+    db_prefix = DbKeyPrefix::FinalizedPayjoin,
+    notify_on_modify = true
+);
+
+impl_db_lookup!(
+    key = FinalizedPayjoin,
+    query_prefix = FinalizedPayjoinPrefix
 );
 
 /// Migrate to v2, backfilling recovery items from module history

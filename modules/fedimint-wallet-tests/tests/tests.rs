@@ -1611,6 +1611,7 @@ mod fedimint_migration_tests {
                     }
                     DbKeyPrefix::UnsignedPayjoin => {}
                     DbKeyPrefix::PayjoinSignature => {}
+                    DbKeyPrefix::FinalizedPayjoin => {}
                 }
             }
             Ok(())

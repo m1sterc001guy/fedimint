@@ -29,12 +29,15 @@ use bitcoin::policy::DEFAULT_MIN_RELAY_TX_FEE;
 use bitcoin::psbt::{Input, Psbt};
 use bitcoin::secp256k1::{self, All, Message, Scalar, Secp256k1, SecretKey, Verification};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
-use bitcoin::{Address, BlockHash, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid};
+use bitcoin::{
+    Address, BlockHash, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+};
 use common::config::WalletConfigConsensus;
 use common::{
-    DEPRECATED_RBF_ERROR, PegOutFees, PegOutSignatureItem, ProcessPegOutSigError, SpendableUTXO,
-    TxOutputSummary, WalletCommonInit, WalletConsensusItem, WalletInput, WalletModuleTypes,
-    WalletOutput, WalletOutputOutcome, WalletSummary, proprietary_tweak_key,
+    DEPRECATED_RBF_ERROR, PegOutFees, PegOutSignatureItem, ProcessPayjoinSigError,
+    ProcessPegOutSigError, SpendableUTXO, TxOutputSummary, WalletCommonInit, WalletConsensusItem,
+    WalletInput, WalletModuleTypes, WalletOutput, WalletOutputOutcome, WalletSummary,
+    proprietary_tweak_key,
 };
 use db::{
     BlockHashByHeightKey, BlockHashByHeightKeyPrefix, BlockHashByHeightValue, RecoveryItemKey,
@@ -114,11 +117,12 @@ use crate::db::{
     ClaimedPegInOutpointKey, ClaimedPegInOutpointPrefixKey, ConsensusVersionVoteKey,
     ConsensusVersionVotePrefix, ConsensusVersionVotingActivationKey,
     ConsensusVersionVotingActivationPrefix, DbKeyPrefix, FeeRateVoteKey, FeeRateVotePrefix,
-    PayjoinSignatureCI, PayjoinSignatureCIPrefix, PegOutBitcoinTransaction,
-    PegOutBitcoinTransactionPrefix, PegOutNonceKey, PegOutTxSignatureCI, PegOutTxSignatureCIPrefix,
-    PendingTransactionKey, PendingTransactionPrefixKey, UTXOKey, UTXOPrefixKey, UnsignedPayjoinCI,
-    UnsignedPayjoinCIPrefix, UnsignedTransactionKey, UnsignedTransactionPrefixKey, UnspentTxOutKey,
-    UnspentTxOutPrefix, migrate_to_v1, migrate_to_v2,
+    FinalizedPayjoin, FinalizedPayjoinPrefix, PayjoinSignatureCI, PayjoinSignatureCIPrefix,
+    PegOutBitcoinTransaction, PegOutBitcoinTransactionPrefix, PegOutNonceKey, PegOutTxSignatureCI,
+    PegOutTxSignatureCIPrefix, PendingTransactionKey, PendingTransactionPrefixKey, UTXOKey,
+    UTXOPrefixKey, UnsignedPayjoinCI, UnsignedPayjoinCIPrefix, UnsignedTransactionKey,
+    UnsignedTransactionPrefixKey, UnspentTxOutKey, UnspentTxOutPrefix, migrate_to_v1,
+    migrate_to_v2,
 };
 use crate::metrics::WALLET_BLOCK_COUNT;
 
@@ -296,6 +300,16 @@ impl ModuleInit for WalletInit {
                         Vec<secp256k1::ecdsa::Signature>,
                         wallet,
                         "Payjoin Signature"
+                    );
+                }
+                DbKeyPrefix::FinalizedPayjoin => {
+                    push_db_pair_items!(
+                        dbtx,
+                        FinalizedPayjoinPrefix,
+                        FinalizedPayjoin,
+                        Psbt,
+                        wallet,
+                        "Payjoin Finalized Psbt"
                     );
                 }
             }
@@ -533,6 +547,18 @@ impl ServerModule for Wallet {
             }
         }
 
+        let payjoin_sigs = dbtx
+            .find_by_prefix(&PayjoinSignatureCIPrefix)
+            .await
+            .collect::<Vec<_>>()
+            .await;
+        for (txid, sigs) in payjoin_sigs {
+            // Only broadcast our signature if we're not coordinating the payjoin
+            if dbtx.get_value(&UnsignedPayjoinCI(txid.0)).await.is_none() {
+                items.push(WalletConsensusItem::PayjoinSignature { txid: txid.0, sigs });
+            }
+        }
+
         // If we are unable to get a block count from the node we skip adding a block
         // count vote to consensus items.
         //
@@ -753,8 +779,83 @@ impl ServerModule for Wallet {
                         .await;
                 }
             }
-            WalletConsensusItem::PayjoinSignature { txid, sigs: _ } => {
-                info!(target: LOG_MODULE_WALLET, %txid, "Need to handle PayjoinSignature");
+            WalletConsensusItem::PayjoinSignature { txid, sigs } => {
+                if let Some(mut psbt) = dbtx.get_value(&UnsignedPayjoinCI(txid)).await {
+                    // We have the PSBT - attach signatures from peer
+
+                    // Check for duplicate consensus item (peer already submitted signatures)
+                    let peer_key = self
+                        .cfg
+                        .consensus
+                        .peer_peg_in_keys
+                        .get(&peer)
+                        .expect("always called with valid peer id");
+
+                    let already_signed = psbt.inputs.iter().any(|input| {
+                        let Some(tweak) = input.proprietary.get(&proprietary_tweak_key()) else {
+                            return false;
+                        };
+                        let tweaked_peer_key: bitcoin::PublicKey =
+                            peer_key.tweak(tweak, &self.secp).into();
+                        input.partial_sigs.contains_key(&tweaked_peer_key)
+                    });
+
+                    if already_signed {
+                        info!(
+                            target: LOG_MODULE_WALLET,
+                            %txid,
+                            peer_id = %peer,
+                            "Peer already signed this payjoin PSBT, ignoring duplicate"
+                        );
+                        bail!("Duplicate payjoin signature from peer");
+                    }
+
+                    info!(
+                        target: LOG_MODULE_WALLET,
+                        %txid,
+                        peer_id = %peer,
+                        num_sigs = sigs.len(),
+                        "Attaching payjoin signatures from peer"
+                    );
+
+                    // Attach signatures to federation inputs
+                    self.attach_payjoin_signatures(&mut psbt, peer, &sigs)
+                        .context("Payjoin signature is invalid")?;
+
+                    // Update the PSBT in database
+                    dbtx.insert_entry(&UnsignedPayjoinCI(txid), &psbt).await;
+
+                    // Try to finalize federation inputs
+                    match self.try_finalize_payjoin_psbt(&psbt) {
+                        Ok(finalized_psbt) => {
+                            info!(
+                                target: LOG_MODULE_WALLET,
+                                %txid,
+                                "Successfully finalized payjoin PSBT"
+                            );
+
+                            let finalized = finalized_psbt;
+                            dbtx.insert_new_entry(&FinalizedPayjoin(txid), &finalized)
+                                .await;
+
+                            // Cleanup
+                            dbtx.remove_entry(&PayjoinSignatureCI(txid)).await;
+                            dbtx.remove_entry(&UnsignedPayjoinCI(txid)).await;
+                        }
+                        Err(e) => {
+                            info!(
+                                target: LOG_MODULE_WALLET,
+                                %txid,
+                                error = %e,
+                                "Could not finalize payjoin PSBT yet, waiting for more signatures"
+                            );
+                        }
+                    }
+                } else {
+                    // We don't have the PSBT - not involved in this payjoin
+                    // Clean up our signature entry if we have one
+                    dbtx.remove_entry(&PayjoinSignatureCI(txid)).await;
+                }
             }
             WalletConsensusItem::Default { variant, .. } => {
                 panic!("Received wallet consensus item with unknown variant {variant}");
@@ -1438,14 +1539,9 @@ impl Wallet {
                                     dbtx.insert_new_entry(&UnsignedPayjoinCI(txid), &psbt).await;
                                     dbtx.commit_tx().await;
 
-                                    // TODO: Replace this placeholder with actual consensus signing logic:
-                                    // 1. Write signature request to database
-                                    // 2. Wait for other federation members to sign
-                                    // 3. Collect and combine signatures
-                                    fedimint_core::task::sleep(Duration::from_secs(5)).await;
-
-                                    info!(target: LOG_MODULE_WALLET, "Async consensus signing placeholder complete");
-                                    psbt
+                                    let finalized = db.wait_key_exists(&FinalizedPayjoin(txid)).await;
+                                    info!(target: LOG_MODULE_WALLET, "Finalized psbt found in database, returning...");
+                                    finalized
                                 });
 
                                 Ok(signed_psbt)
@@ -1534,6 +1630,177 @@ impl Wallet {
             .collect();
 
         sigs
+    }
+
+    /// Attach a peer's signatures to the federation inputs in a payjoin PSBT.
+    fn attach_payjoin_signatures(
+        &self,
+        psbt: &mut Psbt,
+        peer: PeerId,
+        signatures: &[secp256k1::ecdsa::Signature],
+    ) -> Result<(), ProcessPayjoinSigError> {
+        let peer_key = self
+            .cfg
+            .consensus
+            .peer_peg_in_keys
+            .get(&peer)
+            .expect("always called with valid peer id");
+
+        // Get federation input indices (those with tweaks)
+        let federation_input_indices: Vec<usize> = psbt
+            .inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, input)| input.proprietary.contains_key(&proprietary_tweak_key()))
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if federation_input_indices.len() != signatures.len() {
+            return Err(ProcessPayjoinSigError::WrongSignatureCount(
+                federation_input_indices.len(),
+                signatures.len(),
+            ));
+        }
+
+        let mut tx_hasher = SighashCache::new(&psbt.unsigned_tx);
+
+        for (sig_idx, input_idx) in federation_input_indices.iter().enumerate() {
+            let input = &mut psbt.inputs[*input_idx];
+            let signature = &signatures[sig_idx];
+
+            let tweak = input
+                .proprietary
+                .get(&proprietary_tweak_key())
+                .ok_or(ProcessPayjoinSigError::MissingTweak)?;
+
+            let witness_script = input
+                .witness_script
+                .as_ref()
+                .ok_or(ProcessPayjoinSigError::MissingWitnessScript)?;
+
+            let witness_utxo = input
+                .witness_utxo
+                .as_ref()
+                .ok_or(ProcessPayjoinSigError::MissingUtxo)?;
+
+            let tx_hash = tx_hasher
+                .p2wsh_signature_hash(
+                    *input_idx,
+                    witness_script,
+                    witness_utxo.value,
+                    EcdsaSighashType::All,
+                )
+                .map_err(|_| ProcessPayjoinSigError::SighashError)?;
+
+            let tweaked_peer_key = peer_key.tweak(tweak, &self.secp);
+
+            // Verify the signature
+            self.secp
+                .verify_ecdsa(
+                    &Message::from_digest_slice(&tx_hash[..]).unwrap(),
+                    signature,
+                    &tweaked_peer_key.key,
+                )
+                .map_err(|_| ProcessPayjoinSigError::InvalidSignature)?;
+
+            // Check for duplicate signature from this peer
+            let bitcoin_pubkey: bitcoin::PublicKey = tweaked_peer_key.into();
+            if input.partial_sigs.contains_key(&bitcoin_pubkey) {
+                return Err(ProcessPayjoinSigError::DuplicateSignature);
+            }
+
+            // Insert the signature
+            input
+                .partial_sigs
+                .insert(bitcoin_pubkey, EcdsaSig::sighash_all(*signature));
+
+            info!(
+                target: LOG_MODULE_WALLET,
+                input_idx = *input_idx,
+                peer_id = %peer,
+                "Attached payjoin signature from peer"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Try to finalize a payjoin PSBT by manually constructing witnesses for
+    /// federation inputs.
+    ///
+    /// This function only finalizes federation inputs (identified by having
+    /// the proprietary tweak key). Sender inputs are left unchanged - the
+    /// sender will re-sign after receiving the proposal.
+    ///
+    /// Returns `NotEnoughSignatures` error if any federation input doesn't have
+    /// threshold signatures yet.
+    fn try_finalize_payjoin_psbt(&self, psbt: &Psbt) -> Result<Psbt, ProcessPayjoinSigError> {
+        let mut psbt = psbt.clone();
+        let threshold = self
+            .cfg
+            .consensus
+            .peer_peg_in_keys
+            .to_num_peers()
+            .threshold();
+
+        // Process each input - only finalize federation inputs
+        for (input_idx, input) in psbt.inputs.iter_mut().enumerate() {
+            // Skip non-federation inputs (sender inputs don't have the tweak key)
+            let Some(_tweak) = input.proprietary.get(&proprietary_tweak_key()) else {
+                continue;
+            };
+
+            // Check if we have enough signatures
+            let sig_count = input.partial_sigs.len();
+            if sig_count < threshold {
+                return Err(ProcessPayjoinSigError::NotEnoughSignatures {
+                    have: sig_count,
+                    need: threshold,
+                });
+            }
+
+            // Get the witness script (required for P2WSH)
+            let witness_script = input
+                .witness_script
+                .as_ref()
+                .ok_or(ProcessPayjoinSigError::MissingWitnessScript)?
+                .clone();
+
+            // Build the witness for multisig P2WSH:
+            // <empty> <sig1> <sig2> ... <sigN> <witness_script>
+            //
+            // The signatures in partial_sigs are stored in a BTreeMap<PublicKey, Signature>
+            // which is sorted by public key. Since the witness script uses sorted pubkeys
+            // (from the descriptor), the ordering matches.
+            let mut witness_elements: Vec<Vec<u8>> = Vec::new();
+
+            // OP_0 placeholder for CHECKMULTISIG bug
+            witness_elements.push(Vec::new());
+
+            // Add signatures in order (BTreeMap iterates in key order)
+            // Only take threshold number of signatures
+            for (_pubkey, ecdsa_sig) in input.partial_sigs.iter().take(threshold) {
+                witness_elements.push(ecdsa_sig.to_vec());
+            }
+
+            // Add the witness script
+            witness_elements.push(witness_script.to_bytes());
+
+            // Set the final witness
+            input.final_script_witness = Some(Witness::from_slice(&witness_elements));
+
+            // Clear partial_sigs since we've finalized
+            input.partial_sigs.clear();
+
+            info!(
+                target: LOG_MODULE_WALLET,
+                input_idx,
+                num_sigs = threshold,
+                "Finalized federation input in payjoin PSBT"
+            );
+        }
+
+        Ok(psbt)
     }
 
     /// Try to attach signatures to a pending peg-out tx.
