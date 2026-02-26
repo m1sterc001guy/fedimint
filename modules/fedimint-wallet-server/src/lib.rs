@@ -30,7 +30,8 @@ use bitcoin::psbt::{Input, Psbt};
 use bitcoin::secp256k1::{self, All, Message, Scalar, Secp256k1, SecretKey, Verification};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::{
-    Address, BlockHash, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    Address, BlockHash, FeeRate, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+    Weight, Witness,
 };
 use common::config::WalletConfigConsensus;
 use common::{
@@ -828,14 +829,35 @@ impl ServerModule for Wallet {
                     // Try to finalize federation inputs
                     match self.try_finalize_payjoin_psbt(&psbt) {
                         Ok(finalized_psbt) => {
+                            // Debug: Log the finalized PSBT details before storing
+                            for (i, input) in finalized_psbt.inputs.iter().enumerate() {
+                                let has_witness = input
+                                    .final_script_witness
+                                    .as_ref()
+                                    .map(|w| !w.is_empty())
+                                    .unwrap_or(false);
+                                let witness_len = input
+                                    .final_script_witness
+                                    .as_ref()
+                                    .map(|w| w.len())
+                                    .unwrap_or(0);
+                                info!(
+                                    target: LOG_MODULE_WALLET,
+                                    %txid,
+                                    input_idx = i,
+                                    has_final_witness = has_witness,
+                                    witness_element_count = witness_len,
+                                    "Storing FinalizedPayjoin - input details"
+                                );
+                            }
+
                             info!(
                                 target: LOG_MODULE_WALLET,
                                 %txid,
                                 "Successfully finalized payjoin PSBT"
                             );
 
-                            let finalized = finalized_psbt;
-                            dbtx.insert_new_entry(&FinalizedPayjoin(txid), &finalized)
+                            dbtx.insert_new_entry(&FinalizedPayjoin(txid), &finalized_psbt)
                                 .await;
 
                             // Cleanup
@@ -1399,15 +1421,29 @@ impl Wallet {
         // TODO: Use real database
         let persister = NoopSessionPersister::default();
 
+        // Get the federation's fee rate and convert to bitcoin::FeeRate
+        // sats_per_kvb / 1000 = sats_per_vb
+        let fee_rate = self.get_fee_rate_opt();
+        let max_fee_rate = FeeRate::from_sat_per_vb(fee_rate.sats_per_kvb / 1000)
+            .unwrap_or(FeeRate::BROADCAST_MIN);
+
+        info!(
+            target: LOG_MODULE_WALLET,
+            sats_per_kvb = fee_rate.sats_per_kvb,
+            sats_per_vb = fee_rate.sats_per_kvb / 1000,
+            "Setting payjoin session max_fee_rate"
+        );
+
         let session =
             ReceiverBuilder::new(address.clone(), directory.to_unsafe().as_str(), ohttp_keys)?
                 .with_expiration(Duration::from_secs(60 * 5))
                 .with_amount(amount)
+                .with_max_fee_rate(max_fee_rate)
                 .build()
                 .save(&persister)?;
         let pj_uri = session.pj_uri();
 
-        self.spawn_payjoin_session_poll(session, relay, address.script_pubkey());
+        self.spawn_payjoin_session_poll(session, relay, address.script_pubkey(), max_fee_rate);
 
         Ok(pj_uri.to_string())
     }
@@ -1417,11 +1453,11 @@ impl Wallet {
         session: Receiver<Initialized>,
         ohttp_relay: SafeUrl,
         receiver_script: ScriptBuf,
+        max_fee_rate: FeeRate,
     ) {
         let db = self.db.clone();
         let descriptor = self.cfg.consensus.peg_in_descriptor.clone();
         let secp = self.secp.clone();
-        let secret_key = self.cfg.private.peg_in_key.clone();
         self.task_group.spawn_cancellable("payjoin session poll", async move {
             let http_client = reqwest::Client::new();
             let ohttp_relay_url = ohttp_relay.to_unsafe();
@@ -1466,22 +1502,45 @@ impl Wallet {
                         let proposal = proposal.commit_outputs().save(&persister).expect("Could not move to WantsInput");
 
                         info!(target: LOG_MODULE_WALLET, "Building input pairs...");
+                        // Non-witness input weight: txid (32 bytes) + vout (4 bytes) + sequence (4 bytes) = 40 bytes
+                        // Multiplied by 4 for weight units = 160 WU
+                        // This must be added to the witness weight for proper fee calculation
+                        const NON_WITNESS_INPUT_WEIGHT: Weight = Weight::from_wu(160);
+
                         let input_pairs: Vec<payjoin::receive::InputPair> = utxos.iter().filter_map(|(utxo_key, utxo)| {
                             let tweaked = descriptor.tweak(&utxo.tweak, &secp);
                             let script_pubkey = tweaked.script_pubkey();
-                            let expected_weight = tweaked.max_weight_to_satisfy().expect("Failed to get expected weight");
+                            // max_weight_to_satisfy returns only the witness weight
+                            // We need to add the non-witness input weight for correct fee calculation
+                            let witness_weight = tweaked.max_weight_to_satisfy().expect("Failed to get expected weight");
+                            let total_input_weight = witness_weight + NON_WITNESS_INPUT_WEIGHT;
                             let txout = TxOut {
                                 value: utxo.amount,
                                 script_pubkey,
                             };
 
-                            InputPair::new_p2wsh(txout, utxo_key.0, None, expected_weight).ok()
+                            InputPair::new_p2wsh(txout, utxo_key.0, None, total_input_weight).ok()
                         })
                         .collect();
 
                         if input_pairs.is_empty() {
                             warn!(target: LOG_MODULE_WALLET, "No UTXOs available for payjoin contribution");
                             break;
+                        }
+
+                        // Log available input pairs
+                        for (utxo_key, utxo) in utxos.iter() {
+                            let tweaked = descriptor.tweak(&utxo.tweak, &secp);
+                            let witness_weight = tweaked.max_weight_to_satisfy().expect("Failed to get expected weight");
+                            let total_weight = witness_weight + NON_WITNESS_INPUT_WEIGHT;
+                            info!(
+                                target: LOG_MODULE_WALLET,
+                                outpoint = %utxo_key.0,
+                                value_sats = utxo.amount.to_sat(),
+                                witness_weight_wu = witness_weight.to_wu(),
+                                total_input_weight_wu = total_weight.to_wu(),
+                                "Available federation UTXO for payjoin"
+                            );
                         }
 
                         info!(target: LOG_MODULE_WALLET, "Selecting a privacy preserving input...");
@@ -1499,8 +1558,17 @@ impl Wallet {
                         info!(target: LOG_MODULE_WALLET, "Committing inputs...");
                         let proposal = proposal.commit_inputs().save(&persister).expect("Could not move to WantsFeeRange");
 
-                        info!(target: LOG_MODULE_WALLET, "Applying fee range...");
-                        let proposal = proposal.apply_fee_range(None, None).save(&persister).expect("Could not move to ProvisionalProposal");
+                        // Apply fee range: min_fee_rate=None uses sender's requested rate,
+                        // max_effective_fee_rate uses the federation's fee rate we set on the session
+                        info!(
+                            target: LOG_MODULE_WALLET,
+                            max_fee_rate = %max_fee_rate,
+                            "Applying fee range..."
+                        );
+                        let proposal = proposal
+                            .apply_fee_range(None, Some(max_fee_rate))
+                            .save(&persister)
+                            .expect("Could not move to ProvisionalProposal");
 
                         let utxo_map: BTreeMap<bitcoin::OutPoint, SpendableUTXO> = utxos.iter().map(|(key, utxo)| (key.0, utxo.clone())).collect();
 
@@ -1514,6 +1582,44 @@ impl Wallet {
                         let db = db.clone();
                         let proposal = tokio::task::block_in_place(move || {
                             proposal.finalize_proposal(|psbt| {
+                                // Debug: Log the PSBT details received from payjoin library
+                                // This PSBT has had apply_fee_range applied to it
+                                let tx = &psbt.unsigned_tx;
+                                let fee_amount = psbt.fee().ok();
+                                let tx_weight = tx.weight().to_wu();
+
+                                info!(
+                                    target: LOG_MODULE_WALLET,
+                                    num_inputs = tx.input.len(),
+                                    num_outputs = tx.output.len(),
+                                    fee_sats = ?fee_amount,
+                                    tx_weight_wu = tx_weight,
+                                    "PSBT received in finalize_proposal (after apply_fee_range)"
+                                );
+
+                                // Log each input's details
+                                for (i, (tx_input, psbt_input)) in tx.input.iter().zip(psbt.inputs.iter()).enumerate() {
+                                    let value = psbt_input.witness_utxo.as_ref().map(|u| u.value);
+                                    info!(
+                                        target: LOG_MODULE_WALLET,
+                                        input_idx = i,
+                                        outpoint = %tx_input.previous_output,
+                                        value = ?value,
+                                        has_witness_utxo = psbt_input.witness_utxo.is_some(),
+                                        "PSBT input details"
+                                    );
+                                }
+
+                                // Log each output's details
+                                for (i, output) in tx.output.iter().enumerate() {
+                                    info!(
+                                        target: LOG_MODULE_WALLET,
+                                        output_idx = i,
+                                        value = ?output.value,
+                                        "PSBT output details"
+                                    );
+                                }
+
                                 let mut psbt = psbt.clone();
 
                                 // Attach tweaks and witness scripts to PSBT before signing
@@ -1539,10 +1645,39 @@ impl Wallet {
                                     dbtx.insert_new_entry(&UnsignedPayjoinCI(txid), &psbt).await;
                                     dbtx.commit_tx().await;
 
-                                    let finalized = db.wait_key_exists(&FinalizedPayjoin(txid)).await;
-                                    info!(target: LOG_MODULE_WALLET, "Finalized psbt found in database, returning...");
+                                    info!(target: LOG_MODULE_WALLET, %txid, "Waiting for FinalizedPayjoin...");
+                                    let finalized: Psbt = db.wait_key_exists(&FinalizedPayjoin(txid)).await;
+
+                                    // Debug: Log the finalized PSBT's inputs
+                                    for (i, input) in finalized.inputs.iter().enumerate() {
+                                        let has_witness = input.final_script_witness.as_ref().map(|w| !w.is_empty()).unwrap_or(false);
+                                        let witness_len = input.final_script_witness.as_ref().map(|w| w.len()).unwrap_or(0);
+                                        info!(
+                                            target: LOG_MODULE_WALLET,
+                                            input_idx = i,
+                                            has_final_witness = has_witness,
+                                            witness_element_count = witness_len,
+                                            has_witness_utxo = input.witness_utxo.is_some(),
+                                            "FinalizedPayjoin input details"
+                                        );
+                                    }
+
+                                    info!(target: LOG_MODULE_WALLET, %txid, "Finalized psbt found in database, returning...");
                                     finalized
                                 });
+
+                                // Debug: Log what we're returning to the payjoin library
+                                for (i, input) in signed_psbt.inputs.iter().enumerate() {
+                                    let has_witness = input.final_script_witness.as_ref().map(|w| !w.is_empty()).unwrap_or(false);
+                                    let witness_len = input.final_script_witness.as_ref().map(|w| w.len()).unwrap_or(0);
+                                    info!(
+                                        target: LOG_MODULE_WALLET,
+                                        input_idx = i,
+                                        has_final_witness = has_witness,
+                                        witness_element_count = witness_len,
+                                        "Returning PSBT to payjoin library - input details"
+                                    );
+                                }
 
                                 Ok(signed_psbt)
                             })
@@ -1550,7 +1685,48 @@ impl Wallet {
                         .save(&persister)
                         .expect("Could not finalize proposal");
 
-                        info!(target: LOG_MODULE_WALLET, "Done. Breaking");
+                        // Post the payjoin proposal back to the sender via the directory
+                        info!(target: LOG_MODULE_WALLET, "Creating POST request to send proposal back to sender...");
+                        let (req, ohttp_ctx) = match proposal.create_post_request(ohttp_relay_url.as_str()) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                warn!(target: LOG_MODULE_WALLET, err = %e, "Failed to create POST request for payjoin proposal");
+                                break;
+                            }
+                        };
+
+                        info!(target: LOG_MODULE_WALLET, url = %req.url, "Posting payjoin proposal to directory...");
+                        let response = match http_client
+                            .post(req.url.as_str())
+                            .header("Content-Type", req.content_type)
+                            .body(req.body)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                warn!(target: LOG_MODULE_WALLET, err = %e, "Failed to send payjoin proposal POST request");
+                                break;
+                            }
+                        };
+
+                        let response_bytes = match response.bytes().await {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                warn!(target: LOG_MODULE_WALLET, err = %e, "Failed to read payjoin proposal POST response");
+                                break;
+                            }
+                        };
+
+                        // Process the response to transition to Monitor state
+                        match proposal.process_response(&response_bytes, ohttp_ctx).save(&persister) {
+                            Ok(_monitor) => {
+                                info!(target: LOG_MODULE_WALLET, "Successfully posted payjoin proposal to sender");
+                            }
+                            Err(e) => {
+                                warn!(target: LOG_MODULE_WALLET, err = %e, "Failed to process payjoin proposal POST response");
+                            }
+                        }
 
                         break;
                     }
@@ -1779,15 +1955,39 @@ impl Wallet {
 
             // Add signatures in order (BTreeMap iterates in key order)
             // Only take threshold number of signatures
-            for (_pubkey, ecdsa_sig) in input.partial_sigs.iter().take(threshold) {
-                witness_elements.push(ecdsa_sig.to_vec());
+            for (pubkey, ecdsa_sig) in input.partial_sigs.iter().take(threshold) {
+                let sig_bytes = ecdsa_sig.to_vec();
+                info!(
+                    target: LOG_MODULE_WALLET,
+                    input_idx,
+                    pubkey = %pubkey,
+                    sig_len = sig_bytes.len(),
+                    "Adding signature to witness"
+                );
+                witness_elements.push(sig_bytes);
             }
 
             // Add the witness script
-            witness_elements.push(witness_script.to_bytes());
+            let witness_script_bytes = witness_script.to_bytes();
+            info!(
+                target: LOG_MODULE_WALLET,
+                input_idx,
+                witness_script_len = witness_script_bytes.len(),
+                num_witness_elements = witness_elements.len() + 1,
+                "Adding witness script to witness"
+            );
+            witness_elements.push(witness_script_bytes);
 
             // Set the final witness
-            input.final_script_witness = Some(Witness::from_slice(&witness_elements));
+            let final_witness = Witness::from_slice(&witness_elements);
+            info!(
+                target: LOG_MODULE_WALLET,
+                input_idx,
+                witness_len = final_witness.len(),
+                witness_size = final_witness.size(),
+                "Constructed final_script_witness"
+            );
+            input.final_script_witness = Some(final_witness);
 
             // Clear partial_sigs since we've finalized
             input.partial_sigs.clear();
@@ -1796,6 +1996,7 @@ impl Wallet {
                 target: LOG_MODULE_WALLET,
                 input_idx,
                 num_sigs = threshold,
+                has_final_witness = input.final_script_witness.is_some(),
                 "Finalized federation input in payjoin PSBT"
             );
         }
