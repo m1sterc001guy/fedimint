@@ -25,6 +25,8 @@ pub enum GatewayError {
     Public(#[from] PublicGatewayError),
     #[error("{0}")]
     Lnurl(#[from] LnurlError),
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 }
 
 impl IntoResponse for GatewayError {
@@ -33,6 +35,10 @@ impl IntoResponse for GatewayError {
             GatewayError::Admin(admin) => admin.into_response(),
             GatewayError::Public(public) => public.into_response(),
             GatewayError::Lnurl(lnurl) => lnurl.into_response(),
+            GatewayError::Forbidden(msg) => Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(msg.into())
+                .expect("Failed to create Response"),
         }
     }
 }

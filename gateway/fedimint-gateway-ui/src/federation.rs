@@ -682,8 +682,14 @@ fn time_ago(t: SystemTime) -> String {
 pub async fn leave_federation_handler<E: Display>(
     State(state): State<UiState<DynGatewayApi<E>>>,
     Path(id): Path<String>,
-    _auth: UserAuth,
+    auth: UserAuth,
 ) -> impl IntoResponse {
+    // Admin-only operation
+    if !auth.is_admin() {
+        return redirect_error("Admin access required to leave a federation".to_string())
+            .into_response();
+    }
+
     let federation_id = FederationId::from_str(&id);
     if let Ok(federation_id) = federation_id {
         match state
@@ -712,9 +718,14 @@ pub async fn leave_federation_handler<E: Display>(
 
 pub async fn set_fees_handler<E: Display>(
     State(state): State<UiState<DynGatewayApi<E>>>,
-    _auth: UserAuth,
+    auth: UserAuth,
     Form(payload): Form<SetFeesPayload>,
 ) -> impl IntoResponse {
+    // Admin-only operation
+    if !auth.is_admin() {
+        return redirect_error("Admin access required to set fees".to_string()).into_response();
+    }
+
     tracing::info!("Received fees payload: {:?}", payload);
 
     match state.api.handle_set_fees_msg(payload).await {

@@ -4,22 +4,30 @@ use axum::response::Redirect;
 use axum_extra::extract::CookieJar;
 use fedimint_core::net::auth::GuardianAuthToken;
 
-use crate::{LOGIN_ROUTE, UiState};
+use crate::{LOGIN_ROUTE, UiRole, UiState};
 
-/// Extractor that validates user authentication
+/// Extractor that validates user authentication and provides role information
 pub struct UserAuth {
     /// UserAuth is an axum extractor guaranteeing when the admin password was
     /// verified. This implies we can grant logic holding it access to
     /// fedimint-core internals that require `GuardianAuthToken`, which is a
     /// very similar mechanism.
     pub guardian_auth_token: GuardianAuthToken,
+    /// The authenticated user's role (Admin or User)
+    pub role: UiRole,
 }
 
 impl UserAuth {
-    fn authenticated() -> Self {
+    fn authenticated(role: UiRole) -> Self {
         Self {
             guardian_auth_token: GuardianAuthToken::new_unchecked(),
+            role,
         }
+    }
+
+    /// Returns true if the user has Admin role
+    pub fn is_admin(&self) -> bool {
+        self.role == UiRole::Admin
     }
 }
 
@@ -37,12 +45,24 @@ where
             .await
             .map_err(|_| Redirect::to(LOGIN_ROUTE))?;
 
-        // Check if the auth cookie exists and has the correct value
-        match jar.get(&state.auth_cookie_name) {
-            Some(cookie) if cookie.value() == state.auth_cookie_value => {
-                Ok(UserAuth::authenticated())
+        // Check admin cookie first
+        if let Some(cookie) = jar.get(&state.admin_cookie_name) {
+            if cookie.value() == state.admin_cookie_value {
+                return Ok(UserAuth::authenticated(UiRole::Admin));
             }
-            _ => Err(Redirect::to(LOGIN_ROUTE)),
         }
+
+        // Check user cookie if user role is enabled
+        if let (Some(user_cookie_name), Some(user_cookie_value)) =
+            (&state.user_cookie_name, &state.user_cookie_value)
+        {
+            if let Some(cookie) = jar.get(user_cookie_name) {
+                if cookie.value() == user_cookie_value {
+                    return Ok(UserAuth::authenticated(UiRole::User));
+                }
+            }
+        }
+
+        Err(Redirect::to(LOGIN_ROUTE))
     }
 }

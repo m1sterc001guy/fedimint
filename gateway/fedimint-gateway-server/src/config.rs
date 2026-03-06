@@ -64,9 +64,14 @@ pub struct GatewayOpts {
     #[arg(long = "api-addr", env = envs::FM_GATEWAY_API_ADDR_ENV)]
     api_addr: Option<SafeUrl>,
 
-    /// Gateway webserver authentication bcrypt password hash
+    /// Gateway webserver authentication bcrypt password hash for admin access
     #[arg(long = "bcrypt-password-hash", env = envs::FM_GATEWAY_BCRYPT_PASSWORD_HASH_ENV)]
     bcrypt_password_hash: String,
+
+    /// Gateway webserver authentication bcrypt password hash for user-level
+    /// (read-only) access. If not set, user-level access is disabled.
+    #[arg(long = "bcrypt-user-password-hash", env = envs::FM_GATEWAY_BCRYPT_USER_PASSWORD_HASH_ENV)]
+    bcrypt_user_password_hash: Option<String>,
 
     /// Bitcoin network this gateway will be running on
     #[arg(long = "network", env = envs::FM_GATEWAY_NETWORK_ENV)]
@@ -141,6 +146,11 @@ impl GatewayOpts {
                 .expect("Could not join v1 api_addr")
         });
         let bcrypt_password_hash = bcrypt::HashParts::from_str(&self.bcrypt_password_hash)?;
+        let bcrypt_user_password_hash = self
+            .bcrypt_user_password_hash
+            .as_ref()
+            .map(|hash| bcrypt::HashParts::from_str(hash))
+            .transpose()?;
 
         // Default metrics listen to localhost on UI port + 1
         let metrics_listen = self.metrics_listen.unwrap_or_else(|| {
@@ -154,6 +164,7 @@ impl GatewayOpts {
             listen: self.listen,
             versioned_api,
             bcrypt_password_hash,
+            bcrypt_user_password_hash,
             network: self.network,
             num_route_hints: self.num_route_hints,
             default_routing_fees: self.default_routing_fees,
@@ -178,6 +189,9 @@ pub struct GatewayParameters {
     pub listen: SocketAddr,
     pub versioned_api: Option<SafeUrl>,
     pub bcrypt_password_hash: bcrypt::HashParts,
+    /// Optional bcrypt password hash for user-level (read-only) access.
+    /// If None, user-level access is disabled.
+    pub bcrypt_user_password_hash: Option<bcrypt::HashParts>,
     pub network: Network,
     pub num_route_hints: u32,
     pub default_routing_fees: PaymentFee,

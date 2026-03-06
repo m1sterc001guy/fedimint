@@ -46,8 +46,8 @@ async fn login_submit(
 ) -> impl IntoResponse {
     login_submit_response(
         state.api.auth().await,
-        state.auth_cookie_name,
-        state.auth_cookie_value,
+        state.admin_cookie_name,
+        state.admin_cookie_value,
         jar,
         input,
     )

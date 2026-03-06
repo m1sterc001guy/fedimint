@@ -231,6 +231,9 @@ pub trait IAdminGateway {
 
     fn get_password_hash(&self) -> String;
 
+    /// Returns the user password hash if user role is enabled, None otherwise
+    fn get_user_password_hash(&self) -> Option<String>;
+
     fn gatewayd_version(&self) -> String;
 
     async fn get_chain_source(&self) -> (ChainSource, Network);
@@ -268,17 +271,39 @@ async fn login_submit<E>(
     jar: CookieJar,
     Form(input): Form<LoginInput>,
 ) -> impl IntoResponse {
-    if let Ok(verify) = bcrypt::verify(input.password, &state.api.get_password_hash())
+    // Check admin password first
+    if let Ok(verify) = bcrypt::verify(&input.password, &state.api.get_password_hash())
         && verify
     {
-        let mut cookie = Cookie::new(state.auth_cookie_name.clone(), state.auth_cookie_value);
+        let mut cookie = Cookie::new(
+            state.admin_cookie_name.clone(),
+            state.admin_cookie_value.clone(),
+        );
         cookie.set_path(ROOT_ROUTE);
-
         cookie.set_http_only(true);
         cookie.set_same_site(Some(SameSite::Lax));
 
         let jar = jar.add(cookie);
         return (jar, Redirect::to(ROOT_ROUTE)).into_response();
+    }
+
+    // Check user password if enabled
+    if let Some(user_password_hash) = state.api.get_user_password_hash() {
+        if let Ok(verify) = bcrypt::verify(&input.password, &user_password_hash)
+            && verify
+        {
+            if let (Some(user_cookie_name), Some(user_cookie_value)) =
+                (&state.user_cookie_name, &state.user_cookie_value)
+            {
+                let mut cookie = Cookie::new(user_cookie_name.clone(), user_cookie_value.clone());
+                cookie.set_path(ROOT_ROUTE);
+                cookie.set_http_only(true);
+                cookie.set_same_site(Some(SameSite::Lax));
+
+                let jar = jar.add(cookie);
+                return (jar, Redirect::to(ROOT_ROUTE)).into_response();
+            }
+        }
     }
 
     let content = html! {
@@ -523,5 +548,12 @@ pub fn router<E: Display + Send + Sync + std::fmt::Debug + 'static>(
         )
         .with_static_routes();
 
-    app.with_state(UiState::new(api))
+    // Use UiState with user role if user password is configured
+    let state = if api.get_user_password_hash().is_some() {
+        UiState::new_with_user_role(api)
+    } else {
+        UiState::new(api)
+    };
+
+    app.with_state(state)
 }

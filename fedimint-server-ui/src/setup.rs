@@ -322,8 +322,8 @@ async fn login_submit(
 
     login_submit_response(
         auth,
-        state.auth_cookie_name,
-        state.auth_cookie_value,
+        state.admin_cookie_name,
+        state.admin_cookie_value,
         jar,
         input,
     )

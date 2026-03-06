@@ -247,9 +247,15 @@ pub struct Gateway {
     /// The task group for all tasks related to the gateway.
     task_group: TaskGroup,
 
-    /// The bcrypt password hash used to authenticate the gateway.
-    /// This is an `Arc` because `bcrypt::HashParts` does not implement `Clone`.
+    /// The bcrypt password hash used to authenticate admin access to the
+    /// gateway. This is an `Arc` because `bcrypt::HashParts` does not
+    /// implement `Clone`.
     bcrypt_password_hash: Arc<bcrypt::HashParts>,
+
+    /// Optional bcrypt password hash for user-level (read-only) access.
+    /// If None, user-level access is disabled and only admin access is
+    /// available.
+    bcrypt_user_password_hash: Option<Arc<bcrypt::HashParts>>,
 
     /// The number of route hints to include in LNv1 invoices.
     num_route_hints: u32,
@@ -457,6 +463,7 @@ impl Gateway {
                 listen,
                 versioned_api: Some(versioned_api),
                 bcrypt_password_hash,
+                bcrypt_user_password_hash: None,
                 network,
                 num_route_hints,
                 default_routing_fees: PaymentFee::TRANSACTION_FEE_DEFAULT,
@@ -670,6 +677,7 @@ impl Gateway {
             metrics_listen: gateway_parameters.metrics_listen,
             task_group,
             bcrypt_password_hash: Arc::new(gateway_parameters.bcrypt_password_hash),
+            bcrypt_user_password_hash: gateway_parameters.bcrypt_user_password_hash.map(Arc::new),
             num_route_hints,
             network,
             chain_source,
@@ -2652,6 +2660,12 @@ impl IAdminGateway for Gateway {
 
     fn get_password_hash(&self) -> String {
         self.bcrypt_password_hash.to_string()
+    }
+
+    fn get_user_password_hash(&self) -> Option<String> {
+        self.bcrypt_user_password_hash
+            .as_ref()
+            .map(|h| h.to_string())
     }
 
     fn gatewayd_version(&self) -> String {

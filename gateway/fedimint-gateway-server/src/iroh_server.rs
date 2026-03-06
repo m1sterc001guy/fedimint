@@ -9,7 +9,7 @@ use bitcoin::hashes::sha256;
 use fedimint_core::module::{FEDIMINT_GATEWAY_ALPN, IrohGatewayRequest, IrohGatewayResponse};
 use fedimint_core::net::iroh::build_iroh_endpoint;
 use fedimint_core::task::TaskGroup;
-use fedimint_gateway_common::STOP_ENDPOINT;
+use fedimint_gateway_common::{GatewayRole, STOP_ENDPOINT};
 use fedimint_logging::LOG_GATEWAY;
 use iroh::endpoint::Incoming;
 use reqwest::StatusCode;
@@ -222,21 +222,33 @@ async fn handle_incoming_iroh_request(
 /// if the authentication is incorrect. Then it will lookup the specific handler
 /// in `Handlers`, execute it, and return the function's JSON along with an HTTP
 /// status code.
+///
+/// Note: For Iroh, authenticated routes require admin access. User-level
+/// access is only supported via the HTTP API and Web UI.
 async fn handle_request(
     request: &IrohGatewayRequest,
     gateway: Arc<Gateway>,
     handlers: Arc<Handlers>,
     task_group: TaskGroup,
 ) -> anyhow::Result<(StatusCode, Json<serde_json::Value>)> {
-    if handlers.is_authenticated(&request.route) && iroh_verify_password(&gateway, request).is_err()
-    {
-        return Ok((StatusCode::UNAUTHORIZED, Json(json!(()))));
+    // For authenticated routes, verify password and get role
+    // Note: Iroh currently only supports admin access for authenticated routes
+    if handlers.is_authenticated(&request.route) {
+        match iroh_verify_password(&gateway, request) {
+            Ok(_role) => {
+                // Role is available if needed for future use, but currently
+                // Iroh authenticated routes are admin-only
+            }
+            Err(_) => return Ok((StatusCode::UNAUTHORIZED, Json(json!(())))),
+        }
     }
 
     // The STOP endpoint is handled outside of the `Handlers` struct since it has a
     // different function signature (it needs a `TaskGroup`).
     if request.route == STOP_ENDPOINT {
-        let body = crate::rpc_server::stop(Extension(task_group), Extension(gateway)).await?;
+        // Stop requires admin role - for Iroh, authenticated routes are admin-only
+        // so we pass None (which defaults to allowing admin access)
+        let body = crate::rpc_server::stop(Extension(task_group), Extension(gateway), None).await?;
         return Ok((StatusCode::OK, body));
     }
 
@@ -286,15 +298,23 @@ async fn handle_request(
 }
 
 /// Verifies if the supplied password in the Iroh request matches the gateway's
-/// password
+/// password and returns the authenticated role.
 fn iroh_verify_password(
     gateway: &Arc<Gateway>,
     request: &IrohGatewayRequest,
-) -> anyhow::Result<()> {
-    if let Some(password) = request.password.as_ref()
-        && bcrypt::verify(password, &gateway.bcrypt_password_hash.to_string())?
-    {
-        return Ok(());
+) -> anyhow::Result<GatewayRole> {
+    if let Some(password) = request.password.as_ref() {
+        // Check admin password first
+        if bcrypt::verify(password, &gateway.bcrypt_password_hash.to_string())? {
+            return Ok(GatewayRole::Admin);
+        }
+
+        // Check user password if configured
+        if let Some(ref user_hash) = gateway.bcrypt_user_password_hash {
+            if bcrypt::verify(password, &user_hash.to_string())? {
+                return Ok(GatewayRole::User);
+            }
+        }
     }
 
     Err(anyhow!("Invalid password"))

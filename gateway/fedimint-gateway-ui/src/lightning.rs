@@ -1333,9 +1333,19 @@ where
 
 pub async fn open_channel_handler<E: Display + Send + Sync>(
     State(state): State<UiState<DynGatewayApi<E>>>,
-    _auth: UserAuth,
+    auth: UserAuth,
     Form(payload): Form<OpenChannelRequest>,
 ) -> Html<String> {
+    // Admin-only operation
+    if !auth.is_admin() {
+        return Html(
+            html! {
+                div class="alert alert-danger" { "Admin access required to open channels" }
+            }
+            .into_string(),
+        );
+    }
+
     let is_lnd = matches!(state.api.lightning_mode(), LightningMode::Lnd { .. });
     match state.api.handle_open_channel_msg(payload).await {
         Ok(txid) => {
@@ -1359,9 +1369,19 @@ pub async fn open_channel_handler<E: Display + Send + Sync>(
 
 pub async fn close_channel_handler<E: Display + Send + Sync>(
     State(state): State<UiState<DynGatewayApi<E>>>,
-    _auth: UserAuth,
+    auth: UserAuth,
     Form(payload): Form<CloseChannelsWithPeerRequest>,
 ) -> Html<String> {
+    // Admin-only operation
+    if !auth.is_admin() {
+        return Html(
+            html! {
+                div class="alert alert-danger" { "Admin access required to close channels" }
+            }
+            .into_string(),
+        );
+    }
+
     let is_lnd = matches!(state.api.lightning_mode(), LightningMode::Lnd { .. });
     match state.api.handle_close_channels_with_peer_msg(payload).await {
         Ok(_) => {

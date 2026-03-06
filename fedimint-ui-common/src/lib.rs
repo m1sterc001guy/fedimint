@@ -18,21 +18,54 @@ pub const ROOT_ROUTE: &str = "/";
 pub const LOGIN_ROUTE: &str = "/login";
 pub const CONNECTIVITY_CHECK_ROUTE: &str = "/ui/connectivity-check";
 
+/// Role assigned to an authenticated UI user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiRole {
+    /// Full administrative access
+    Admin,
+    /// Read-only access
+    User,
+}
+
 /// Generic state for both setup and dashboard UIs
 #[derive(Clone)]
 pub struct UiState<T> {
     pub api: T,
-    pub auth_cookie_name: String,
-    pub auth_cookie_value: String,
+    /// Cookie name/value for admin authentication
+    pub admin_cookie_name: String,
+    pub admin_cookie_value: String,
+    /// Cookie name/value for user authentication (None if user role is
+    /// disabled)
+    pub user_cookie_name: Option<String>,
+    pub user_cookie_value: Option<String>,
 }
 
 impl<T> UiState<T> {
+    /// Create a new UiState with admin-only authentication
     pub fn new(api: T) -> Self {
         Self {
             api,
-            auth_cookie_name: thread_rng().r#gen::<[u8; 4]>().encode_hex(),
-            auth_cookie_value: thread_rng().r#gen::<[u8; 32]>().encode_hex(),
+            admin_cookie_name: thread_rng().r#gen::<[u8; 4]>().encode_hex(),
+            admin_cookie_value: thread_rng().r#gen::<[u8; 32]>().encode_hex(),
+            user_cookie_name: None,
+            user_cookie_value: None,
         }
+    }
+
+    /// Create a new UiState with both admin and user authentication
+    pub fn new_with_user_role(api: T) -> Self {
+        Self {
+            api,
+            admin_cookie_name: thread_rng().r#gen::<[u8; 4]>().encode_hex(),
+            admin_cookie_value: thread_rng().r#gen::<[u8; 32]>().encode_hex(),
+            user_cookie_name: Some(thread_rng().r#gen::<[u8; 4]>().encode_hex()),
+            user_cookie_value: Some(thread_rng().r#gen::<[u8; 32]>().encode_hex()),
+        }
+    }
+
+    /// Check if user role is enabled
+    pub fn user_role_enabled(&self) -> bool {
+        self.user_cookie_name.is_some()
     }
 }
 
@@ -156,11 +189,18 @@ pub async fn connectivity_check_handler<Api: Send + Sync + 'static>(
     jar: CookieJar,
 ) -> Html<String> {
     // Check auth manually — return empty fragment if not authenticated
-    let authenticated = jar
-        .get(&state.auth_cookie_name)
-        .is_some_and(|c| c.value() == state.auth_cookie_value);
+    // Check admin cookie first, then user cookie
+    let admin_authenticated = jar
+        .get(&state.admin_cookie_name)
+        .is_some_and(|c| c.value() == state.admin_cookie_value);
 
-    if !authenticated {
+    let user_authenticated = state
+        .user_cookie_name
+        .as_ref()
+        .zip(state.user_cookie_value.as_ref())
+        .is_some_and(|(name, value)| jar.get(name).is_some_and(|c| c.value() == value));
+
+    if !admin_authenticated && !user_authenticated {
         return Html(String::new());
     }
 

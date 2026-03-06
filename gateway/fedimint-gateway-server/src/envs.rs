@@ -70,3 +70,8 @@ pub const FM_GATEWAY_METRICS_LISTEN_ADDR_ENV: &str = "FM_GATEWAY_METRICS_LISTEN_
 /// Environment variable that instructs the gateway to generate a mnemonic if
 /// one has not already been set.
 pub const FM_GATEWAY_SKIP_SETUP_ENV: &str = "FM_GATEWAY_SKIP_SETUP";
+
+/// Environment variable that specifies the bcrypt password hash for user-level
+/// access. If not set, user-level access is disabled and only admin access is
+/// available. Users have read-only access to gateway information.
+pub const FM_GATEWAY_BCRYPT_USER_PASSWORD_HASH_ENV: &str = "FM_GATEWAY_BCRYPT_USER_PASSWORD_HASH";

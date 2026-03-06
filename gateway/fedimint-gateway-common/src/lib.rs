@@ -26,6 +26,17 @@ pub mod envs;
 
 pub const V1_API_ENDPOINT: &str = "v1";
 
+/// Role assigned to an authenticated gateway user.
+/// - `Admin`: Full access to all gateway operations
+/// - `User`: Read-only access to gateway information (balances, channels, etc.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GatewayRole {
+    /// Full administrative access to all gateway operations
+    Admin,
+    /// Read-only access to gateway information
+    User,
+}
+
 pub const ADDRESS_ENDPOINT: &str = "/address";
 pub const ADDRESS_RECHECK_ENDPOINT: &str = "/address_recheck";
 pub const BACKUP_ENDPOINT: &str = "/backup";
