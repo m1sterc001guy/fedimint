@@ -16,13 +16,18 @@ use fedimint_gateway_common::{
 };
 use fedimint_ln_common::contracts::Preimage;
 use fedimint_logging::LOG_LIGHTNING;
+use ldk_node::entropy::NodeEntropy;
+use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::lightning::offers::offer::{Offer, OfferId};
 use ldk_node::lightning::routing::gossip::{NodeAlias, NodeId};
-use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus, SendingParameters};
-use lightning::ln::channelmanager::PaymentId;
-use lightning::offers::offer::{Offer, OfferId};
-use lightning::types::payment::{PaymentHash, PaymentPreimage};
-use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description};
+use ldk_node::lightning_invoice::{
+    Bolt11Invoice as LdkBolt11Invoice, Bolt11InvoiceDescription as LdkBolt11InvoiceDescription,
+    Description as LdkDescription,
+};
+use ldk_node::lightning_types::payment::{PaymentHash, PaymentPreimage};
+use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
+use lightning_invoice::Bolt11Invoice;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{RwLock, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -107,7 +112,7 @@ impl GatewayLdkClient {
             ..Default::default()
         });
 
-        node_builder.set_entropy_bip39_mnemonic(mnemonic, None);
+        let node_entropy = NodeEntropy::from_bip39_mnemonic(mnemonic, None);
 
         match chain_source.clone() {
             ChainSource::Bitcoind {
@@ -135,10 +140,11 @@ impl GatewayLdkClient {
             return Err(anyhow::anyhow!("Invalid data dir path"));
         };
         node_builder.set_storage_dir_path(data_dir_str.to_string());
+        node_builder.set_runtime(runtime.handle().clone());
 
         info!(chain_source = %chain_source, data_dir = %data_dir_str, alias = %alias, "Starting LDK Node...");
-        let node = Arc::new(node_builder.build()?);
-        node.start_with_runtime(runtime).map_err(|err| {
+        let node = Arc::new(node_builder.build(node_entropy)?);
+        node.start().map_err(|err| {
             crit!(target: LOG_LIGHTNING, err = %err.fmt_compact(), "Failed to start LDK Node");
             LightningRpcError::FailedToConnect
         })?;
@@ -323,10 +329,16 @@ impl ILnRpcClient for GatewayLdkClient {
     async fn pay(
         &self,
         invoice: Bolt11Invoice,
-        max_delay: u64,
-        max_fee: Amount,
+        _max_delay: u64,
+        _max_fee: Amount,
     ) -> Result<PayInvoiceResponse, LightningRpcError> {
         let payment_id = PaymentId(*invoice.payment_hash().as_byte_array());
+
+        // Convert to ldk-node's Bolt11Invoice type
+        let ldk_invoice: LdkBolt11Invoice = invoice
+            .to_string()
+            .parse()
+            .expect("Failed to convert Bolt11Invoice between crate versions");
 
         // Lock by the payment hash to prevent multiple simultaneous calls with the same
         // invoice from executing. This prevents `ldk-node::Bolt11Payment::send()` from
@@ -348,15 +360,7 @@ impl ILnRpcClient for GatewayLdkClient {
             assert_eq!(
                 self.node
                     .bolt11_payment()
-                    .send(
-                        &invoice,
-                        Some(SendingParameters {
-                            max_total_routing_fee_msat: Some(Some(max_fee.msats)),
-                            max_total_cltv_expiry_delta: Some(max_delay as u32),
-                            max_path_count: None,
-                            max_channel_saturation_power_of_half: None,
-                        }),
-                    )
+                    .send(&ldk_invoice, None,)
                     // TODO: Investigate whether all error types returned by `Bolt11Payment::send()`
                     // result in idempotency.
                     .map_err(|e| LightningRpcError::FailedPayment {
@@ -463,16 +467,16 @@ impl ILnRpcClient for GatewayLdkClient {
 
         let description = match create_invoice_request.description {
             Some(InvoiceDescription::Direct(desc)) => {
-                Bolt11InvoiceDescription::Direct(Description::new(desc).map_err(|_| {
+                LdkBolt11InvoiceDescription::Direct(LdkDescription::new(desc).map_err(|_| {
                     LightningRpcError::FailedToGetInvoice {
                         failure_reason: "Invalid description".to_string(),
                     }
                 })?)
             }
             Some(InvoiceDescription::Hash(hash)) => {
-                Bolt11InvoiceDescription::Hash(lightning_invoice::Sha256(hash))
+                LdkBolt11InvoiceDescription::Hash(ldk_node::lightning_invoice::Sha256(hash))
             }
-            None => Bolt11InvoiceDescription::Direct(Description::empty()),
+            None => LdkBolt11InvoiceDescription::Direct(LdkDescription::empty()),
         };
 
         let invoice = match payment_hash_or {
@@ -828,14 +832,14 @@ impl ILnRpcClient for GatewayLdkClient {
         let payment_id = if let Some(amount) = amount {
             self.node
                 .bolt12_payment()
-                .send_using_amount(&offer, amount.msats, quantity, payer_note)
+                .send_using_amount(&offer, amount.msats, quantity, payer_note, None)
                 .map_err(|err| LightningRpcError::Bolt12Error {
                     failure_reason: err.to_string(),
                 })?
         } else {
             self.node
                 .bolt12_payment()
-                .send(&offer, quantity, payer_note)
+                .send(&offer, quantity, payer_note, None)
                 .map_err(|err| LightningRpcError::Bolt12Error {
                     failure_reason: err.to_string(),
                 })?
