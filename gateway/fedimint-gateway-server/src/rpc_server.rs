@@ -36,7 +36,8 @@ use fedimint_ln_common::gateway_endpoint_constants::{
 };
 use fedimint_lnurl::LnurlResponse;
 use fedimint_lnv2_common::endpoint_constants::{
-    CREATE_BOLT11_INVOICE_ENDPOINT, ROUTING_INFO_ENDPOINT, SEND_PAYMENT_ENDPOINT,
+    CREATE_BOLT11_INVOICE_ENDPOINT, GET_INVOICE_FOR_OFFER_ENDPOINT, ROUTING_INFO_ENDPOINT,
+    SEND_PAYMENT_ENDPOINT,
 };
 use fedimint_lnv2_common::gateway_api::{CreateBolt11InvoicePayload, SendPaymentPayload};
 use fedimint_logging::LOG_GATEWAY;
@@ -228,6 +229,13 @@ fn lnv2_routes(handlers: &mut Handlers) -> Router {
         handlers,
         CREATE_BOLT11_INVOICE_ENDPOINT,
         create_bolt11_invoice_v2,
+        false,
+        router,
+    );
+    let router = register_post_handler(
+        handlers,
+        GET_INVOICE_FOR_OFFER_ENDPOINT,
+        get_invoice_for_offer,
         false,
         router,
     );
@@ -804,6 +812,15 @@ async fn pay_offer_operator(
     Json(payload): Json<PayOfferPayload>,
 ) -> Result<Json<serde_json::Value>, GatewayError> {
     let response = gateway.handle_pay_offer_for_operator_msg(payload).await?;
+    Ok(Json(json!(response)))
+}
+
+#[instrument(target = LOG_GATEWAY, skip_all, err)]
+async fn get_invoice_for_offer(
+    Extension(gateway): Extension<Arc<Gateway>>,
+    Json(payload): Json<PayOfferPayload>,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    let response = gateway.get_invoice_for_offer(payload).await?;
     Ok(Json(json!(response)))
 }
 

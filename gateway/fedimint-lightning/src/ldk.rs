@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -69,6 +69,9 @@ pub struct GatewayLdkClient {
     /// opened and is now pending.
     pending_channels:
         Arc<RwLock<BTreeMap<UserChannelId, oneshot::Sender<anyhow::Result<OutPoint>>>>>,
+
+    pending_bolt12_payments:
+        Arc<RwLock<HashMap<PaymentId, oneshot::Sender<anyhow::Result<(PaymentHash, u64)>>>>>,
 }
 
 impl std::fmt::Debug for GatewayLdkClient {
@@ -154,6 +157,7 @@ impl GatewayLdkClient {
 
         let node_clone = node.clone();
         let pending_channels = Arc::new(RwLock::new(BTreeMap::new()));
+        let pending_bolt12_payments = Arc::new(RwLock::new(HashMap::new()));
         let pending_channels_clone = pending_channels.clone();
         task_group.spawn("ldk lightning node event handler", |handle| async move {
             loop {
@@ -175,6 +179,7 @@ impl GatewayLdkClient {
             outbound_lightning_payment_lock_pool: lockable::LockPool::new(),
             outbound_offer_lock_pool: lockable::LockPool::new(),
             pending_channels,
+            pending_bolt12_payments,
         })
     }
 
@@ -871,6 +876,49 @@ impl ILnRpcClient for GatewayLdkClient {
                 }
             }
             fedimint_core::runtime::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn get_invoice_from_offer(
+        &self,
+        offer: String,
+        quantity: Option<u64>,
+        amount: Option<Amount>,
+    ) -> Result<([u8; 32], u64), LightningRpcError> {
+        let offer = Offer::from_str(&offer).map_err(|_| LightningRpcError::Bolt12Error {
+            failure_reason: "Failed to parse Bolt12 Offer".to_string(),
+        })?;
+
+        let (tx, rx) = oneshot::channel::<anyhow::Result<(PaymentHash, u64)>>();
+
+        {
+            let mut bolt12_payments = self.pending_bolt12_payments.write().await;
+            let payment_id = if let Some(amount) = amount {
+                self.node
+                    .bolt12_payment()
+                    .send_using_amount(&offer, amount.msats, quantity, None, None)
+                    .map_err(|err| LightningRpcError::Bolt12Error {
+                        failure_reason: err.to_string(),
+                    })?
+            } else {
+                self.node
+                    .bolt12_payment()
+                    .send(&offer, quantity, None, None)
+                    .map_err(|err| LightningRpcError::Bolt12Error {
+                        failure_reason: err.to_string(),
+                    })?
+            };
+
+            bolt12_payments.insert(payment_id, tx);
+        }
+
+        match rx.await.map_err(|err| LightningRpcError::Bolt12Error {
+            failure_reason: err.to_string(),
+        })? {
+            Ok((payment_hash, amount)) => Ok((payment_hash.0, amount)),
+            Err(err) => Err(LightningRpcError::Bolt12Error {
+                failure_reason: err.to_string(),
+            }),
         }
     }
 

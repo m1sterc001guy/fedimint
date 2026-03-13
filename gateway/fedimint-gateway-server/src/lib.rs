@@ -2993,6 +2993,15 @@ impl Gateway {
 
         Ok((registered_incoming_contract.contract, client))
     }
+
+    pub async fn get_invoice_for_offer(&self, payload: PayOfferPayload) -> Result<([u8; 32], u64)> {
+        let lnrpc = self.get_lightning_context().await?;
+        let response = lnrpc
+            .lnrpc
+            .get_invoice_from_offer(payload.offer, payload.quantity, payload.amount)
+            .await?;
+        Ok(response)
+    }
 }
 
 #[async_trait]

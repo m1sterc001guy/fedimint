@@ -14,3 +14,4 @@ pub const CREATE_BOLT11_INVOICE_ENDPOINT: &str = "/create_bolt11_invoice";
 pub const VERIFY_BOLT11_PREIMAGE_ENDPOINT: &str = "/verify_bolt11_preimage";
 pub const ROUTING_INFO_ENDPOINT: &str = "/routing_info";
 pub const SEND_PAYMENT_ENDPOINT: &str = "/send_payment";
+pub const GET_INVOICE_FOR_OFFER_ENDPOINT: &str = "/get_invoice_for_offer";

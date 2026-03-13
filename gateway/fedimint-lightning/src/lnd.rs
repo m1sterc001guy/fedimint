@@ -1597,6 +1597,17 @@ impl ILnRpcClient for GatewayLndClient {
         })
     }
 
+    async fn get_invoice_from_offer(
+        &self,
+        _offer: String,
+        _quantity: Option<u64>,
+        _amount: Option<Amount>,
+    ) -> Result<([u8; 32], u64), LightningRpcError> {
+        Err(LightningRpcError::Bolt12Error {
+            failure_reason: "LND Does not support Bolt12".to_string(),
+        })
+    }
+
     fn sync_wallet(&self) -> Result<(), LightningRpcError> {
         // There is nothing explicit needed to do for syncing an LND node
         Ok(())

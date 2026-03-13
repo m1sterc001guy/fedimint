@@ -250,6 +250,13 @@ pub trait ILnRpcClient: Debug + Send + Sync {
         payer_note: Option<String>,
     ) -> Result<Preimage, LightningRpcError>;
 
+    async fn get_invoice_from_offer(
+        &self,
+        offer: String,
+        quantity: Option<u64>,
+        amount: Option<Amount>,
+    ) -> Result<([u8; 32], u64), LightningRpcError>;
+
     fn sync_wallet(&self) -> Result<(), LightningRpcError>;
 }
 
@@ -683,6 +690,24 @@ impl ILnRpcClient for LnRpcTracked {
         let result = self
             .inner
             .pay_offer(offer, quantity, amount, payer_note)
+            .await;
+        timer.observe_duration();
+        self.record_call("pay_offer", &result);
+        result
+    }
+
+    async fn get_invoice_from_offer(
+        &self,
+        offer: String,
+        quantity: Option<u64>,
+        amount: Option<Amount>,
+    ) -> Result<([u8; 32], u64), LightningRpcError> {
+        let timer = metrics::LN_RPC_DURATION_SECONDS
+            .with_label_values(&["get invoice from offer", self.name])
+            .start_timer_ext();
+        let result = self
+            .inner
+            .get_invoice_from_offer(offer, quantity, amount)
             .await;
         timer.observe_duration();
         self.record_call("pay_offer", &result);
