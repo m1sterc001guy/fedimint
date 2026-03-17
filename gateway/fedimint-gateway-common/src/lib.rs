@@ -17,6 +17,7 @@ use fedimint_core::util::{SafeUrl, get_average, get_median};
 use fedimint_core::{Amount, BitcoinAmountOrAll, secp256k1};
 use fedimint_eventlog::{EventKind, EventLogId, PersistedLogEntry, StructuredPaymentEvents};
 use fedimint_lnv2_common::gateway_api::PaymentFee;
+pub use fedimint_lnv2_common::{GetInvoiceForOfferResponse, PayOfferPayload};
 use fedimint_mint_client::OOBNotes;
 use fedimint_wallet_client::PegOutFees;
 use lightning_invoice::Bolt11Invoice;
@@ -443,14 +444,6 @@ pub struct CreateOfferResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PayOfferPayload {
-    pub offer: String,
-    pub amount: Option<Amount>,
-    pub quantity: Option<u64>,
-    pub payer_note: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PayOfferResponse {
     pub preimage: String,
 }
@@ -460,13 +453,6 @@ pub enum PaymentStatus {
     Pending,
     Succeeded,
     Failed,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct GetInvoiceForOfferResponse {
-    pub payment_id: [u8; 32],
-    pub payment_hash: [u8; 32],
-    pub amount: u64,
 }
 
 #[derive(Debug, Clone, Subcommand, Serialize, Deserialize, Eq, PartialEq)]

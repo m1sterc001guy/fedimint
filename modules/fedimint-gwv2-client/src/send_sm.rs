@@ -156,80 +156,100 @@ impl SendStateMachine {
         invoice: LightningInvoice,
         contract: OutgoingContract,
     ) -> Result<PaymentResponse, Cancelled> {
-        let LightningInvoice::Bolt11(invoice) = invoice;
+        match invoice {
+            LightningInvoice::Bolt11(invoice) => {
+                // The following two checks may fail in edge cases since they have inherent
+                // timing assumptions. Therefore, they may only be checked after we have created
+                // the state machine such that we can cancel the contract.
+                if invoice.is_expired() {
+                    return Err(Cancelled::InvoiceExpired);
+                }
 
-        // The following two checks may fail in edge cases since they have inherent
-        // timing assumptions. Therefore, they may only be checked after we have created
-        // the state machine such that we can cancel the contract.
-        if invoice.is_expired() {
-            return Err(Cancelled::InvoiceExpired);
-        }
+                if max_delay == 0 {
+                    return Err(Cancelled::TimeoutTooClose);
+                }
 
-        if max_delay == 0 {
-            return Err(Cancelled::TimeoutTooClose);
-        }
+                let Some(max_fee) = contract.amount.checked_sub(min_contract_amount) else {
+                    return Err(Cancelled::Underfunded);
+                };
 
-        let Some(max_fee) = contract.amount.checked_sub(min_contract_amount) else {
-            return Err(Cancelled::Underfunded);
-        };
+                // To make gateway operation easier, we check if the invoice was created using
+                // the LNv1 protocol and if the gateway supports the target federation.
+                // If it does, we can fund an LNv1 incoming contract to satisfy the LNv2
+                // outgoing payment.
+                if let Some(client) = context.gateway.is_lnv1_invoice(&invoice).await {
+                    let final_state = context
+                        .gateway
+                        .relay_lnv1_swap(client.value(), &invoice)
+                        .await;
+                    return match final_state {
+                        Ok(final_receive_state) => match final_receive_state {
+                            FinalReceiveState::Rejected => Err(Cancelled::Rejected),
+                            FinalReceiveState::Success(preimage) => Ok(PaymentResponse {
+                                preimage,
+                                target_federation: Some(client.value().federation_id()),
+                            }),
+                            FinalReceiveState::Refunded => Err(Cancelled::Refunded),
+                            FinalReceiveState::Failure => Err(Cancelled::Failure),
+                        },
+                        Err(e) => Err(Cancelled::FinalizationError(e.to_string())),
+                    };
+                }
 
-        // To make gateway operation easier, we check if the invoice was created using
-        // the LNv1 protocol and if the gateway supports the target federation.
-        // If it does, we can fund an LNv1 incoming contract to satisfy the LNv2
-        // outgoing payment.
-        if let Some(client) = context.gateway.is_lnv1_invoice(&invoice).await {
-            let final_state = context
-                .gateway
-                .relay_lnv1_swap(client.value(), &invoice)
-                .await;
-            return match final_state {
-                Ok(final_receive_state) => match final_receive_state {
-                    FinalReceiveState::Rejected => Err(Cancelled::Rejected),
-                    FinalReceiveState::Success(preimage) => Ok(PaymentResponse {
-                        preimage,
-                        target_federation: Some(client.value().federation_id()),
-                    }),
-                    FinalReceiveState::Refunded => Err(Cancelled::Refunded),
-                    FinalReceiveState::Failure => Err(Cancelled::Failure),
-                },
-                Err(e) => Err(Cancelled::FinalizationError(e.to_string())),
-            };
-        }
-
-        match context
-            .gateway
-            .is_direct_swap(&invoice)
-            .await
-            .map_err(|e| Cancelled::RegistrationError(e.to_string()))?
-        {
-            Some((contract, client)) => {
-                match client
-                    .get_first_module::<GatewayClientModuleV2>()
-                    .expect("Must have client module")
-                    .relay_direct_swap(
-                        contract,
-                        invoice
-                            .amount_milli_satoshis()
-                            .expect("amountless invoices are not supported"),
-                    )
+                match context
+                    .gateway
+                    .is_direct_swap(&invoice)
                     .await
+                    .map_err(|e| Cancelled::RegistrationError(e.to_string()))?
                 {
-                    Ok(final_receive_state) => match final_receive_state {
-                        FinalReceiveState::Rejected => Err(Cancelled::Rejected),
-                        FinalReceiveState::Success(preimage) => Ok(PaymentResponse {
+                    Some((contract, client)) => {
+                        match client
+                            .get_first_module::<GatewayClientModuleV2>()
+                            .expect("Must have client module")
+                            .relay_direct_swap(
+                                contract,
+                                invoice
+                                    .amount_milli_satoshis()
+                                    .expect("amountless invoices are not supported"),
+                            )
+                            .await
+                        {
+                            Ok(final_receive_state) => match final_receive_state {
+                                FinalReceiveState::Rejected => Err(Cancelled::Rejected),
+                                FinalReceiveState::Success(preimage) => Ok(PaymentResponse {
+                                    preimage,
+                                    target_federation: Some(client.federation_id()),
+                                }),
+                                FinalReceiveState::Refunded => Err(Cancelled::Refunded),
+                                FinalReceiveState::Failure => Err(Cancelled::Failure),
+                            },
+                            Err(e) => Err(Cancelled::FinalizationError(e.to_string())),
+                        }
+                    }
+                    None => {
+                        let preimage = context
+                            .gateway
+                            .pay(invoice, max_delay, max_fee)
+                            .await
+                            .map_err(|e| Cancelled::LightningRpcError(e.to_string()))?;
+                        Ok(PaymentResponse {
                             preimage,
-                            target_federation: Some(client.federation_id()),
-                        }),
-                        FinalReceiveState::Refunded => Err(Cancelled::Refunded),
-                        FinalReceiveState::Failure => Err(Cancelled::Failure),
-                    },
-                    Err(e) => Err(Cancelled::FinalizationError(e.to_string())),
+                            target_federation: None,
+                        })
+                    }
                 }
             }
-            None => {
+            LightningInvoice::Bolt12 {
+                payment_id,
+                payment_hash,
+                amount_msat,
+            } => {
+                tracing::info!(
+                    "GW state machine trying to contact lightning node to send BOLT12 payment!"
+                );
                 let preimage = context
                     .gateway
-                    .pay(invoice, max_delay, max_fee)
+                    .pay_bolt12_invoice(payment_id, payment_hash, amount_msat)
                     .await
                     .map_err(|e| Cancelled::LightningRpcError(e.to_string()))?;
                 Ok(PaymentResponse {

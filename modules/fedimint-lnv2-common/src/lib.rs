@@ -33,6 +33,21 @@ use tpe::AggregateDecryptionKey;
 
 use crate::contracts::{IncomingContract, OutgoingContract};
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PayOfferPayload {
+    pub offer: String,
+    pub amount: Option<Amount>,
+    pub quantity: Option<u64>,
+    pub payer_note: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetInvoiceForOfferResponse {
+    pub payment_id: [u8; 32],
+    pub payment_hash: [u8; 32],
+    pub amount: u64,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Bolt11InvoiceDescription {
     Direct(String),
@@ -42,6 +57,11 @@ pub enum Bolt11InvoiceDescription {
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Decodable, Encodable)]
 pub enum LightningInvoice {
     Bolt11(Bolt11Invoice),
+    Bolt12 {
+        payment_id: [u8; 32],
+        payment_hash: [u8; 32],
+        amount_msat: u64,
+    },
 }
 
 pub const KIND: ModuleKind = ModuleKind::from_static_str("lnv2");

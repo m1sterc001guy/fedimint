@@ -15,9 +15,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::contracts::{IncomingContract, OutgoingContract};
 use crate::endpoint_constants::{
-    CREATE_BOLT11_INVOICE_ENDPOINT, ROUTING_INFO_ENDPOINT, SEND_PAYMENT_ENDPOINT,
+    CREATE_BOLT11_INVOICE_ENDPOINT, GET_INVOICE_FOR_OFFER_ENDPOINT, ROUTING_INFO_ENDPOINT,
+    SEND_PAYMENT_ENDPOINT,
 };
-use crate::{Bolt11InvoiceDescription, LightningInvoice};
+use crate::{
+    Bolt11InvoiceDescription, GetInvoiceForOfferResponse, LightningInvoice, PayOfferPayload,
+};
 
 #[apply(async_trait_maybe_send!)]
 pub trait GatewayConnection: std::fmt::Debug {
@@ -46,6 +49,13 @@ pub trait GatewayConnection: std::fmt::Debug {
         invoice: LightningInvoice,
         auth: Signature,
     ) -> Result<Result<[u8; 32], Signature>, ServerError>;
+
+    async fn get_offer_for_invoice(
+        &self,
+        gateway_api: SafeUrl,
+        offer: String,
+        amount: Amount,
+    ) -> Result<GetInvoiceForOfferResponse, ServerError>;
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +125,27 @@ impl GatewayConnection for RealGatewayConnection {
                     contract,
                     invoice,
                     auth,
+                }),
+            )
+            .await
+    }
+
+    async fn get_offer_for_invoice(
+        &self,
+        gateway_api: SafeUrl,
+        offer: String,
+        amount: Amount,
+    ) -> Result<GetInvoiceForOfferResponse, ServerError> {
+        self.api
+            .request(
+                &gateway_api,
+                Method::POST,
+                GET_INVOICE_FOR_OFFER_ENDPOINT,
+                Some(PayOfferPayload {
+                    offer,
+                    amount: Some(amount),
+                    quantity: None,
+                    payer_note: None,
                 }),
             )
             .await

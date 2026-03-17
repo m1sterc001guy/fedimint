@@ -13,7 +13,9 @@ use fedimint_core::{Amount, OutPoint, apply, async_trait_maybe_send};
 use fedimint_ln_common::bitcoin;
 use fedimint_lnv2_common::contracts::{IncomingContract, OutgoingContract, PaymentImage};
 use fedimint_lnv2_common::gateway_api::{GatewayConnection, PaymentFee, RoutingInfo};
-use fedimint_lnv2_common::{Bolt11InvoiceDescription, LightningInvoice};
+use fedimint_lnv2_common::{
+    Bolt11InvoiceDescription, GetInvoiceForOfferResponse, LightningInvoice,
+};
 use lightning_invoice::{
     Bolt11Invoice, Currency, DEFAULT_EXPIRY_TIME, InvoiceBuilder, PaymentSecret,
 };
@@ -151,6 +153,16 @@ impl GatewayConnection for MockGatewayConnection {
 
                 Ok(Ok(MOCK_INVOICE_PREIMAGE))
             }
+            LightningInvoice::Bolt12 { .. } => Ok(Ok(MOCK_INVOICE_PREIMAGE)),
         }
+    }
+
+    async fn get_offer_for_invoice(
+        &self,
+        _gateway_api: SafeUrl,
+        _offer: String,
+        _amount: Amount,
+    ) -> Result<GetInvoiceForOfferResponse, ServerError> {
+        unimplemented!()
     }
 }

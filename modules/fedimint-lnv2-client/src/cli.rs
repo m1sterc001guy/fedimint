@@ -20,6 +20,13 @@ enum Opts {
         #[arg(long)]
         gateway: Option<SafeUrl>,
     },
+    PayBolt12 {
+        offer: String,
+
+        amount: Amount,
+        #[arg(long)]
+        gateway: Option<SafeUrl>,
+    },
     /// Await the final state of the send operation.
     AwaitSend { operation_id: OperationId },
     /// Request an invoice. For testing you can optionally specify a gateway to
@@ -82,6 +89,11 @@ pub(crate) async fn handle_cli_command(
         Opts::Send { gateway, invoice } => {
             json(lightning.send(invoice, gateway, Value::Null).await?)
         }
+        Opts::PayBolt12 {
+            offer,
+            amount,
+            gateway,
+        } => json(lightning.send_bolt12(gateway, offer, amount).await?),
         Opts::AwaitSend { operation_id } => json(
             lightning
                 .await_final_send_operation_state(operation_id)

@@ -2772,6 +2772,7 @@ impl Gateway {
         &self,
         payload: SendPaymentPayload,
     ) -> Result<std::result::Result<[u8; 32], Signature>> {
+        info!(target: LOG_GATEWAY, "send_payment_v2");
         self.select_client(payload.federation_id)
             .await?
             .value()
@@ -2998,6 +2999,7 @@ impl Gateway {
         &self,
         payload: PayOfferPayload,
     ) -> Result<GetInvoiceForOfferResponse> {
+        info!(target: LOG_GATEWAY, "get_invoice_for_offer");
         let lnrpc = self.get_lightning_context().await?;
         let response = lnrpc
             .lnrpc
@@ -3147,6 +3149,20 @@ impl IGatewayClientV2 for Gateway {
         }
 
         Ok(final_state)
+    }
+
+    async fn pay_bolt12_invoice(
+        &self,
+        payment_id: [u8; 32],
+        _payment_hash: [u8; 32],
+        _amount_msat: u64,
+    ) -> std::result::Result<[u8; 32], LightningRpcError> {
+        let lightning_context = self.get_lightning_context().await?;
+        lightning_context
+            .lnrpc
+            .pay_bolt12_invoice(payment_id)
+            .await
+            .map(|response| response.preimage.0)
     }
 }
 

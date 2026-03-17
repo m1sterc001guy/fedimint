@@ -354,6 +354,15 @@ impl ILnRpcClient for FakeLightningTest {
         })
     }
 
+    async fn pay_bolt12_invoice(
+        &self,
+        _payment_id: [u8; 32],
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        Err(LightningRpcError::Bolt12Error {
+            failure_reason: "FakeLightningTest does not support Bolt12".to_string(),
+        })
+    }
+
     fn sync_wallet(&self) -> Result<(), LightningRpcError> {
         Ok(())
     }

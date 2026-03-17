@@ -34,7 +34,7 @@ use fedimint_core::module::{
 use fedimint_core::secp256k1::Keypair;
 use fedimint_core::time::now;
 use fedimint_core::util::Spanned;
-use fedimint_core::{Amount, PeerId, apply, async_trait_maybe_send, secp256k1};
+use fedimint_core::{Amount, BitcoinHash, PeerId, apply, async_trait_maybe_send, secp256k1};
 use fedimint_lightning::{InterceptPaymentResponse, LightningRpcError};
 use fedimint_lnv2_common::config::LightningClientConfig;
 use fedimint_lnv2_common::contracts::{IncomingContract, PaymentImage};
@@ -307,6 +307,17 @@ impl GatewayClientModuleV2 {
                     .amount_milli_satoshis()
                     .ok_or(anyhow!("Invoice is missing amount"))?,
             ),
+            LightningInvoice::Bolt12 {
+                payment_hash,
+                amount_msat,
+                ..
+            } => {
+                info!("GW send_payment, payment is a BOLT12 invoice!");
+                (
+                    &sha256::Hash::from_slice(payment_hash).expect("Should be payment hash"),
+                    *amount_msat,
+                )
+            }
         };
 
         ensure!(
@@ -660,4 +671,11 @@ pub trait IGatewayClientV2: Debug + Send + Sync {
         client: &ClientHandleArc,
         invoice: &Bolt11Invoice,
     ) -> anyhow::Result<FinalReceiveState>;
+
+    async fn pay_bolt12_invoice(
+        &self,
+        payment_id: [u8; 32],
+        payment_hash: [u8; 32],
+        amount_msat: u64,
+    ) -> Result<[u8; 32], LightningRpcError>;
 }

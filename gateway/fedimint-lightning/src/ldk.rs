@@ -114,6 +114,7 @@ impl GatewayLdkClient {
                 port: lightning_port,
             }]),
             node_alias,
+            manually_handle_bolt12_invoices: true,
             ..Default::default()
         });
 
@@ -290,6 +291,7 @@ impl GatewayLdkClient {
                     debug!(?payment_id, %payment_hash, %amount_msat, "No pending bolt12 payment for received invoice");
                 }
             }
+            // TODO: Handle payment failed for BOLT12
             _ => {}
         }
 
@@ -909,6 +911,7 @@ impl ILnRpcClient for GatewayLdkClient {
         quantity: Option<u64>,
         amount: Option<Amount>,
     ) -> Result<GetInvoiceForOfferResponse, LightningRpcError> {
+        info!(target: LOG_LIGHTNING, "ldk get_invoice_for_offer");
         let offer = Offer::from_str(&offer).map_err(|_| LightningRpcError::Bolt12Error {
             failure_reason: "Failed to parse Bolt12 Offer".to_string(),
         })?;
@@ -933,9 +936,11 @@ impl ILnRpcClient for GatewayLdkClient {
                     })?
             };
 
+            info!(target: LOG_LIGHTNING, ?payment_id, "ldk get_invoice_for_offer");
             bolt12_payments.insert(payment_id, tx);
         }
 
+        info!(target: LOG_LIGHTNING, "ldk get_invoice_for_offer waiting for Bolt12Invoice response");
         match rx.await.map_err(|err| LightningRpcError::Bolt12Error {
             failure_reason: err.to_string(),
         })? {
@@ -943,6 +948,53 @@ impl ILnRpcClient for GatewayLdkClient {
             Err(err) => Err(LightningRpcError::Bolt12Error {
                 failure_reason: err.to_string(),
             }),
+        }
+    }
+
+    async fn pay_bolt12_invoice(
+        &self,
+        payment_id: [u8; 32],
+    ) -> Result<PayInvoiceResponse, LightningRpcError> {
+        let payment_id = PaymentId(payment_id);
+        info!(target: LOG_LIGHTNING, "pay_bolt12_invoice getting payment guard...");
+        let _payment_lock_guard = self
+            .outbound_lightning_payment_lock_pool
+            .async_lock(payment_id)
+            .await;
+
+        // TODO: figure out how to make this idempotent
+        info!(target: LOG_LIGHTNING, "pay_bolt12_invoice making payment!");
+        self.node
+            .bolt12_payment()
+            .send_payment_for_bolt12_invoice(payment_id)
+            .map_err(|e| LightningRpcError::FailedPayment {
+                failure_reason: e.to_string(),
+            })?;
+
+        info!(target: LOG_LIGHTNING, "pay_bolt12_invoice waiting for payment to hit Succeeded or Failed...");
+        loop {
+            if let Some(payment_details) = self.node.payment(&payment_id) {
+                match payment_details.status {
+                    PaymentStatus::Pending => {}
+                    PaymentStatus::Succeeded => {
+                        if let PaymentKind::Bolt12Offer {
+                            preimage: Some(preimage),
+                            ..
+                        } = payment_details.kind
+                        {
+                            return Ok(PayInvoiceResponse {
+                                preimage: Preimage(preimage.0),
+                            });
+                        }
+                    }
+                    PaymentStatus::Failed => {
+                        return Err(LightningRpcError::FailedPayment {
+                            failure_reason: "LDK payment failed".to_string(),
+                        });
+                    }
+                }
+            }
+            fedimint_core::runtime::sleep(Duration::from_millis(100)).await;
         }
     }
 

@@ -100,6 +100,10 @@ impl SendOperationMeta {
             LightningInvoice::Bolt11(invoice) => self.contract.amount.saturating_sub(
                 Amount::from_msats(invoice.amount_milli_satoshis().expect("Invoice has amount")),
             ),
+            LightningInvoice::Bolt12 { amount_msat, .. } => self
+                .contract
+                .amount
+                .saturating_sub(Amount::from_msats(*amount_msat)),
         }
     }
 }
@@ -119,6 +123,9 @@ impl ReceiveOperationMeta {
             LightningInvoice::Bolt11(invoice) => {
                 Amount::from_msats(invoice.amount_milli_satoshis().expect("Invoice has amount"))
                     .saturating_sub(self.contract.commitment.amount)
+            }
+            LightningInvoice::Bolt12 { amount_msat, .. } => {
+                Amount::from_msats(*amount_msat).saturating_sub(self.contract.commitment.amount)
             }
         }
     }
@@ -509,6 +516,147 @@ impl LightningClientModule {
             .routing_info(gateway.clone(), &self.federation_id)
             .await
             .map_err(|_| RoutingInfoError::FailedToRequestRoutingInfo)
+    }
+
+    pub async fn send_bolt12(
+        &self,
+        gateway: Option<SafeUrl>,
+        offer: String,
+        amount: Amount,
+    ) -> Result<OperationId, SendPaymentError> {
+        // TODO: Better function for generating an OperationId
+        let operation_id = OperationId::from_encodable(&offer);
+
+        let (ephemeral_tweak, ephemeral_pk) = tweak::generate(self.keypair.public_key());
+
+        let refund_keypair = SecretKey::from_slice(&ephemeral_tweak)
+            .expect("32 bytes, within curve order")
+            .keypair(secp256k1::SECP256K1);
+
+        let (gateway_api, routing_info) = match gateway {
+            Some(gateway_api) => (
+                gateway_api.clone(),
+                self.routing_info(&gateway_api)
+                    .await
+                    .map_err(|e| SendPaymentError::FailedToConnectToGateway(e.to_string()))?
+                    .ok_or(SendPaymentError::FederationNotSupported)?,
+            ),
+            None => self
+                .select_gateway(None)
+                .await
+                .map_err(SendPaymentError::SelectGateway)?,
+        };
+
+        let send_fee = routing_info.send_fee_default;
+        let expiration_delta = routing_info.expiration_delta_default;
+
+        if !send_fee.le(&PaymentFee::SEND_FEE_LIMIT) {
+            return Err(SendPaymentError::GatewayFeeExceedsLimit);
+        }
+
+        if EXPIRATION_DELTA_LIMIT < expiration_delta {
+            return Err(SendPaymentError::GatewayExpirationExceedsLimit);
+        }
+
+        let consensus_block_count = self
+            .module_api
+            .consensus_block_count()
+            .await
+            .map_err(|e| SendPaymentError::FailedToRequestBlockCount(e.to_string()))?;
+
+        // TODO: Need proper error here
+        let bolt12 = self
+            .gateway_conn
+            .get_offer_for_invoice(gateway_api.clone(), offer, amount)
+            .await
+            .map_err(|_| SendPaymentError::FederationNotSupported)?;
+
+        // TODO: Should validate amount
+
+        let contract = OutgoingContract {
+            payment_image: PaymentImage::Hash(
+                sha256::Hash::from_slice(&bolt12.payment_hash).expect("payment hash"),
+            ),
+            amount: send_fee.add_to(amount.msats),
+            expiration: consensus_block_count + expiration_delta + CONTRACT_CONFIRMATION_BUFFER,
+            claim_pk: routing_info.module_public_key,
+            refund_pk: refund_keypair.public_key(),
+            ephemeral_pk,
+        };
+
+        let contract_clone = contract.clone();
+        let gateway_api_clone = gateway_api.clone();
+
+        let client_output = ClientOutput::<LightningOutput> {
+            output: LightningOutput::V0(LightningOutputV0::Outgoing(contract.clone())),
+            amounts: Amounts::new_bitcoin(contract.amount),
+        };
+
+        let client_output_sm = ClientOutputSM::<LightningClientStateMachines> {
+            state_machines: Arc::new(move |range: OutPointRange| {
+                vec![LightningClientStateMachines::Send(SendStateMachine {
+                    common: SendSMCommon {
+                        operation_id,
+                        outpoint: range.into_iter().next().unwrap(),
+                        contract: contract_clone.clone(),
+                        gateway_api: Some(gateway_api_clone.clone()),
+                        invoice: Some(LightningInvoice::Bolt12 {
+                            payment_id: bolt12.payment_id,
+                            payment_hash: bolt12.payment_hash,
+                            amount_msat: bolt12.amount,
+                        }),
+                        refund_keypair,
+                    },
+                    state: SendSMState::Funding,
+                })]
+            }),
+        };
+
+        let client_output = self.client_ctx.make_client_outputs(ClientOutputBundle::new(
+            vec![client_output],
+            vec![client_output_sm],
+        ));
+
+        let transaction = TransactionBuilder::new().with_outputs(client_output);
+
+        self.client_ctx
+            .finalize_and_submit_transaction(
+                operation_id,
+                LightningCommonInit::KIND.as_str(),
+                move |change_outpoint_range| {
+                    LightningOperationMeta::Send(SendOperationMeta {
+                        change_outpoint_range,
+                        gateway: gateway_api.clone(),
+                        contract: contract.clone(),
+                        invoice: LightningInvoice::Bolt12 {
+                            payment_id: bolt12.payment_id,
+                            payment_hash: bolt12.payment_hash,
+                            amount_msat: bolt12.amount,
+                        },
+                        custom_meta: ().into(),
+                    })
+                },
+                transaction,
+            )
+            .await
+            .map_err(|e| SendPaymentError::FailedToFundPayment(e.to_string()))?;
+
+        let mut dbtx = self.client_ctx.module_db().begin_transaction().await;
+
+        self.client_ctx
+            .log_event(
+                &mut dbtx,
+                SendPaymentEvent {
+                    operation_id,
+                    amount: send_fee.add_to(amount.msats),
+                    fee: Some(send_fee.fee(amount.msats)),
+                },
+            )
+            .await;
+
+        dbtx.commit_tx().await;
+
+        Ok(operation_id)
     }
 
     /// Pay an invoice. For testing you can optionally specify a gateway to
