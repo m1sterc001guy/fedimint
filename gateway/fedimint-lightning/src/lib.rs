@@ -16,9 +16,9 @@ use fedimint_core::secp256k1::PublicKey;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::{backoff_util, retry};
 use fedimint_gateway_common::{
-    ChannelInfo, CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, GetInvoiceRequest,
-    GetInvoiceResponse, LightningInfo, ListTransactionsResponse, OpenChannelRequest,
-    SendOnchainRequest,
+    ChannelInfo, CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse,
+    GetInvoiceForOfferResponse, GetInvoiceRequest, GetInvoiceResponse, LightningInfo,
+    ListTransactionsResponse, OpenChannelRequest, SendOnchainRequest,
 };
 use fedimint_ln_common::PrunedInvoice;
 pub use fedimint_ln_common::contracts::Preimage;
@@ -255,7 +255,7 @@ pub trait ILnRpcClient: Debug + Send + Sync {
         offer: String,
         quantity: Option<u64>,
         amount: Option<Amount>,
-    ) -> Result<([u8; 32], u64), LightningRpcError>;
+    ) -> Result<GetInvoiceForOfferResponse, LightningRpcError>;
 
     fn sync_wallet(&self) -> Result<(), LightningRpcError>;
 }
@@ -701,7 +701,7 @@ impl ILnRpcClient for LnRpcTracked {
         offer: String,
         quantity: Option<u64>,
         amount: Option<Amount>,
-    ) -> Result<([u8; 32], u64), LightningRpcError> {
+    ) -> Result<GetInvoiceForOfferResponse, LightningRpcError> {
         let timer = metrics::LN_RPC_DURATION_SECONDS
             .with_label_values(&["get invoice from offer", self.name])
             .start_timer_ext();

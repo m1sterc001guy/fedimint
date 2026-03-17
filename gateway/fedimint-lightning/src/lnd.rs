@@ -12,7 +12,8 @@ use fedimint_core::task::{TaskGroup, sleep};
 use fedimint_core::util::FmtCompact;
 use fedimint_core::{Amount, BitcoinAmountOrAll, crit, secp256k1};
 use fedimint_gateway_common::{
-    ListTransactionsResponse, PaymentDetails, PaymentDirection, PaymentKind,
+    GetInvoiceForOfferResponse, ListTransactionsResponse, PaymentDetails, PaymentDirection,
+    PaymentKind,
 };
 use fedimint_ln_common::PrunedInvoice;
 use fedimint_ln_common::contracts::Preimage;
@@ -1602,7 +1603,7 @@ impl ILnRpcClient for GatewayLndClient {
         _offer: String,
         _quantity: Option<u64>,
         _amount: Option<Amount>,
-    ) -> Result<([u8; 32], u64), LightningRpcError> {
+    ) -> Result<GetInvoiceForOfferResponse, LightningRpcError> {
         Err(LightningRpcError::Bolt12Error {
             failure_reason: "LND Does not support Bolt12".to_string(),
         })

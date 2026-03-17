@@ -462,6 +462,13 @@ pub enum PaymentStatus {
     Failed,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GetInvoiceForOfferResponse {
+    pub payment_id: [u8; 32],
+    pub payment_hash: [u8; 32],
+    pub amount: u64,
+}
+
 #[derive(Debug, Clone, Subcommand, Serialize, Deserialize, Eq, PartialEq)]
 pub enum LightningMode {
     #[clap(name = "lnd")]

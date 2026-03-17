@@ -12,7 +12,8 @@ use fedimint_core::task::{TaskGroup, TaskHandle, block_in_place};
 use fedimint_core::util::{FmtCompact, SafeUrl};
 use fedimint_core::{Amount, BitcoinAmountOrAll, crit};
 use fedimint_gateway_common::{
-    ChainSource, GetInvoiceRequest, GetInvoiceResponse, ListTransactionsResponse,
+    ChainSource, GetInvoiceForOfferResponse, GetInvoiceRequest, GetInvoiceResponse,
+    ListTransactionsResponse,
 };
 use fedimint_ln_common::contracts::Preimage;
 use fedimint_logging::LOG_LIGHTNING;
@@ -70,8 +71,9 @@ pub struct GatewayLdkClient {
     pending_channels:
         Arc<RwLock<BTreeMap<UserChannelId, oneshot::Sender<anyhow::Result<OutPoint>>>>>,
 
-    pending_bolt12_payments:
-        Arc<RwLock<HashMap<PaymentId, oneshot::Sender<anyhow::Result<(PaymentHash, u64)>>>>>,
+    pending_bolt12_payments: Arc<
+        RwLock<HashMap<PaymentId, oneshot::Sender<anyhow::Result<GetInvoiceForOfferResponse>>>>,
+    >,
 }
 
 impl std::fmt::Debug for GatewayLdkClient {
@@ -159,6 +161,7 @@ impl GatewayLdkClient {
         let pending_channels = Arc::new(RwLock::new(BTreeMap::new()));
         let pending_bolt12_payments = Arc::new(RwLock::new(HashMap::new()));
         let pending_channels_clone = pending_channels.clone();
+        let pending_bolt12_payments_clone = pending_bolt12_payments.clone();
         task_group.spawn("ldk lightning node event handler", |handle| async move {
             loop {
                 Self::handle_next_event(
@@ -166,6 +169,7 @@ impl GatewayLdkClient {
                     &htlc_stream_sender,
                     &handle,
                     pending_channels_clone.clone(),
+                    pending_bolt12_payments_clone.clone(),
                 )
                 .await;
             }
@@ -189,6 +193,9 @@ impl GatewayLdkClient {
         handle: &TaskHandle,
         pending_channels: Arc<
             RwLock<BTreeMap<UserChannelId, oneshot::Sender<anyhow::Result<OutPoint>>>>,
+        >,
+        pending_bolt12_payments: Arc<
+            RwLock<HashMap<PaymentId, oneshot::Sender<anyhow::Result<GetInvoiceForOfferResponse>>>>,
         >,
     ) {
         // We manually check for task termination in case we receive a payment while the
@@ -264,6 +271,23 @@ impl GatewayLdkClient {
                         ?user_channel_id,
                         "No channel pending channel open for user channel id"
                     );
+                }
+            }
+            ldk_node::Event::Bolt12InvoiceReceived {
+                payment_id,
+                payment_hash,
+                amount_msat,
+            } => {
+                info!(target: LOG_LIGHTNING, %payment_hash, %amount_msat, "Received BOLT12 invoice");
+                let mut pending_bolt12_sends = pending_bolt12_payments.write().await;
+                if let Some(sender) = pending_bolt12_sends.remove(&payment_id) {
+                    let _ = sender.send(Ok(GetInvoiceForOfferResponse {
+                        payment_id: payment_id.0,
+                        payment_hash: payment_hash.0,
+                        amount: amount_msat,
+                    }));
+                } else {
+                    debug!(?payment_id, %payment_hash, %amount_msat, "No pending bolt12 payment for received invoice");
                 }
             }
             _ => {}
@@ -884,12 +908,12 @@ impl ILnRpcClient for GatewayLdkClient {
         offer: String,
         quantity: Option<u64>,
         amount: Option<Amount>,
-    ) -> Result<([u8; 32], u64), LightningRpcError> {
+    ) -> Result<GetInvoiceForOfferResponse, LightningRpcError> {
         let offer = Offer::from_str(&offer).map_err(|_| LightningRpcError::Bolt12Error {
             failure_reason: "Failed to parse Bolt12 Offer".to_string(),
         })?;
 
-        let (tx, rx) = oneshot::channel::<anyhow::Result<(PaymentHash, u64)>>();
+        let (tx, rx) = oneshot::channel::<anyhow::Result<GetInvoiceForOfferResponse>>();
 
         {
             let mut bolt12_payments = self.pending_bolt12_payments.write().await;
@@ -915,7 +939,7 @@ impl ILnRpcClient for GatewayLdkClient {
         match rx.await.map_err(|err| LightningRpcError::Bolt12Error {
             failure_reason: err.to_string(),
         })? {
-            Ok((payment_hash, amount)) => Ok((payment_hash.0, amount)),
+            Ok(response) => Ok(response),
             Err(err) => Err(LightningRpcError::Bolt12Error {
                 failure_reason: err.to_string(),
             }),

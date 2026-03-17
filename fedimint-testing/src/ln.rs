@@ -11,8 +11,9 @@ use fedimint_core::Amount;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::BoxStream;
 use fedimint_gateway_common::{
-    CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, GetInvoiceRequest,
-    GetInvoiceResponse, ListTransactionsResponse, OpenChannelRequest, SendOnchainRequest,
+    CloseChannelsWithPeerRequest, CloseChannelsWithPeerResponse, GetInvoiceForOfferResponse,
+    GetInvoiceRequest, GetInvoiceResponse, ListTransactionsResponse, OpenChannelRequest,
+    SendOnchainRequest,
 };
 use fedimint_lightning::{
     CreateInvoiceRequest, CreateInvoiceResponse, GetBalancesResponse, GetLnOnchainAddressResponse,
@@ -347,7 +348,7 @@ impl ILnRpcClient for FakeLightningTest {
         _offer: String,
         _quantity: Option<u64>,
         _amount: Option<Amount>,
-    ) -> Result<([u8; 32], u64), LightningRpcError> {
+    ) -> Result<GetInvoiceForOfferResponse, LightningRpcError> {
         Err(LightningRpcError::Bolt12Error {
             failure_reason: "FakeLightningTest does not support Bolt12".to_string(),
         })
