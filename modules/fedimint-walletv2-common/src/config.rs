@@ -3,12 +3,13 @@ use std::collections::BTreeMap;
 use bitcoin::Network;
 use bitcoin::hashes::{Hash, sha256};
 use fedimint_core::core::ModuleKind;
-use fedimint_core::encoding::{Decodable, Encodable};
+use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
+use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::{Amount, PeerId, plugin_types_trait_impl_config, weight_to_vbytes};
 use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
-use crate::{WalletCommonInit, descriptor};
+use crate::{WalletCommonInit, descriptor, descriptor_tr};
 
 plugin_types_trait_impl_config!(
     WalletCommonInit,
@@ -29,7 +30,7 @@ pub struct WalletConfigPrivate {
     pub bitcoin_sk: SecretKey,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Encodable, Decodable)]
+#[derive(Clone, Debug, Serialize, Deserialize, Encodable)]
 pub struct WalletConfigConsensus {
     /// The public keys for the bitcoin multisig
     pub bitcoin_pks: BTreeMap<PeerId, PublicKey>,
@@ -46,6 +47,44 @@ pub struct WalletConfigConsensus {
     pub fee_consensus: FeeConsensus,
     /// Bitcoin network (e.g. testnet, bitcoin)
     pub network: Network,
+    /// Whether the federation uses a Taproot (P2TR + Schnorr) multisig
+    /// instead of the default `SegWit` v0 (P2WSH + ECDSA) multisig.
+    ///
+    /// This field was added in walletv2 module consensus version 1.1.
+    /// Configs persisted by older versions decode with this field defaulting
+    /// to `false`; see the manual `Decodable` impl below.
+    pub use_taproot: bool,
+}
+
+// Manual `Decodable` impl for backwards compatibility with module consensus
+// version 1.0, which did not have a `use_taproot` field. When the trailing
+// byte is missing we default to `false` (SegWit), which is exactly the
+// behavior every existing federation already has.
+impl Decodable for WalletConfigConsensus {
+    fn consensus_decode_partial_from_finite_reader<R: std::io::Read>(
+        r: &mut R,
+        modules: &ModuleDecoderRegistry,
+    ) -> Result<Self, DecodeError> {
+        let bitcoin_pks = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let send_tx_vbytes = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let receive_tx_vbytes = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let feerate_base = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let dust_limit = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let fee_consensus = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let network = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let use_taproot =
+            bool::consensus_decode_partial_from_finite_reader(r, modules).unwrap_or(false);
+        Ok(Self {
+            bitcoin_pks,
+            send_tx_vbytes,
+            receive_tx_vbytes,
+            feerate_base,
+            dust_limit,
+            fee_consensus,
+            network,
+            use_taproot,
+        })
+    }
 }
 
 impl WalletConfigConsensus {
@@ -76,6 +115,7 @@ impl WalletConfigConsensus {
         bitcoin_pks: BTreeMap<PeerId, PublicKey>,
         fee_consensus: FeeConsensus,
         network: Network,
+        use_taproot: bool,
     ) -> Self {
         let tx_overhead_weight = 4 * 4 // nVersion
             + 1 // SegWit marker
@@ -84,10 +124,17 @@ impl WalletConfigConsensus {
             + 4 // up to 2 outputs
             + 4 * 4; // nLockTime
 
-        let change_witness_weight = descriptor(&bitcoin_pks, &sha256::Hash::all_zeros())
-            .max_weight_to_satisfy()
-            .expect("Cannot satisfy the change descriptor.")
-            .to_wu();
+        let change_witness_weight = if use_taproot {
+            descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros())
+                .max_weight_to_satisfy()
+                .expect("Cannot satisfy the taproot change descriptor.")
+                .to_wu()
+        } else {
+            descriptor(&bitcoin_pks, &sha256::Hash::all_zeros())
+                .max_weight_to_satisfy()
+                .expect("Cannot satisfy the change descriptor.")
+                .to_wu()
+        };
 
         let change_input_weight = 32 * 4 // txid
             + 4 * 4 // vout
@@ -125,6 +172,7 @@ impl WalletConfigConsensus {
             dust_limit: bitcoin::Amount::from_sat(10_000),
             fee_consensus,
             network,
+            use_taproot,
         }
     }
 }
@@ -201,7 +249,7 @@ fn test_fee_consensus() {
     );
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable)]
 pub struct WalletClientConfig {
     /// The public keys for the bitcoin multisig
     pub bitcoin_pks: BTreeMap<PeerId, PublicKey>,
@@ -218,10 +266,117 @@ pub struct WalletClientConfig {
     pub fee_consensus: FeeConsensus,
     /// Bitcoin network (e.g. testnet, bitcoin)
     pub network: Network,
+    /// Whether the federation uses a Taproot multisig instead of `SegWit` v0.
+    /// Added in walletv2 module consensus version 1.1; old client configs
+    /// decode with `false` via the manual `Decodable` impl below.
+    pub use_taproot: bool,
+}
+
+impl Decodable for WalletClientConfig {
+    fn consensus_decode_partial_from_finite_reader<R: std::io::Read>(
+        r: &mut R,
+        modules: &ModuleDecoderRegistry,
+    ) -> Result<Self, DecodeError> {
+        let bitcoin_pks = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let send_tx_vbytes = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let receive_tx_vbytes = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let feerate_base = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let dust_limit = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let fee_consensus = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let network = Decodable::consensus_decode_partial_from_finite_reader(r, modules)?;
+        let use_taproot =
+            bool::consensus_decode_partial_from_finite_reader(r, modules).unwrap_or(false);
+        Ok(Self {
+            bitcoin_pks,
+            send_tx_vbytes,
+            receive_tx_vbytes,
+            feerate_base,
+            dust_limit,
+            fee_consensus,
+            network,
+            use_taproot,
+        })
+    }
 }
 
 impl std::fmt::Display for WalletClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "WalletClientConfig {self:?}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::Network;
+    use fedimint_core::PeerId;
+    use fedimint_core::encoding::{Decodable, Encodable};
+    use fedimint_core::module::registry::ModuleDecoderRegistry;
+    use secp256k1::SECP256K1;
+
+    use super::*;
+
+    fn sample_consensus(use_taproot: bool) -> WalletConfigConsensus {
+        let (_, pk) = secp256k1::generate_keypair(&mut secp256k1::rand::thread_rng());
+        let mut bitcoin_pks = BTreeMap::new();
+        bitcoin_pks.insert(PeerId::from(0), pk);
+        WalletConfigConsensus::new(
+            bitcoin_pks,
+            FeeConsensus::new(0).expect("zero ppm is in range"),
+            Network::Regtest,
+            use_taproot,
+        )
+    }
+
+    /// A `WalletConfigConsensus` blob written by walletv2 module consensus
+    /// version 1.0 has every field of the current struct *except* the
+    /// trailing `use_taproot` byte. Truncating one byte off the new encoding
+    /// is the cheapest way to construct an authentic v1.0 blob without
+    /// vendoring the old struct.
+    #[test]
+    fn wallet_config_consensus_decodes_old_format_with_default_use_taproot() {
+        let _ = SECP256K1; // ensure the linker keeps secp around in test builds
+
+        let new = sample_consensus(false);
+        let mut bytes = Vec::new();
+        new.consensus_encode(&mut bytes)
+            .expect("encode should succeed");
+
+        // The encoded `bool` for `use_taproot = false` is exactly one trailing
+        // byte. Drop it to simulate a v1.0 blob.
+        let truncated = &bytes[..bytes.len() - 1];
+
+        let decoded = WalletConfigConsensus::consensus_decode_whole(
+            truncated,
+            &ModuleDecoderRegistry::default(),
+        )
+        .expect("v1.0 blobs must decode under the new manual Decodable impl");
+
+        assert!(
+            !decoded.use_taproot,
+            "missing use_taproot must default to false (SegWit)"
+        );
+        assert_eq!(decoded.bitcoin_pks, new.bitcoin_pks);
+        assert_eq!(decoded.send_tx_vbytes, new.send_tx_vbytes);
+        assert_eq!(decoded.receive_tx_vbytes, new.receive_tx_vbytes);
+        assert_eq!(decoded.feerate_base, new.feerate_base);
+        assert_eq!(decoded.dust_limit, new.dust_limit);
+        assert_eq!(decoded.fee_consensus, new.fee_consensus);
+        assert_eq!(decoded.network, new.network);
+    }
+
+    #[test]
+    fn wallet_config_consensus_roundtrips_with_use_taproot_true() {
+        let new = sample_consensus(true);
+        let mut bytes = Vec::new();
+        new.consensus_encode(&mut bytes).expect("encode succeeds");
+
+        let decoded = WalletConfigConsensus::consensus_decode_whole(
+            &bytes,
+            &ModuleDecoderRegistry::default(),
+        )
+        .expect("encoded blob must round-trip");
+
+        assert!(decoded.use_taproot);
+        assert_eq!(decoded.bitcoin_pks, new.bitcoin_pks);
     }
 }

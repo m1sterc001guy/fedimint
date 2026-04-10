@@ -39,6 +39,8 @@ pub(crate) struct SetupInput {
     pub enable_base_fees: bool,
     #[serde(default)] // list of enabled module kinds
     pub enabled_modules: Vec<String>,
+    #[serde(default)] // unchecked = SegWit (default)
+    pub use_taproot: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +249,19 @@ fn setup_form_content(
                         "Base fees discourage spam and wasting storage space. The typical fee is only 1-3 sats per transaction, regardless of the value transferred. We recommend enabling the base fee and it cannot be changed later."
                     }
 
+                    div class="form-check mt-3" {
+                        input type="checkbox" class="form-check-input" id="use_taproot" name="use_taproot" value="true";
+
+                        label class="form-check-label" for="use_taproot" {
+                            "Use Taproot for the on-chain wallet (experimental)"
+                        }
+                    }
+
+                    div id="taproot-warning" class="alert alert-warning mt-2" style="font-size: 0.875rem;" {
+                        strong { "Warning: " }
+                        "If enabled, the walletv2 module will use a Taproot (P2TR + Schnorr) multisig instead of the default SegWit v0 (P2WSH + ECDSA) multisig. This produces smaller signatures and supports more than 20 guardians, but it cannot be changed after federation setup. Leave this off unless every guardian is running a fedimintd build that supports Taproot walletv2."
+                    }
+
                     div class="accordion mt-3" id="modulesAccordion" {
                         div class="accordion-item" {
                             h2 class="accordion-header" {
@@ -365,6 +380,12 @@ async fn setup_submit(
         None
     };
 
+    let use_taproot = if input.is_lead {
+        Some(input.use_taproot)
+    } else {
+        None
+    };
+
     match state
         .api
         .set_local_parameters(
@@ -374,6 +395,7 @@ async fn setup_submit(
             disable_base_fees,
             enabled_modules,
             federation_size,
+            use_taproot,
         )
         .await
     {
