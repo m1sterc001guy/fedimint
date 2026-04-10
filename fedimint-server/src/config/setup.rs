@@ -17,7 +17,7 @@ use fedimint_core::endpoint_constants::{
 };
 use fedimint_core::envs::{
     FM_DISABLE_BASE_FEES_ENV, FM_IROH_API_SECRET_KEY_OVERRIDE_ENV,
-    FM_IROH_P2P_SECRET_KEY_OVERRIDE_ENV, is_env_var_set,
+    FM_IROH_P2P_SECRET_KEY_OVERRIDE_ENV, FM_USE_TAPROOT_WALLETV2_ENV, is_env_var_set,
 };
 use fedimint_core::module::{
     ApiAuth, ApiEndpoint, ApiEndpointContext, ApiError, ApiRequestErased, ApiVersion, api_endpoint,
@@ -432,7 +432,7 @@ impl ISetupApi for SetupApi {
             .setup_codes
             .iter()
             .find_map(|info| info.use_taproot)
-            .unwrap_or(false);
+            .unwrap_or(is_env_var_set(FM_USE_TAPROOT_WALLETV2_ENV));
 
         let enabled_modules = state
             .setup_codes
