@@ -2,9 +2,9 @@ use bitcoin::XOnlyPublicKey;
 use fedimint_core::PeerId;
 use fedimint_core::encoding::{Decodable, DecodeError, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
-use frost_secp256k1::Identifier;
-use frost_secp256k1::keys::PublicKeyPackage;
-use frost_secp256k1::keys::dkg::{round1, round2};
+use frost_secp256k1_tr::Identifier;
+use frost_secp256k1_tr::keys::PublicKeyPackage;
+use frost_secp256k1_tr::keys::dkg::{round1, round2};
 use secp256k1::PublicKey;
 
 /// Convert a `PeerId` into a FROST `Identifier`.

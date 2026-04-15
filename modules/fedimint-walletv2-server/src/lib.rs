@@ -333,10 +333,10 @@ impl ServerModuleInit for WalletInit {
 
         let threshold = peers.to_num_peers().threshold() as u16;
         let total_peers = peers.len() as u16;
-        let (_shares, pubkey_package) = frost_secp256k1::keys::generate_with_dealer(
+        let (_shares, pubkey_package) = frost_secp256k1_tr::keys::generate_with_dealer(
             total_peers,
             threshold,
-            frost_secp256k1::keys::IdentifierList::Default,
+            frost_secp256k1_tr::keys::IdentifierList::Default,
             &mut OsRng,
         )
         .expect("FROST trusted-dealer keygen failed");
@@ -379,8 +379,12 @@ impl ServerModuleInit for WalletInit {
         let our_identifier = peer_id_to_identifier(peers.identity())?;
         let threshold = peers.num_peers().threshold() as u16;
         let total_peers = peers.num_peers().total() as u16;
-        let (round1_secret_package, round1_package) =
-            frost_secp256k1::keys::dkg::part1(our_identifier, total_peers, threshold, &mut OsRng)?;
+        let (round1_secret_package, round1_package) = frost_secp256k1_tr::keys::dkg::part1(
+            our_identifier,
+            total_peers,
+            threshold,
+            &mut OsRng,
+        )?;
 
         let round1_packages = peers
             .exchange_encodable(FrostPolynomial(round1_package))
@@ -396,7 +400,7 @@ impl ServerModuleInit for WalletInit {
             .collect::<BTreeMap<_, _>>();
 
         let (round2_secret_package, round2_packages) =
-            frost_secp256k1::keys::dkg::part2(round1_secret_package, &round1_packages)?;
+            frost_secp256k1_tr::keys::dkg::part2(round1_secret_package, &round1_packages)?;
 
         // `part2` produces one package per recipient. `exchange_encodable` is
         // broadcast-only, so we send everyone the full per-recipient map and
@@ -433,7 +437,7 @@ impl ServerModuleInit for WalletInit {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let (_key_package, pubkey_package) = frost_secp256k1::keys::dkg::part3(
+        let (_key_package, pubkey_package) = frost_secp256k1_tr::keys::dkg::part3(
             &round2_secret_package,
             &round1_packages,
             &round2_packages,

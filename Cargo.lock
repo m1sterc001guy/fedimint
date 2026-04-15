@@ -4776,7 +4776,7 @@ dependencies = [
  "fedimint-logging",
  "fedimint-server-core",
  "fedimint-walletv2-common",
- "frost-secp256k1",
+ "frost-secp256k1-tr",
  "futures",
  "miniscript",
  "rand 0.8.5",
@@ -5018,10 +5018,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "frost-secp256k1"
+name = "frost-secp256k1-tr"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f6974379aee791f2f9e0db47c37d9e4c77ea8a8233e488ae8949ce4c6864e96"
+checksum = "ff8a25b14bfd5d25deba5edce61ec99c3afb752a1d26630a196bba4cb1c4ca5e"
 dependencies = [
  "document-features",
  "frost-core",
