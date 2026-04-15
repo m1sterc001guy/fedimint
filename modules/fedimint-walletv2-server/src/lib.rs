@@ -11,6 +11,7 @@
 #![allow(clippy::too_many_lines)]
 
 pub mod db;
+mod frost;
 mod taproot;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -88,6 +89,9 @@ use crate::db::{
     BlockCountVoteKey, BlockCountVotePrefix, FeeRateVoteKey, FeeRateVotePrefix,
     SchnorrSignaturesPrefix, TxInfoKey, TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix,
     UnsignedTxKey, UnsignedTxPrefix,
+};
+use crate::frost::{
+    FrostPolynomial, FrostPolynomialCommitment, frost_verifying_key_to_xonly, peer_id_to_identifier,
 };
 
 /// Number of confirmations required for a transaction to be considered as
@@ -327,6 +331,17 @@ impl ServerModuleInit for WalletInit {
             .map(|(peer, sk)| (*peer, sk.public_key(secp256k1::SECP256K1)))
             .collect::<BTreeMap<PeerId, PublicKey>>();
 
+        let threshold = peers.to_num_peers().threshold() as u16;
+        let total_peers = peers.len() as u16;
+        let (_shares, pubkey_package) = frost_secp256k1::keys::generate_with_dealer(
+            total_peers,
+            threshold,
+            frost_secp256k1::keys::IdentifierList::Default,
+            &mut OsRng,
+        )
+        .expect("FROST trusted-dealer keygen failed");
+        let internal_key = frost_verifying_key_to_xonly(&pubkey_package);
+
         bitcoin_sks
             .into_iter()
             .map(|(peer, bitcoin_sk)| {
@@ -337,6 +352,7 @@ impl ServerModuleInit for WalletInit {
                         fee_consensus.clone(),
                         args.network,
                         args.use_taproot,
+                        internal_key,
                     ),
                 };
 
@@ -360,6 +376,71 @@ impl ServerModuleInit for WalletInit {
             .into_iter()
             .collect();
 
+        let our_identifier = peer_id_to_identifier(peers.identity())?;
+        let threshold = peers.num_peers().threshold() as u16;
+        let total_peers = peers.num_peers().total() as u16;
+        let (round1_secret_package, round1_package) =
+            frost_secp256k1::keys::dkg::part1(our_identifier, total_peers, threshold, &mut OsRng)?;
+
+        let round1_packages = peers
+            .exchange_encodable(FrostPolynomial(round1_package))
+            .await?
+            .into_iter()
+            .filter(|(peer_id, _)| *peer_id != peers.identity())
+            .map(|(peer_id, poly)| {
+                (
+                    peer_id_to_identifier(peer_id).expect("PeerId fits in a FROST Identifier"),
+                    poly.0,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let (round2_secret_package, round2_packages) =
+            frost_secp256k1::keys::dkg::part2(round1_secret_package, &round1_packages)?;
+
+        // `part2` produces one package per recipient. `exchange_encodable` is
+        // broadcast-only, so we send everyone the full per-recipient map and
+        // each peer picks out their own entry.
+        let our_round2_packages = peers
+            .num_peers()
+            .peer_ids()
+            .filter(|peer_id| *peer_id != peers.identity())
+            .map(|peer_id| {
+                let identifier =
+                    peer_id_to_identifier(peer_id).expect("PeerId fits in a FROST Identifier");
+                let package = round2_packages
+                    .get(&identifier)
+                    .expect("part2 produces a package for every other peer")
+                    .clone();
+                (peer_id, FrostPolynomialCommitment(package))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let round2_packages = peers
+            .exchange_encodable(our_round2_packages)
+            .await?
+            .into_iter()
+            .filter(|(peer_id, _)| *peer_id != peers.identity())
+            .map(|(sender, mut map)| {
+                let package = map
+                    .remove(&peers.identity())
+                    .expect("peer sent a round2 package for us")
+                    .0;
+                (
+                    peer_id_to_identifier(sender).expect("PeerId fits in a FROST Identifier"),
+                    package,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let (_key_package, pubkey_package) = frost_secp256k1::keys::dkg::part3(
+            &round2_secret_package,
+            &round1_packages,
+            &round2_packages,
+        )?;
+
+        let internal_key = frost_verifying_key_to_xonly(&pubkey_package);
+
         let config = WalletConfig {
             private: WalletConfigPrivate { bitcoin_sk },
             consensus: WalletConfigConsensus::new(
@@ -367,6 +448,7 @@ impl ServerModuleInit for WalletInit {
                 fee_consensus,
                 args.network,
                 args.use_taproot,
+                internal_key,
             ),
         };
 
@@ -448,6 +530,9 @@ impl ServerModule for Wallet {
                     self.verify_signatures_schnorr(&unsigned_tx, &signatures, our_pk)
                         .expect("Our signatures failed verification against our private key");
                     WalletConsensusItem::SchnorrSignatures(key.0, signatures)
+                }
+                WalletDescriptor::Frost(_internal_key) => {
+                    todo!("Need to implement FROST signing")
                 }
             })
             .collect::<Vec<WalletConsensusItem>>()

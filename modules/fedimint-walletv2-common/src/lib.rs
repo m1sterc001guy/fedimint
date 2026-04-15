@@ -88,12 +88,13 @@ pub fn tweak_xonly_public_key(pk: &XOnlyPublicKey, tweak: &sha256::Hash) -> XOnl
 
 /// Build the federation's Taproot multi-`a` descriptor for the given tweak.
 ///
-/// The internal key is a provably unspendable BIP-341 NUMS point so the
-/// only way to spend is via the script path. The script path commits to a
-/// `multi_a` of the guardians' tweaked x-only keys.
+/// The internal key is the FROST aggregate verifying key produced during
+/// DKG, enabling threshold key-path spends. The script path commits to a
+/// `multi_a` of the guardians' tweaked x-only keys as a fallback.
 pub fn descriptor_tr(
     pks: &BTreeMap<PeerId, PublicKey>,
     tweak: &sha256::Hash,
+    internal_key: XOnlyPublicKey,
 ) -> Tr<XOnlyPublicKey> {
     let threshold = pks.to_num_peers().threshold();
     let mut tweaked: Vec<XOnlyPublicKey> = pks
@@ -107,7 +108,7 @@ pub fn descriptor_tr(
         .expect("Failed to create multi_a miniscript");
     let tree = TapTree::Leaf(Arc::new(ms));
 
-    Tr::new(nums_point(), Some(tree)).expect("Failed to construct Tr descriptor")
+    Tr::new(internal_key, Some(tree)).expect("Failed to construct Tr descriptor")
 }
 
 /// Returns true if the script pubkey potentially belongs to the federation.

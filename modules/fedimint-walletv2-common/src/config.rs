@@ -5,7 +5,7 @@ use bitcoin::hashes::{Hash, sha256};
 use fedimint_core::core::ModuleKind;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::{Amount, PeerId, plugin_types_trait_impl_config, weight_to_vbytes};
-use secp256k1::{PublicKey, SecretKey};
+use secp256k1::{PublicKey, SecretKey, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::{WalletCommonInit, descriptor, descriptor_tr};
@@ -79,6 +79,7 @@ impl WalletConfigConsensus {
         fee_consensus: FeeConsensus,
         network: Network,
         use_taproot: bool,
+        internal_key: XOnlyPublicKey,
     ) -> Self {
         let tx_overhead_weight = 4 * 4 // nVersion
             + 1 // SegWit marker
@@ -88,7 +89,7 @@ impl WalletConfigConsensus {
             + 4 * 4; // nLockTime
 
         let change_witness_weight = if use_taproot {
-            descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros())
+            descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros(), internal_key)
                 .max_weight_to_satisfy()
                 .expect("Cannot satisfy the taproot change descriptor.")
                 .to_wu()
@@ -100,7 +101,7 @@ impl WalletConfigConsensus {
         };
 
         let descriptor = if use_taproot {
-            WalletDescriptor::Tr
+            WalletDescriptor::Frost(internal_key)
         } else {
             WalletDescriptor::Wsh
         };
@@ -224,6 +225,7 @@ fn test_fee_consensus() {
 pub enum WalletDescriptor {
     Wsh,
     Tr,
+    Frost(XOnlyPublicKey),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]

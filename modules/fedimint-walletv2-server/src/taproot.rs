@@ -10,7 +10,7 @@ use fedimint_core::util::FmtCompactAnyhow;
 use fedimint_core::{BitcoinHash, NumPeersExt, PeerId};
 use fedimint_logging::LOG_MODULE_WALLETV2;
 use fedimint_walletv2_common::config::WalletDescriptor;
-use fedimint_walletv2_common::{descriptor_tr, tweak_xonly_public_key};
+use fedimint_walletv2_common::{descriptor_tr, nums_point, tweak_xonly_public_key};
 use futures::StreamExt;
 use secp256k1::{Keypair, PublicKey, Scalar, XOnlyPublicKey, schnorr};
 use tracing::debug;
@@ -25,7 +25,10 @@ impl Wallet {
         match self.cfg.consensus.descriptor {
             WalletDescriptor::Wsh => self.descriptor(tweak).script_pubkey(),
             WalletDescriptor::Tr => {
-                descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak).script_pubkey()
+                descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak, nums_point()).script_pubkey()
+            }
+            WalletDescriptor::Frost(internal_key) => {
+                descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak, internal_key).script_pubkey()
             }
         }
     }
@@ -84,7 +87,11 @@ impl Wallet {
     }
 
     fn tap_leaf_hash(&self, tweak: &sha256::Hash) -> TapLeafHash {
-        let tr = descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak);
+        let internal_key = match self.cfg.consensus.descriptor {
+            WalletDescriptor::Frost(internal_key) => internal_key,
+            _ => nums_point(),
+        };
+        let tr = descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak, internal_key);
         let (_, ms) = tr
             .iter_scripts()
             .next()
@@ -191,6 +198,11 @@ impl Wallet {
             federation_tx.tx.input.len()
         );
 
+        let internal_key = match self.cfg.consensus.descriptor {
+            WalletDescriptor::Frost(internal_key) => internal_key,
+            _ => nums_point(),
+        };
+
         for (index, utxo) in federation_tx.spent_tx_outs.iter().enumerate() {
             let leaf_hash = self.tap_leaf_hash(&utxo.tweak);
 
@@ -221,9 +233,13 @@ impl Wallet {
                     })
                     .collect();
 
-            miniscript::Descriptor::Tr(descriptor_tr(&self.cfg.consensus.bitcoin_pks, &utxo.tweak))
-                .satisfy(&mut federation_tx.tx.input[index], satisfier)
-                .expect("Failed to satisfy descriptor");
+            miniscript::Descriptor::Tr(descriptor_tr(
+                &self.cfg.consensus.bitcoin_pks,
+                &utxo.tweak,
+                internal_key,
+            ))
+            .satisfy(&mut federation_tx.tx.input[index], satisfier)
+            .expect("Failed to satisfy descriptor");
         }
     }
 }

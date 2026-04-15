@@ -20,6 +20,10 @@ impl PeerHandleOps for PeerHandle<'_> {
         self.num_peers
     }
 
+    fn identity(&self) -> PeerId {
+        self.identity
+    }
+
     async fn run_dkg_g1(&self) -> anyhow::Result<(Vec<G1Projective>, Scalar)> {
         info!(
             target: LOG_NET_PEER_DKG,
