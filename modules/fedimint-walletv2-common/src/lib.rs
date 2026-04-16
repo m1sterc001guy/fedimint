@@ -188,6 +188,14 @@ pub enum WalletConsensusItem {
     Feerate(Option<u64>),
     Signatures(Txid, Vec<Signature>),
     SchnorrSignatures(Txid, Vec<schnorr::Signature>),
+    /// A batch of FROST preprocessed signing commitments contributed to the
+    /// sender's pool. Commitment bytes are opaque so this crate does not need
+    /// a FROST dependency; the server decodes them via its own wrappers.
+    /// Item `i` in the batch lands at sequence number `pool_size[sender] + i`.
+    FrostCommitmentBatch(Vec<Vec<u8>>),
+    /// One FROST signature share per input of the referenced transaction,
+    /// opaque-encoded.
+    FrostSignatureShares(Txid, Vec<Vec<u8>>),
     #[encodable_default]
     Default {
         variant: u64,
@@ -209,6 +217,12 @@ impl std::fmt::Display for WalletConsensusItem {
             }
             WalletConsensusItem::SchnorrSignatures(..) => {
                 write!(f, "Wallet Schnorr Signatures")
+            }
+            WalletConsensusItem::FrostCommitmentBatch(batch) => {
+                write!(f, "FROST Commitment Batch ({} entries)", batch.len())
+            }
+            WalletConsensusItem::FrostSignatureShares(..) => {
+                write!(f, "FROST Signature Shares")
             }
             WalletConsensusItem::Default { variant, .. } => {
                 write!(f, "Unknown Wallet CI variant={variant}")

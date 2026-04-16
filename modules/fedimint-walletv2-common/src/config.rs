@@ -27,6 +27,12 @@ pub struct WalletConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WalletConfigPrivate {
     pub bitcoin_sk: SecretKey,
+    /// Serialized FROST `KeyPackage` for this guardian. Populated only for
+    /// guardians in the signing set. `None` for non-signers and for Wsh
+    /// federations. Stored as opaque bytes so the common crate doesn't need
+    /// to depend on a FROST crate.
+    #[serde(default)]
+    pub frost_key_package: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Encodable, Decodable)]
@@ -48,6 +54,11 @@ pub struct WalletConfigConsensus {
     pub fee_consensus: FeeConsensus,
     /// Bitcoin network (e.g. testnet, bitcoin)
     pub network: Network,
+    /// Serialized FROST `PublicKeyPackage` (verifying key + per-signer
+    /// verifying shares) produced by DKG. `None` for Wsh federations.
+    /// Stored as opaque bytes to avoid a FROST dependency in this crate.
+    #[serde(default)]
+    pub frost_pubkey_package: Option<Vec<u8>>,
 }
 
 impl WalletConfigConsensus {
@@ -80,6 +91,7 @@ impl WalletConfigConsensus {
         network: Network,
         use_taproot: bool,
         internal_key: XOnlyPublicKey,
+        frost_pubkey_package: Option<Vec<u8>>,
     ) -> Self {
         let tx_overhead_weight = 4 * 4 // nVersion
             + 1 // SegWit marker
@@ -143,6 +155,7 @@ impl WalletConfigConsensus {
             dust_limit: bitcoin::Amount::from_sat(10_000),
             fee_consensus,
             network,
+            frost_pubkey_package,
         }
     }
 }
@@ -247,6 +260,10 @@ pub struct WalletClientConfig {
     pub fee_consensus: FeeConsensus,
     /// Bitcoin network (e.g. testnet, bitcoin)
     pub network: Network,
+    /// Serialized FROST `PublicKeyPackage` for client-side signature
+    /// verification. Opaque bytes; `None` for non-FROST federations.
+    #[serde(default)]
+    pub frost_pubkey_package: Option<Vec<u8>>,
 }
 
 impl std::fmt::Display for WalletClientConfig {

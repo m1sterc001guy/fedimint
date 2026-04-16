@@ -7,6 +7,7 @@ use secp256k1::schnorr;
 use serde::Serialize;
 use strum_macros::EnumIter;
 
+use crate::frost::{FrostSignatureShare, FrostSigningCommitments, FrostSigningNonces};
 use crate::{FederationTx, FederationWallet};
 
 #[repr(u8)]
@@ -23,6 +24,12 @@ pub enum DbKeyPrefix {
     UnconfirmedTx = 0x38,
     FederationWallet = 0x39,
     SchnorrSignatures = 0x3a,
+    FrostNoncePool = 0x3b,
+    FrostCommitmentPool = 0x3c,
+    FrostPoolSize = 0x3d,
+    FrostPoolCursor = 0x3e,
+    FrostAllocation = 0x3f,
+    FrostShares = 0x40,
 }
 
 impl std::fmt::Display for DbKeyPrefix {
@@ -206,3 +213,122 @@ impl_db_record!(
 );
 
 impl_db_lookup!(key = FeeRateVoteKey, query_prefix = FeeRateVotePrefix);
+
+// ----- FROST signing pool -----
+
+/// Our own FROST signing nonces, indexed by our local sequence number.
+/// Must never be broadcast or leave this process.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FrostNoncePoolKey(pub u64);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostNoncePoolPrefix;
+
+impl_db_record!(
+    key = FrostNoncePoolKey,
+    value = FrostSigningNonces,
+    db_prefix = DbKeyPrefix::FrostNoncePool,
+);
+
+impl_db_lookup!(key = FrostNoncePoolKey, query_prefix = FrostNoncePoolPrefix);
+
+/// Every signing peer's FROST commitments, indexed by `(peer, seq)`.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FrostCommitmentPoolKey(pub PeerId, pub u64);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostCommitmentPoolPeerPrefix(pub PeerId);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostCommitmentPoolPrefix;
+
+impl_db_record!(
+    key = FrostCommitmentPoolKey,
+    value = FrostSigningCommitments,
+    db_prefix = DbKeyPrefix::FrostCommitmentPool,
+);
+
+impl_db_lookup!(
+    key = FrostCommitmentPoolKey,
+    query_prefix = FrostCommitmentPoolPeerPrefix
+);
+
+impl_db_lookup!(
+    key = FrostCommitmentPoolKey,
+    query_prefix = FrostCommitmentPoolPrefix
+);
+
+/// Cumulative number of commitments a peer has deposited into the pool.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FrostPoolSizeKey(pub PeerId);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostPoolSizePrefix;
+
+impl_db_record!(
+    key = FrostPoolSizeKey,
+    value = u64,
+    db_prefix = DbKeyPrefix::FrostPoolSize,
+);
+
+impl_db_lookup!(key = FrostPoolSizeKey, query_prefix = FrostPoolSizePrefix);
+
+/// Cumulative number of commitments consumed from a peer's pool by signing
+/// sessions.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FrostPoolCursorKey(pub PeerId);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostPoolCursorPrefix;
+
+impl_db_record!(
+    key = FrostPoolCursorKey,
+    value = u64,
+    db_prefix = DbKeyPrefix::FrostPoolCursor,
+);
+
+impl_db_lookup!(
+    key = FrostPoolCursorKey,
+    query_prefix = FrostPoolCursorPrefix
+);
+
+/// Sequence numbers allocated to a specific transaction's inputs. The
+/// per-peer allocation is the same for every signing peer (cursors advance
+/// in lockstep on the consensus log), so a single `Vec<u64>` per txid
+/// suffices.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FrostAllocationKey(pub Txid);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostAllocationPrefix;
+
+impl_db_record!(
+    key = FrostAllocationKey,
+    value = Vec<u64>,
+    db_prefix = DbKeyPrefix::FrostAllocation,
+);
+
+impl_db_lookup!(
+    key = FrostAllocationKey,
+    query_prefix = FrostAllocationPrefix
+);
+
+/// Received FROST signature shares, per-input per-peer.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct FrostSharesKey(pub Txid, pub PeerId);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostSharesTxidPrefix(pub Txid);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct FrostSharesPrefix;
+
+impl_db_record!(
+    key = FrostSharesKey,
+    value = Vec<FrostSignatureShare>,
+    db_prefix = DbKeyPrefix::FrostShares,
+);
+
+impl_db_lookup!(key = FrostSharesKey, query_prefix = FrostSharesTxidPrefix);
+
+impl_db_lookup!(key = FrostSharesKey, query_prefix = FrostSharesPrefix);
