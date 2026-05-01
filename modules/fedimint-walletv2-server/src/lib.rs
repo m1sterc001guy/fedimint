@@ -50,6 +50,7 @@ use fedimint_core::module::{
     ModuleConsensusVersion, ModuleInit, SupportedModuleApiVersions, TransactionItemAmounts,
     api_endpoint,
 };
+use fedimint_core::setup_code::WalletDescriptorKind;
 #[cfg(not(target_family = "wasm"))]
 use fedimint_core::task::TaskGroup;
 use fedimint_core::task::sleep;
@@ -361,14 +362,30 @@ impl ServerModuleInit for WalletInit {
             .map(|(peer, sk)| (*peer, sk.public_key(secp256k1::SECP256K1)))
             .collect::<BTreeMap<PeerId, PublicKey>>();
 
-        let (key_packages, internal_key, pubkey_package) =
-            taproot::frost::trusted_setup(peers).expect("Could not execute trusted setup");
-        let frost_pubkey_package = Some(FrostPublicKeyPackage(pubkey_package));
+        // Only the Frost descriptor needs the FROST setup. Wsh and Tr use
+        // multisig directly (Tr uses a NUMS internal key — set inside
+        // `WalletConfigConsensus::new`).
+        let (frost_key_packages, frost_internal_key, frost_pubkey_package) = match args
+            .descriptor_kind
+        {
+            WalletDescriptorKind::Frost => {
+                let (key_packages, internal_key, pubkey_package) =
+                    taproot::frost::trusted_setup(peers).expect("Could not execute trusted setup");
+                (
+                    Some(key_packages),
+                    Some(internal_key),
+                    Some(FrostPublicKeyPackage(pubkey_package)),
+                )
+            }
+            WalletDescriptorKind::Wsh | WalletDescriptorKind::Tr => (None, None, None),
+        };
 
         bitcoin_sks
             .into_iter()
             .map(|(peer, bitcoin_sk)| {
-                let frost_key_package = key_packages.get(&peer).cloned();
+                let frost_key_package = frost_key_packages
+                    .as_ref()
+                    .and_then(|kps| kps.get(&peer).cloned());
                 let config = WalletConfig {
                     private: WalletConfigPrivate {
                         bitcoin_sk,
@@ -378,8 +395,8 @@ impl ServerModuleInit for WalletInit {
                         bitcoin_pks.clone(),
                         fee_consensus.clone(),
                         args.network,
-                        args.use_taproot,
-                        internal_key,
+                        args.descriptor_kind,
+                        frost_internal_key,
                         frost_pubkey_package.clone(),
                     ),
                 };
@@ -404,29 +421,49 @@ impl ServerModuleInit for WalletInit {
             .into_iter()
             .collect();
 
-        let (key_package, internal_key, pubkey_package) = taproot::frost::dkg(peers).await?;
+        // Only the Frost descriptor needs DKG. Wsh and Tr just use the
+        // exchanged multisig keys; Tr uses a NUMS internal key (set
+        // inside `WalletConfigConsensus::new`).
+        let (frost_key_package, frost_internal_key, frost_pubkey_package) =
+            match args.descriptor_kind {
+                WalletDescriptorKind::Frost => {
+                    let (key_package, internal_key, pubkey_package) =
+                        taproot::frost::dkg(peers).await?;
+                    (
+                        Some(key_package),
+                        Some(internal_key),
+                        Some(FrostPublicKeyPackage(pubkey_package)),
+                    )
+                }
+                WalletDescriptorKind::Wsh | WalletDescriptorKind::Tr => (None, None, None),
+            };
 
         let config = WalletConfig {
             private: WalletConfigPrivate {
                 bitcoin_sk,
-                frost_key_package: Some(key_package),
+                frost_key_package,
             },
             consensus: WalletConfigConsensus::new(
                 bitcoin_pks,
                 fee_consensus,
                 args.network,
-                args.use_taproot,
-                internal_key,
-                Some(FrostPublicKeyPackage(pubkey_package)),
+                args.descriptor_kind,
+                frost_internal_key,
+                frost_pubkey_package,
             ),
         };
 
-        let descriptor = descriptor_tr(
-            &config.consensus.bitcoin_pks,
-            &sha256::Hash::all_zeros(),
-            internal_key,
-        );
-        tracing::info!(target: LOG_MODULE_WALLETV2, "DKG finished. Wallet Descriptor: {descriptor}");
+        if let Some(internal_key) = frost_internal_key {
+            let descriptor = descriptor_tr(
+                &config.consensus.bitcoin_pks,
+                &sha256::Hash::all_zeros(),
+                internal_key,
+            );
+            tracing::info!(
+                target: LOG_MODULE_WALLETV2,
+                "DKG finished. Wallet Descriptor: {descriptor}"
+            );
+        }
 
         Ok(config.to_erased())
     }

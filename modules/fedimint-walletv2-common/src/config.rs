@@ -4,13 +4,14 @@ use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{Network, XOnlyPublicKey};
 use fedimint_core::core::ModuleKind;
 use fedimint_core::encoding::{Decodable, Encodable};
+use fedimint_core::setup_code::WalletDescriptorKind;
 use fedimint_core::{Amount, PeerId, plugin_types_trait_impl_config, weight_to_vbytes};
 use frost_secp256k1_tr::keys::KeyPackage;
 use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
-use crate::taproot::descriptor_tr;
 use crate::taproot::frost::FrostPublicKeyPackage;
+use crate::taproot::{descriptor_tr, nums_point};
 use crate::{WalletCommonInit, descriptor};
 
 plugin_types_trait_impl_config!(
@@ -85,12 +86,20 @@ impl WalletConfigConsensus {
     /// | 18        | 530  | 920     |
     /// | 19        | 539  | 937     |
     /// | 20        | 565  | 991     |
+    /// `frost_internal_key` is only used when `descriptor_kind` is
+    /// [`WalletDescriptorKind::Frost`] — it's the FROST aggregated public
+    /// key, used as the BIP-341 internal key so the federation can spend
+    /// via the key path. For [`WalletDescriptorKind::Tr`] we use a NUMS
+    /// point as the internal key instead, which makes the key path
+    /// provably unspendable and forces all spends through the script-path
+    /// multisig. For [`WalletDescriptorKind::Wsh`] there's no internal key
+    /// at all (P2WSH multisig).
     pub fn new(
         bitcoin_pks: BTreeMap<PeerId, PublicKey>,
         fee_consensus: FeeConsensus,
         network: Network,
-        use_taproot: bool,
-        internal_key: XOnlyPublicKey,
+        descriptor_kind: WalletDescriptorKind,
+        frost_internal_key: Option<XOnlyPublicKey>,
         frost_pubkey_package: Option<FrostPublicKeyPackage>,
     ) -> Self {
         let tx_overhead_weight = 4 * 4 // nVersion
@@ -100,22 +109,33 @@ impl WalletConfigConsensus {
             + 4 // up to 2 outputs
             + 4 * 4; // nLockTime
 
-        let change_witness_weight = if use_taproot {
-            descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros(), internal_key)
-                .max_weight_to_satisfy()
-                .expect("Cannot satisfy the taproot change descriptor.")
-                .to_wu()
-        } else {
-            descriptor(&bitcoin_pks, &sha256::Hash::all_zeros())
+        let change_witness_weight = match descriptor_kind {
+            WalletDescriptorKind::Wsh => descriptor(&bitcoin_pks, &sha256::Hash::all_zeros())
                 .max_weight_to_satisfy()
                 .expect("Cannot satisfy the change descriptor.")
-                .to_wu()
+                .to_wu(),
+            WalletDescriptorKind::Tr => {
+                descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros(), nums_point())
+                    .max_weight_to_satisfy()
+                    .expect("Cannot satisfy the taproot change descriptor.")
+                    .to_wu()
+            }
+            WalletDescriptorKind::Frost => descriptor_tr(
+                &bitcoin_pks,
+                &sha256::Hash::all_zeros(),
+                frost_internal_key.expect("Frost descriptor requires a FROST internal key"),
+            )
+            .max_weight_to_satisfy()
+            .expect("Cannot satisfy the taproot change descriptor.")
+            .to_wu(),
         };
 
-        let descriptor = if use_taproot {
-            WalletDescriptor::Frost(internal_key)
-        } else {
-            WalletDescriptor::Wsh
+        let descriptor = match descriptor_kind {
+            WalletDescriptorKind::Wsh => WalletDescriptor::Wsh,
+            WalletDescriptorKind::Tr => WalletDescriptor::Tr,
+            WalletDescriptorKind::Frost => WalletDescriptor::Frost(
+                frost_internal_key.expect("Frost descriptor requires a FROST internal key"),
+            ),
         };
 
         let change_input_weight = 32 * 4 // txid
