@@ -5,7 +5,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub use fedimint_walletv2_common as common;
-use fedimint_walletv2_common::taproot::{descriptor_tr, nums_point};
+use fedimint_walletv2_common::taproot::{descriptor_tr, descriptor_tr_single_peer, nums_point};
 
 mod api;
 #[cfg(feature = "cli")]
@@ -399,6 +399,9 @@ impl WalletClientModule {
             }
             WalletDescriptor::Tr => {
                 descriptor_tr(&self.cfg.bitcoin_pks, &tweak, nums_point()).address(self.cfg.network)
+            }
+            WalletDescriptor::SinglePeer(peer_xonly) => {
+                descriptor_tr_single_peer(peer_xonly, &tweak).address(self.cfg.network)
             }
             WalletDescriptor::Frost(internal_key) => {
                 descriptor_tr(&self.cfg.bitcoin_pks, &tweak, internal_key).address(self.cfg.network)

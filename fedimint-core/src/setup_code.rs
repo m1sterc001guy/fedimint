@@ -8,9 +8,10 @@ use crate::core::ModuleKind;
 use crate::encoding::{Decodable, Encodable};
 use crate::util::SafeUrl;
 
-/// On-chain wallet descriptor used by the walletv2 module. Selected by the
-/// federation leader at setup time and broadcast to peers via
-/// `PeerSetupCode`. Defaults to [`Self::Wsh`] when the leader doesn't
+/// On-chain wallet descriptor used by the walletv2 module.
+///
+/// Selected by the federation leader at setup time and broadcast to peers
+/// via `PeerSetupCode`. Defaults to [`Self::Wsh`] when the leader doesn't
 /// configure it.
 #[derive(
     Clone,

@@ -11,7 +11,7 @@ use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
 use crate::taproot::frost::FrostPublicKeyPackage;
-use crate::taproot::{descriptor_tr, nums_point};
+use crate::taproot::{descriptor_tr, descriptor_tr_single_peer, nums_point};
 use crate::{WalletCommonInit, descriptor};
 
 plugin_types_trait_impl_config!(
@@ -109,18 +109,38 @@ impl WalletConfigConsensus {
             + 4 // up to 2 outputs
             + 4 * 4; // nLockTime
 
-        let change_witness_weight = match descriptor_kind {
-            WalletDescriptorKind::Wsh => descriptor(&bitcoin_pks, &sha256::Hash::all_zeros())
+        // For Tr/Frost with N=1, multisig and FROST both degenerate to a
+        // single signature — collapse both into a SinglePeer descriptor
+        // that uses the lone peer's xonly bitcoin pubkey as the internal
+        // key (no NUMS, no script-path, no FROST protocol).
+        let single_peer_xonly = match (descriptor_kind, bitcoin_pks.len() == 1) {
+            (WalletDescriptorKind::Tr | WalletDescriptorKind::Frost, true) => Some(
+                bitcoin_pks
+                    .values()
+                    .next()
+                    .expect("bitcoin_pks.len() == 1")
+                    .x_only_public_key()
+                    .0,
+            ),
+            _ => None,
+        };
+
+        let change_witness_weight = match (descriptor_kind, single_peer_xonly) {
+            (WalletDescriptorKind::Wsh, _) => descriptor(&bitcoin_pks, &sha256::Hash::all_zeros())
                 .max_weight_to_satisfy()
                 .expect("Cannot satisfy the change descriptor.")
                 .to_wu(),
-            WalletDescriptorKind::Tr => {
+            (_, Some(xonly)) => descriptor_tr_single_peer(xonly, &sha256::Hash::all_zeros())
+                .max_weight_to_satisfy()
+                .expect("Cannot satisfy the single-peer taproot descriptor.")
+                .to_wu(),
+            (WalletDescriptorKind::Tr, None) => {
                 descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros(), nums_point())
                     .max_weight_to_satisfy()
                     .expect("Cannot satisfy the taproot change descriptor.")
                     .to_wu()
             }
-            WalletDescriptorKind::Frost => descriptor_tr(
+            (WalletDescriptorKind::Frost, None) => descriptor_tr(
                 &bitcoin_pks,
                 &sha256::Hash::all_zeros(),
                 frost_internal_key.expect("Frost descriptor requires a FROST internal key"),
@@ -130,10 +150,11 @@ impl WalletConfigConsensus {
             .to_wu(),
         };
 
-        let descriptor = match descriptor_kind {
-            WalletDescriptorKind::Wsh => WalletDescriptor::Wsh,
-            WalletDescriptorKind::Tr => WalletDescriptor::Tr,
-            WalletDescriptorKind::Frost => WalletDescriptor::Frost(
+        let descriptor = match (descriptor_kind, single_peer_xonly) {
+            (WalletDescriptorKind::Wsh, _) => WalletDescriptor::Wsh,
+            (_, Some(xonly)) => WalletDescriptor::SinglePeer(xonly),
+            (WalletDescriptorKind::Tr, None) => WalletDescriptor::Tr,
+            (WalletDescriptorKind::Frost, None) => WalletDescriptor::Frost(
                 frost_internal_key.expect("Frost descriptor requires a FROST internal key"),
             ),
         };
@@ -252,13 +273,25 @@ fn test_fee_consensus() {
     );
 }
 
-/// Which kind of bitcoin descriptor the federation uses. Currently only `Wsh`
-/// is defined, we can expand in the future.
+/// Which kind of bitcoin descriptor the federation uses.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
 pub enum WalletDescriptor {
+    /// `SegWit` v0 (`P2WSH`) k-of-n ECDSA multisig.
     Wsh,
+    /// Taproot (P2TR) with NUMS internal key + k-of-n Schnorr multisig
+    /// in the script path. Used when the federation has more than one
+    /// peer and the leader picked Tr.
     Tr,
+    /// Taproot (P2TR) key-path with the FROST aggregated public key as
+    /// internal key. The federation produces a single threshold Schnorr
+    /// signature via FROST.
     Frost(XOnlyPublicKey),
+    /// Single-peer federation: taproot key-path spend with the lone
+    /// peer's bitcoin xonly pubkey as internal key. Collapses both Tr and
+    /// Frost when `bitcoin_pks.len() == 1` — no NUMS, no script-path,
+    /// no FROST protocol; signing is a direct schnorr signature with the
+    /// peer's bitcoin secret key.
+    SinglePeer(XOnlyPublicKey),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]

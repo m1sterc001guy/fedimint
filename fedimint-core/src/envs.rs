@@ -32,6 +32,7 @@ pub const FM_ENABLE_MODULE_WALLETV2_ENV: &str = "FM_ENABLE_MODULE_WALLETV2";
 pub const FM_DISABLE_BASE_FEES_ENV: &str = "FM_DISABLE_BASE_FEES";
 
 /// Selects the on-chain wallet descriptor used by the walletv2 module.
+///
 /// Set by the federation leader at setup time. Accepted values (case
 /// insensitive): `wsh` (default), `tr`, `frost`. An invalid value causes
 /// setup to fail rather than silently default.

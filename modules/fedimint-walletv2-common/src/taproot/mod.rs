@@ -59,3 +59,16 @@ pub fn descriptor_tr(
 
     Tr::new(internal_tweaked, Some(tree)).expect("Failed to construct Tr descriptor")
 }
+
+/// Single-peer Taproot descriptor: just `tr(internal_key)` with no
+/// taptree. The internal key is the lone peer's x-only bitcoin pubkey
+/// (after applying the per-UTXO `tweak`). Used for `N=1` federations
+/// when the leader picked Tr or Frost — both collapse to this since
+/// multisig and FROST both degenerate to a single signature.
+pub fn descriptor_tr_single_peer(
+    internal_key: XOnlyPublicKey,
+    tweak: &sha256::Hash,
+) -> Tr<XOnlyPublicKey> {
+    let internal_tweaked = tweak_xonly_public_key(&internal_key, tweak);
+    Tr::new(internal_tweaked, None).expect("Failed to construct single-peer Tr descriptor")
+}

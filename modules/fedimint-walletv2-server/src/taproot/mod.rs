@@ -1,11 +1,12 @@
 pub mod frost;
 mod multisig;
+mod single_peer;
 
 use bitcoin::hashes::sha256;
 use bitcoin::taproot::LeafVersion;
 use bitcoin::{ScriptBuf, TapLeafHash, TxOut};
 use fedimint_walletv2_common::config::WalletDescriptor;
-use fedimint_walletv2_common::taproot::{descriptor_tr, nums_point};
+use fedimint_walletv2_common::taproot::{descriptor_tr, descriptor_tr_single_peer, nums_point};
 
 use crate::{FederationTx, Wallet};
 
@@ -15,6 +16,9 @@ impl Wallet {
             WalletDescriptor::Wsh => self.descriptor(tweak).script_pubkey(),
             WalletDescriptor::Tr => {
                 descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak, nums_point()).script_pubkey()
+            }
+            WalletDescriptor::SinglePeer(peer_xonly) => {
+                descriptor_tr_single_peer(peer_xonly, tweak).script_pubkey()
             }
             WalletDescriptor::Frost(internal_key) => {
                 descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak, internal_key).script_pubkey()

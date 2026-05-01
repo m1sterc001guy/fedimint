@@ -362,22 +362,22 @@ impl ServerModuleInit for WalletInit {
             .map(|(peer, sk)| (*peer, sk.public_key(secp256k1::SECP256K1)))
             .collect::<BTreeMap<PeerId, PublicKey>>();
 
-        // Only the Frost descriptor needs the FROST setup. Wsh and Tr use
-        // multisig directly (Tr uses a NUMS internal key — set inside
-        // `WalletConfigConsensus::new`).
-        let (frost_key_packages, frost_internal_key, frost_pubkey_package) = match args
-            .descriptor_kind
-        {
-            WalletDescriptorKind::Frost => {
-                let (key_packages, internal_key, pubkey_package) =
-                    taproot::frost::trusted_setup(peers).expect("Could not execute trusted setup");
-                (
-                    Some(key_packages),
-                    Some(internal_key),
-                    Some(FrostPublicKeyPackage(pubkey_package)),
-                )
-            }
-            WalletDescriptorKind::Wsh | WalletDescriptorKind::Tr => (None, None, None),
+        // FROST is only run when (a) the leader picked Frost AND (b)
+        // there's more than one peer. With a single peer, Frost (and Tr)
+        // collapse to a plain key-path schnorr signature — see
+        // `WalletDescriptor::SinglePeer`.
+        let needs_frost =
+            matches!(args.descriptor_kind, WalletDescriptorKind::Frost) && peers.len() > 1;
+        let (frost_key_packages, frost_internal_key, frost_pubkey_package) = if needs_frost {
+            let (key_packages, internal_key, pubkey_package) =
+                taproot::frost::trusted_setup(peers).expect("Could not execute trusted setup");
+            (
+                Some(key_packages),
+                Some(internal_key),
+                Some(FrostPublicKeyPackage(pubkey_package)),
+            )
+        } else {
+            (None, None, None)
         };
 
         bitcoin_sks
@@ -421,22 +421,22 @@ impl ServerModuleInit for WalletInit {
             .into_iter()
             .collect();
 
-        // Only the Frost descriptor needs DKG. Wsh and Tr just use the
-        // exchanged multisig keys; Tr uses a NUMS internal key (set
-        // inside `WalletConfigConsensus::new`).
-        let (frost_key_package, frost_internal_key, frost_pubkey_package) =
-            match args.descriptor_kind {
-                WalletDescriptorKind::Frost => {
-                    let (key_package, internal_key, pubkey_package) =
-                        taproot::frost::dkg(peers).await?;
-                    (
-                        Some(key_package),
-                        Some(internal_key),
-                        Some(FrostPublicKeyPackage(pubkey_package)),
-                    )
-                }
-                WalletDescriptorKind::Wsh | WalletDescriptorKind::Tr => (None, None, None),
-            };
+        // FROST is only run when (a) the leader picked Frost AND (b)
+        // there's more than one peer. With a single peer, Frost (and Tr)
+        // collapse to a plain key-path schnorr signature — see
+        // `WalletDescriptor::SinglePeer`.
+        let needs_frost = matches!(args.descriptor_kind, WalletDescriptorKind::Frost)
+            && peers.num_peers().total() > 1;
+        let (frost_key_package, frost_internal_key, frost_pubkey_package) = if needs_frost {
+            let (key_package, internal_key, pubkey_package) = taproot::frost::dkg(peers).await?;
+            (
+                Some(key_package),
+                Some(internal_key),
+                Some(FrostPublicKeyPackage(pubkey_package)),
+            )
+        } else {
+            (None, None, None)
+        };
 
         let config = WalletConfig {
             private: WalletConfigPrivate {
@@ -548,6 +548,16 @@ impl ServerModule for Wallet {
                         let signatures = self.sign_tx_schnorr(&unsigned_tx);
                         self.verify_signatures_schnorr(&unsigned_tx, &signatures, our_pk)
                             .expect("Our signatures failed verification against our private key");
+                        WalletConsensusItem::SchnorrSignatures(key.0, signatures)
+                    })
+                    .collect()
+                    .await
+            }
+            WalletDescriptor::SinglePeer(_) => {
+                dbtx.find_by_prefix(&UnsignedTxPrefix)
+                    .await
+                    .map(|(key, unsigned_tx)| {
+                        let signatures = self.sign_tx_single_peer(&unsigned_tx);
                         WalletConsensusItem::SchnorrSignatures(key.0, signatures)
                     })
                     .collect()
@@ -784,12 +794,19 @@ impl ServerModule for Wallet {
                 self.process_signatures(dbtx, txid, signatures, peer).await
             }
             WalletConsensusItem::SchnorrSignatures(txid, signatures) => {
-                ensure!(
-                    self.cfg.consensus.descriptor == WalletDescriptor::Tr,
-                    "Received Schnorr Signature on a Segwit Federation"
-                );
-                self.process_signatures_schnorr(dbtx, txid, signatures, peer)
-                    .await
+                match self.cfg.consensus.descriptor {
+                    WalletDescriptor::Tr => {
+                        self.process_signatures_schnorr(dbtx, txid, signatures, peer)
+                            .await
+                    }
+                    WalletDescriptor::SinglePeer(_) => {
+                        self.process_signatures_single_peer(dbtx, txid, signatures, peer)
+                            .await
+                    }
+                    WalletDescriptor::Wsh | WalletDescriptor::Frost(_) => {
+                        bail!("Received Schnorr Signature on a non-Schnorr Federation")
+                    }
+                }
             }
             WalletConsensusItem::FrostSigningCommitments(commitments) => {
                 // Reject duplicates so they're not stored in `AcceptedItemKey`
@@ -2238,9 +2255,9 @@ impl Wallet {
             .filter_map(|entry| {
                 let matches = match self.cfg.consensus.descriptor {
                     WalletDescriptor::Wsh => entry.1.1.script_pubkey.is_p2wsh(),
-                    WalletDescriptor::Tr | WalletDescriptor::Frost(_) => {
-                        entry.1.1.script_pubkey.is_p2tr()
-                    }
+                    WalletDescriptor::Tr
+                    | WalletDescriptor::SinglePeer(_)
+                    | WalletDescriptor::Frost(_) => entry.1.1.script_pubkey.is_p2tr(),
                 };
                 std::future::ready(matches.then(|| OutputInfo {
                     index: entry.0.0,
@@ -2344,7 +2361,9 @@ impl Wallet {
             .map(|(peer, pk)| {
                 let tweaked = match self.cfg.consensus.descriptor {
                     WalletDescriptor::Wsh => tweak_public_key(pk, &wallet.tweak).to_string(),
-                    WalletDescriptor::Tr | WalletDescriptor::Frost(_) => {
+                    WalletDescriptor::Tr
+                    | WalletDescriptor::SinglePeer(_)
+                    | WalletDescriptor::Frost(_) => {
                         tweak_xonly_public_key(&pk.x_only_public_key().0, &wallet.tweak).to_string()
                     }
                 };

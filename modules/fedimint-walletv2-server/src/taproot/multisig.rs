@@ -18,6 +18,13 @@ use crate::db::{
 use crate::{FederationTx, Wallet};
 
 impl Wallet {
+    /// Handle a `SchnorrSignatures` consensus item under the
+    /// `WalletDescriptor::Tr` descriptor (NUMS internal key + k-of-n
+    /// `multi_a` script-path). Looks up `peer`'s bitcoin pubkey,
+    /// verifies the signatures against the script-spend sighash, stores
+    /// them under `(txid, peer)`, and once `threshold` peers have
+    /// contributed assembles the witness via miniscript's `satisfy`
+    /// and broadcasts the finalized transaction.
     pub(crate) async fn process_signatures_schnorr(
         &self,
         dbtx: &mut DatabaseTransaction<'_>,
@@ -71,6 +78,14 @@ impl Wallet {
         Ok(())
     }
 
+    /// Produce one Schnorr signature per input for the script-path
+    /// spend of `unsigned_tx`. Each signature is over the
+    /// `taproot_script_spend_signature_hash` for that input's
+    /// `tap_leaf_hash` (the `multi_a` leaf). The signing key is the
+    /// guardian's `bitcoin_sk` tweaked by the per-UTXO fedimint tweak —
+    /// matching `descriptor_tr`'s tweaked-key entries — so the
+    /// signature verifies against that peer's tweaked entry inside
+    /// the `multi_a`.
     pub(crate) fn sign_tx_schnorr(&self, unsigned_tx: &FederationTx) -> Vec<schnorr::Signature> {
         let prevouts = self.build_prevouts(unsigned_tx);
         let mut sighash_cache = SighashCache::new(unsigned_tx.tx.clone());
@@ -104,6 +119,13 @@ impl Wallet {
             .collect()
     }
 
+    /// Verify that `signatures` (one per input of `unsigned_tx`) are
+    /// valid script-path signatures from `pk`. For each input we
+    /// reconstruct the same script-spend sighash as `sign_tx_schnorr`
+    /// and verify against `tweak_xonly_public_key(pk_xonly,
+    /// utxo.tweak)` — the peer's tweaked entry inside the `multi_a`
+    /// script. Returns an error on the first failed verification or
+    /// signature-count mismatch.
     pub(crate) fn verify_signatures_schnorr(
         &self,
         unsigned_tx: &FederationTx,
@@ -149,6 +171,14 @@ impl Wallet {
         Ok(())
     }
 
+    /// Assemble the script-path witness for every input of
+    /// `federation_tx` once the `threshold` set of peer signatures
+    /// has been collected. For each input we hand miniscript a
+    /// `(tweaked_xonly_pk, leaf_hash) -> Signature` map and let
+    /// `Descriptor::Tr(...).satisfy()` produce the witness — the
+    /// `multi_a` script consumes `threshold` of those signatures and
+    /// pushes the script + control block. The transaction is mutated
+    /// in place; the caller broadcasts it afterwards.
     fn finalize_tx_schnorr(
         &self,
         federation_tx: &mut FederationTx,
