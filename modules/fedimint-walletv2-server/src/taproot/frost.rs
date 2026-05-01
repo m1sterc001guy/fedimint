@@ -510,6 +510,11 @@ pub(crate) async fn dkg(
     let (round2_secret_package, round2_packages) =
         frost::keys::dkg::part2(round1_secret_package, &round1_packages)?;
 
+    // Round 2 packages are per-recipient secret shares — sending them
+    // via the broadcast `exchange_encodable` would let any peer
+    // interpolate everyone's polynomial and recover the aggregate
+    // signing key. Use the directed primitive so each share goes only
+    // to its intended recipient.
     let our_round2_packages = peers
         .num_peers()
         .peer_ids()
@@ -525,17 +530,10 @@ pub(crate) async fn dkg(
         .collect::<BTreeMap<_, _>>();
 
     let round2_packages = peers
-        .exchange_encodable(our_round2_packages)
+        .exchange_directed_encodable(our_round2_packages)
         .await?
         .into_iter()
-        .filter(|(peer_id, _)| *peer_id != peers.identity())
-        .map(|(sender, mut map)| {
-            let package = map
-                .remove(&peers.identity())
-                .expect("Peer sent us a package")
-                .0;
-            (peer_id_to_identifier(sender), package)
-        })
+        .map(|(sender, package)| (peer_id_to_identifier(sender), package.0))
         .collect::<BTreeMap<_, _>>();
 
     let (key_package, pubkey_package) =
