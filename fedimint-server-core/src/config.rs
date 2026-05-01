@@ -45,6 +45,8 @@ pub fn eval_poly_g2(coefficients: &[G2Projective], peer: &PeerId) -> G2Affine {
 pub trait PeerHandleOps {
     fn num_peers(&self) -> NumPeers;
 
+    fn identity(&self) -> PeerId;
+
     async fn run_dkg_g1(&self) -> anyhow::Result<(Vec<G1Projective>, Scalar)>;
 
     async fn run_dkg_g2(&self) -> anyhow::Result<(Vec<G2Projective>, Scalar)>;

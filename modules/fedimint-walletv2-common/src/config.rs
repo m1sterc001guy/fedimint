@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
 
-use bitcoin::Network;
 use bitcoin::hashes::{Hash, sha256};
+use bitcoin::{Network, XOnlyPublicKey};
 use fedimint_core::core::ModuleKind;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::{Amount, PeerId, plugin_types_trait_impl_config, weight_to_vbytes};
+use frost_secp256k1_tr::keys::KeyPackage;
 use secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
-use crate::{WalletCommonInit, descriptor, descriptor_tr};
+use crate::taproot::descriptor_tr;
+use crate::taproot::frost::FrostPublicKeyPackage;
+use crate::{WalletCommonInit, descriptor};
 
 plugin_types_trait_impl_config!(
     WalletCommonInit,
@@ -27,6 +30,8 @@ pub struct WalletConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WalletConfigPrivate {
     pub bitcoin_sk: SecretKey,
+    #[serde(default)]
+    pub frost_key_package: Option<KeyPackage>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Encodable, Decodable)]
@@ -48,6 +53,12 @@ pub struct WalletConfigConsensus {
     pub fee_consensus: FeeConsensus,
     /// Bitcoin network (e.g. testnet, bitcoin)
     pub network: Network,
+    /// FROST public key package from DKG. Contains the group verifying key and
+    /// each participant's verifying share — needed at aggregation time for
+    /// cheater detection. Only populated for FROST federations; `None` for
+    /// pre-existing `Wsh` / `Tr` federations.
+    #[serde(default)]
+    pub frost_pubkey_package: Option<FrostPublicKeyPackage>,
 }
 
 impl WalletConfigConsensus {
@@ -79,6 +90,8 @@ impl WalletConfigConsensus {
         fee_consensus: FeeConsensus,
         network: Network,
         use_taproot: bool,
+        internal_key: XOnlyPublicKey,
+        frost_pubkey_package: Option<FrostPublicKeyPackage>,
     ) -> Self {
         let tx_overhead_weight = 4 * 4 // nVersion
             + 1 // SegWit marker
@@ -88,7 +101,7 @@ impl WalletConfigConsensus {
             + 4 * 4; // nLockTime
 
         let change_witness_weight = if use_taproot {
-            descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros())
+            descriptor_tr(&bitcoin_pks, &sha256::Hash::all_zeros(), internal_key)
                 .max_weight_to_satisfy()
                 .expect("Cannot satisfy the taproot change descriptor.")
                 .to_wu()
@@ -100,7 +113,7 @@ impl WalletConfigConsensus {
         };
 
         let descriptor = if use_taproot {
-            WalletDescriptor::Tr
+            WalletDescriptor::Frost(internal_key)
         } else {
             WalletDescriptor::Wsh
         };
@@ -142,6 +155,7 @@ impl WalletConfigConsensus {
             dust_limit: bitcoin::Amount::from_sat(10_000),
             fee_consensus,
             network,
+            frost_pubkey_package,
         }
     }
 }
@@ -224,6 +238,7 @@ fn test_fee_consensus() {
 pub enum WalletDescriptor {
     Wsh,
     Tr,
+    Frost(XOnlyPublicKey),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]

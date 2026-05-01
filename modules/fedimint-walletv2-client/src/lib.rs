@@ -5,6 +5,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub use fedimint_walletv2_common as common;
+use fedimint_walletv2_common::taproot::{descriptor_tr, nums_point};
 
 mod api;
 #[cfg(feature = "cli")]
@@ -51,7 +52,7 @@ use fedimint_logging::LOG_CLIENT_MODULE_WALLETV2;
 use fedimint_walletv2_common::config::{WalletClientConfig, WalletDescriptor};
 use fedimint_walletv2_common::{
     KIND, StandardScript, TxInfo, WalletCommonInit, WalletInput, WalletInputV0, WalletModuleTypes,
-    WalletOutput, WalletOutputV0, descriptor, descriptor_tr, is_potential_receive,
+    WalletOutput, WalletOutputV0, descriptor, is_potential_receive,
 };
 use futures::StreamExt;
 use receive_sm::{ReceiveSMCommon, ReceiveSMState, ReceiveStateMachine};
@@ -397,7 +398,10 @@ impl WalletClientModule {
                 descriptor(&self.cfg.bitcoin_pks, &tweak).address(self.cfg.network)
             }
             WalletDescriptor::Tr => {
-                descriptor_tr(&self.cfg.bitcoin_pks, &tweak).address(self.cfg.network)
+                descriptor_tr(&self.cfg.bitcoin_pks, &tweak, nums_point()).address(self.cfg.network)
+            }
+            WalletDescriptor::Frost(internal_key) => {
+                descriptor_tr(&self.cfg.bitcoin_pks, &tweak, internal_key).address(self.cfg.network)
             }
         }
     }
@@ -555,10 +559,25 @@ impl WalletClientModule {
 
         info!(
             target: LOG_CLIENT_MODULE_WALLETV2,
-            "Scanning for outputs..."
+            next_output_index,
+            n_returned = outputs.len(),
+            n_known_addresses = address_map.len(),
+            valid_indices = ?valid_indices,
+            known_scripts = ?address_map.keys().map(|s| s.to_hex_string()).collect::<Vec<_>>(),
+            "Scanning for outputs"
         );
 
         for output in &outputs {
+            let matched = address_map.get(&output.script).copied();
+            info!(
+                target: LOG_CLIENT_MODULE_WALLETV2,
+                output_index = output.index,
+                value_sat = output.value.to_sat(),
+                spent = output.spent,
+                script = %output.script.to_hex_string(),
+                matched_address_index = ?matched,
+                "Got output entry from server"
+            );
             if let Some(&address_index) = address_map.get(&output.script) {
                 let next_address_index = valid_indices
                     .last()

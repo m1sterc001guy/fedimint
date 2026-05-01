@@ -70,4 +70,8 @@ impl PeerHandleOps for PeerHandle<'_> {
 
         Ok(peer_data)
     }
+
+    fn identity(&self) -> PeerId {
+        self.identity
+    }
 }

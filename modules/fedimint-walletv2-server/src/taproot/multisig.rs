@@ -1,16 +1,13 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, bail, ensure};
-use bitcoin::hashes::sha256;
+use bitcoin::TapLeafHash;
 use bitcoin::sighash::{Prevouts, SighashCache};
-use bitcoin::taproot::LeafVersion;
-use bitcoin::{ScriptBuf, TapLeafHash, TxOut};
 use fedimint_core::db::{DatabaseTransaction, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::util::FmtCompactAnyhow;
 use fedimint_core::{BitcoinHash, NumPeersExt, PeerId};
 use fedimint_logging::LOG_MODULE_WALLETV2;
-use fedimint_walletv2_common::config::WalletDescriptor;
-use fedimint_walletv2_common::{descriptor_tr, tweak_xonly_public_key};
+use fedimint_walletv2_common::taproot::{descriptor_tr, nums_point, tweak_xonly_public_key};
 use futures::StreamExt;
 use secp256k1::{Keypair, PublicKey, Scalar, XOnlyPublicKey, schnorr};
 use tracing::debug;
@@ -21,15 +18,6 @@ use crate::db::{
 use crate::{FederationTx, Wallet};
 
 impl Wallet {
-    pub(crate) fn script_pubkey_for(&self, tweak: &sha256::Hash) -> ScriptBuf {
-        match self.cfg.consensus.descriptor {
-            WalletDescriptor::Wsh => self.descriptor(tweak).script_pubkey(),
-            WalletDescriptor::Tr => {
-                descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak).script_pubkey()
-            }
-        }
-    }
-
     pub(crate) async fn process_signatures_schnorr(
         &self,
         dbtx: &mut DatabaseTransaction<'_>,
@@ -81,26 +69,6 @@ impl Wallet {
             }
         }
         Ok(())
-    }
-
-    fn tap_leaf_hash(&self, tweak: &sha256::Hash) -> TapLeafHash {
-        let tr = descriptor_tr(&self.cfg.consensus.bitcoin_pks, tweak);
-        let (_, ms) = tr
-            .iter_scripts()
-            .next()
-            .expect("Taproot descriptor always has exactly one script leaf");
-        TapLeafHash::from_script(&ms.encode(), LeafVersion::TapScript)
-    }
-
-    fn build_prevouts(&self, unsigned_tx: &FederationTx) -> Vec<TxOut> {
-        unsigned_tx
-            .spent_tx_outs
-            .iter()
-            .map(|utxo| TxOut {
-                value: utxo.value,
-                script_pubkey: self.script_pubkey_for(&utxo.tweak),
-            })
-            .collect()
     }
 
     pub(crate) fn sign_tx_schnorr(&self, unsigned_tx: &FederationTx) -> Vec<schnorr::Signature> {
@@ -221,9 +189,13 @@ impl Wallet {
                     })
                     .collect();
 
-            miniscript::Descriptor::Tr(descriptor_tr(&self.cfg.consensus.bitcoin_pks, &utxo.tweak))
-                .satisfy(&mut federation_tx.tx.input[index], satisfier)
-                .expect("Failed to satisfy descriptor");
+            miniscript::Descriptor::Tr(descriptor_tr(
+                &self.cfg.consensus.bitcoin_pks,
+                &utxo.tweak,
+                nums_point(),
+            ))
+            .satisfy(&mut federation_tx.tx.input[index], satisfier)
+            .expect("Failed to satisfy descriptor");
         }
     }
 }
