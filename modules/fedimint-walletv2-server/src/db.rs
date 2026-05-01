@@ -320,14 +320,9 @@ impl_db_lookup!(
 /// attempt + 1)`. Old records linger until tx finalization, which lets
 /// late shares for old attempts still verify against the original
 /// signing_session and (in principle) complete that attempt.
-///
-/// `started_at` is for diagnostics — populated at attempt creation but
-/// not used to drive advancement (advancement is vote-driven, see
-/// `WalletConsensusItem::FrostAdvanceVote`).
 #[derive(Debug, Clone, Encodable, Decodable, Serialize)]
 pub struct FrostSigningAttempt {
     pub signing_session: Vec<PeerId>,
-    pub started_at: u64,
 }
 
 #[derive(Debug, Clone, Encodable, Decodable, Serialize)]
@@ -354,10 +349,13 @@ impl_db_lookup!(
     query_prefix = FrostSigningAttemptTxidPrefix
 );
 
-/// A vote from `voter` to abandon attempt `attempt` of tx `txid`. Existence
-/// of the entry = the vote is cast; once `f+1` distinct voters' entries
-/// exist for the same `(txid, attempt)`, all peers deterministically
-/// advance to `attempt+1`.
+/// A vote from `voter` to start a fresh attempt for tx `txid` after
+/// `attempt` stalled. Existence of the entry = the vote is cast; once
+/// `f+1` distinct voters' entries exist for the same `(txid, attempt)`,
+/// all peers deterministically open `attempt+1` with a freshly shuffled
+/// signing session. The original attempt's record stays in place — late
+/// shares can still complete it — so this is purely additive, not an
+/// abandonment.
 #[derive(Debug, Clone, Encodable, Decodable, Serialize)]
 pub struct FrostAdvanceVoteKey {
     pub txid: Txid,

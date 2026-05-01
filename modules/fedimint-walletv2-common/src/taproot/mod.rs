@@ -22,6 +22,15 @@ pub fn nums_point() -> XOnlyPublicKey {
     .expect("Valid x-only public key")
 }
 
+/// Apply the per-UTXO fedimint `tweak` to an x-only public key.
+///
+/// Treats the 32-byte sha256 `tweak` as a scalar and computes
+/// `pk + tweak·G`, returning the x-only form of the result. Used to
+/// derive the unique pubkey that controls each federation UTXO from a
+/// guardian's bitcoin pubkey, so every UTXO has a distinct
+/// `script_pubkey` even though the underlying keyset is fixed. The
+/// matching private-side tweak is `add_xonly_tweak` on the keypair —
+/// see signing call sites in `taproot/{multisig,frost,single_peer}.rs`.
 pub fn tweak_xonly_public_key(pk: &XOnlyPublicKey, tweak: &sha256::Hash) -> XOnlyPublicKey {
     let full_pk = PublicKey::from_x_only_public_key(*pk, secp256k1::Parity::Even);
     let tweaked = full_pk

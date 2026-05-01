@@ -197,8 +197,6 @@ impl Wallet {
             &FrostSigningAttemptKey { txid, attempt },
             &FrostSigningAttempt {
                 signing_session: signing_session.clone(),
-                // Diagnostic-only; vote-driven advance doesn't read it.
-                started_at: 0,
             },
         )
         .await;
@@ -420,6 +418,20 @@ pub(crate) async fn pick_signing_session(
     candidate
 }
 
+/// Generate FROST key material centrally via a trusted dealer for
+/// `peers`. Used by `trusted_dealer_gen` (the test / scripted path
+/// that doesn't run a real DKG). Produces:
+/// - One `KeyPackage` per peer, keyed by `PeerId`. Each peer receives only
+///   their own package.
+/// - The aggregated verifying key as an `XOnlyPublicKey` — this is what gets
+///   stored as `WalletDescriptor::Frost(internal_key)`.
+/// - The `PublicKeyPackage` (aggregate VK + per-peer verifying shares),
+///   replicated to every peer for share verification.
+///
+/// Threshold is `peers.threshold()` (BFT majority). The dealer holds
+/// every share momentarily and so must be trusted; real federations
+/// should use [`dkg`] instead. Skipped entirely when `peers.len() ==
+/// 1` (caller collapses to `WalletDescriptor::SinglePeer`).
 pub(crate) fn trusted_setup(
     peers: &[PeerId],
 ) -> anyhow::Result<(
@@ -452,6 +464,32 @@ pub(crate) fn trusted_setup(
     Ok((key_packages, internal_key, pubkey_package))
 }
 
+/// Run a 3-round FROST distributed key generation across `peers` and
+/// return our local share of the result. Unlike [`trusted_setup`], no
+/// single party ever sees every secret share — each peer's signing
+/// key is assembled locally from contributions exchanged over the
+/// `PeerHandleOps` channel.
+///
+/// Returns:
+/// - Our `KeyPackage` (private — only this peer's signing share + the aggregate
+///   VK).
+/// - The aggregated verifying key as an `XOnlyPublicKey`, stored as
+///   `WalletDescriptor::Frost(internal_key)`. All honest peers compute the same
+///   value.
+/// - The `PublicKeyPackage` for share verification (replicated).
+///
+/// Round structure:
+/// 1. `part1` — generate our polynomial commitment + secret; broadcast the
+///    commitment to all peers via `exchange_encodable`.
+/// 2. `part2` — using everyone's commitments, build per-peer shares; send each
+///    peer their share privately (still over `exchange_encodable`, just keyed
+///    by recipient).
+/// 3. `part3` — combine our received shares with our retained secret to produce
+///    our final `KeyPackage` and the aggregate `PublicKeyPackage`.
+///
+/// Skipped entirely when `peers.num_peers().total() == 1` (caller
+/// collapses to `WalletDescriptor::SinglePeer`). Failures of any
+/// `part*` propagate as `Err` and abort federation setup.
 pub(crate) async fn dkg(
     peers: &(dyn PeerHandleOps + Send + Sync),
 ) -> anyhow::Result<(KeyPackage, XOnlyPublicKey, PublicKeyPackage)> {
@@ -566,10 +604,8 @@ pub(crate) fn apply_utxo_tweak_to_key_package(
 /// Apply the per-UTXO additive tweak to a FROST `PublicKeyPackage`
 /// homomorphically:   Q' = Q + t·G,   Q_i' = Q_i + t·G
 ///
-/// Mirrors `apply_utxo_tweak_to_key_package` on the public side. Empty
-/// `verifying_shares` (used when constructing a PKP from just the descriptor's
-/// xonly internal key) flows through cleanly. The BIP-341 tap tweak is applied
-/// separately by `aggregate_with_tweak`.
+/// Mirrors `apply_utxo_tweak_to_key_package` on the public side. The BIP-341
+/// tap tweak is applied separately by `aggregate_with_tweak`.
 pub(crate) fn apply_utxo_tweak_to_pubkey_package(
     pubkey_package: &PublicKeyPackage,
     tweak: &sha256::Hash,
