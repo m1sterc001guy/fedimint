@@ -97,13 +97,14 @@ use crate::db::{
     FrostSignatureShareAttemptPrefix, FrostSignatureShareKey, FrostSignatureShareTxidPrefix,
     FrostSigningAttemptKey, FrostSigningAttemptTxidPrefix, FrostSigningCommitmentsKey,
     FrostSigningCommitmentsPeerPrefix, FrostSigningNoncesKey, FrostSigningNoncesPrefix,
-    FrostSigningPackagesKey, FrostSigningPackagesTxidPrefix, SchnorrSignaturesPrefix, TxInfoKey,
-    TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
+    FrostSigningPackagesKey, FrostSigningPackagesTxidPrefix, LocalFrostSignatureShareKey,
+    LocalFrostSignatureShareTxidPrefix, SchnorrSignaturesPrefix, TxInfoKey, TxInfoPrefix,
+    UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
 };
 use crate::taproot::frost::{
-    FROST_NONCE_BUFFER_TARGET, FrostSigningNonces, apply_utxo_tweak_to_pubkey_package,
-    local_advance_timeout, peer_id_to_identifier, spawn_initial_nonce_backfill,
-    verify_signature_share,
+    FROST_NONCE_BUFFER_TARGET, FROST_REBROADCAST_INTERVAL, FrostSigningNonces,
+    apply_utxo_tweak_to_pubkey_package, local_advance_timeout, peer_id_to_identifier,
+    spawn_initial_nonce_backfill, verify_signature_share,
 };
 
 /// Number of confirmations required for a transaction to be considered as
@@ -296,6 +297,9 @@ impl ModuleInit for WalletInit {
                     todo!()
                 }
                 DbKeyPrefix::FrostAdvanceVote => {
+                    todo!()
+                }
+                DbKeyPrefix::LocalFrostSignatureShare => {
                     todo!()
                 }
             }
@@ -584,12 +588,21 @@ impl ServerModule for Wallet {
             // a previous proposal but that haven't yet been finalized through
             // AlephBFT. Without this, the DB filter alone races with the
             // proposal cadence (~100ms) vs. consensus round-trip (~150–300ms)
-            // and the same commitment goes out repeatedly.
-            let in_flight_snapshot = self
+            // and the same commitment goes out repeatedly. Stale entries
+            // (older than `FROST_REBROADCAST_INTERVAL`) are eligible for
+            // re-broadcast — AlephBFT can drop a unit when its broadcast
+            // lands close to a session boundary in larger federations.
+            let now = fedimint_core::time::now();
+            let in_flight_snapshot: HashSet<FrostSigningCommitments> = self
                 .in_flight_commitments
                 .lock()
                 .expect("in_flight_commitments mutex poisoned")
-                .clone();
+                .iter()
+                .filter(|(_, t)| {
+                    now.duration_since(**t).unwrap_or_default() < FROST_REBROADCAST_INTERVAL
+                })
+                .map(|(c, _)| c.clone())
+                .collect();
 
             let new_commitments: Vec<FrostSigningCommitments> = my_nonces
                 .into_iter()
@@ -612,7 +625,7 @@ impl ServerModule for Wallet {
                         .lock()
                         .expect("in_flight_commitments mutex poisoned");
                     for c in &new_commitments {
-                        in_flight.insert(c.clone());
+                        in_flight.insert(c.clone(), now);
                     }
                 }
 
@@ -708,24 +721,53 @@ impl ServerModule for Wallet {
                 if !attempt.signing_session.contains(&self.our_peer_id) {
                     continue;
                 }
-                let already_broadcast = self
-                    .broadcast_signature_shares
-                    .lock()
-                    .expect("broadcast_signature_shares mutex poisoned")
-                    .contains(&(txid, latest_attempt));
-                if already_broadcast {
+                // Skip if our share has already been delivered through
+                // consensus — no need to re-broadcast.
+                let already_delivered = dbtx
+                    .get_value(&FrostSignatureShareKey {
+                        txid,
+                        attempt: latest_attempt,
+                        peer_id: self.our_peer_id,
+                    })
+                    .await
+                    .is_some();
+                if already_delivered {
+                    self.broadcast_signature_shares
+                        .lock()
+                        .expect("broadcast_signature_shares mutex poisoned")
+                        .remove(&(txid, latest_attempt));
                     continue;
                 }
-                let key = FrostSignatureShareKey {
+                // Otherwise broadcast at most once per
+                // `REBROADCAST_INTERVAL`. AlephBFT can drop our unit when
+                // the broadcast lands close to a session boundary; the
+                // retry recovers without spamming every proposal cycle.
+                let now = fedimint_core::time::now();
+                let should_broadcast = {
+                    let map = self
+                        .broadcast_signature_shares
+                        .lock()
+                        .expect("broadcast_signature_shares mutex poisoned");
+                    match map.get(&(txid, latest_attempt)) {
+                        None => true,
+                        Some(last) => {
+                            now.duration_since(*last).unwrap_or_default()
+                                >= FROST_REBROADCAST_INTERVAL
+                        }
+                    }
+                };
+                if !should_broadcast {
+                    continue;
+                }
+                let key = LocalFrostSignatureShareKey {
                     txid,
                     attempt: latest_attempt,
-                    peer_id: self.our_peer_id,
                 };
                 if let Some(shares) = dbtx.get_value(&key).await {
                     self.broadcast_signature_shares
                         .lock()
                         .expect("broadcast_signature_shares mutex poisoned")
-                        .insert((txid, latest_attempt));
+                        .insert((txid, latest_attempt), now);
                     tracing::info!(
                         target: LOG_MODULE_WALLETV2,
                         "Broadcasting our FROST signature share"
@@ -937,17 +979,16 @@ impl ServerModule for Wallet {
                     )?;
                 }
 
-                // Reject re-broadcasts from *other* peers so they're stripped
-                // from `AcceptedItemKey` and don't pollute logs. Our own
-                // peer is special: `compute_and_store_frost_signature_shares`
-                // already populated this key during process_input /
-                // process_output (so `consensus_proposal` can find the share
-                // to broadcast), and our broadcast then comes back here as
-                // a no-op overwrite. If we returned `Err` here, the
-                // broadcasting peer would strip its own share from its
-                // accepted-items list while every other peer accepted it —
-                // that's a federation-wide consensus divergence (mismatched
-                // session headers).
+                // Reject duplicate broadcasts symmetrically across all
+                // peers — including our own. The local-self-precompute
+                // path stashes our share in `LocalFrostSignatureShareKey`
+                // (separate key), so when our own broadcast comes back
+                // through here it's a *first* write to
+                // `FrostSignatureShareKey` and `was_present` is `false`,
+                // exactly as for any other peer's first broadcast. Every
+                // guardian therefore reaches the same Ok/Err decision on
+                // every share item — `FrostSignatureShareKey` is a pure
+                // function of consensus state.
                 let was_present = dbtx
                     .insert_entry(
                         &FrostSignatureShareKey {
@@ -959,7 +1000,7 @@ impl ServerModule for Wallet {
                     )
                     .await
                     .is_some();
-                if was_present && peer != self.our_peer_id {
+                if was_present {
                     return Err(anyhow!(
                         "FROST signature share from peer {peer} for tx {txid} attempt {attempt} \
                          is redundant"
@@ -1035,6 +1076,8 @@ impl ServerModule for Wallet {
                     dbtx.remove_entry(&UnsignedTxKey(txid)).await;
                     dbtx.remove_by_prefix(&FrostSignatureShareTxidPrefix(txid))
                         .await;
+                    dbtx.remove_by_prefix(&LocalFrostSignatureShareTxidPrefix(txid))
+                        .await;
                     dbtx.remove_by_prefix(&FrostSigningPackagesTxidPrefix(txid))
                         .await;
                     dbtx.remove_by_prefix(&FrostSigningAttemptTxidPrefix(txid))
@@ -1048,7 +1091,7 @@ impl ServerModule for Wallet {
                     self.broadcast_signature_shares
                         .lock()
                         .expect("broadcast_signature_shares mutex poisoned")
-                        .retain(|(t, _)| *t != txid);
+                        .retain(|(t, _), _| *t != txid);
                     self.tx_attempt_first_seen
                         .lock()
                         .expect("tx_attempt_first_seen mutex poisoned")
@@ -1642,12 +1685,17 @@ pub struct Wallet {
     db: Database,
     btc_rpc: ServerBitcoinRpcMonitor,
     /// FROST commitments we've put into a `consensus_proposal` output but
-    /// haven't yet seen come back through `process_consensus_item`. The DB
-    /// filter on its own is racy: at 100ms proposal cadence, the same
-    /// commitment can be re-submitted several times before AlephBFT
-    /// finalizes the first copy. Tracking them in memory closes that
-    /// window. Entries are cleared when our own commitment is processed.
-    in_flight_commitments: Mutex<HashSet<FrostSigningCommitments>>,
+    /// haven't yet seen come back through `process_consensus_item`,
+    /// keyed by commitment with the wall-clock timestamp of the last
+    /// broadcast attempt. The DB filter on its own is racy: at 100ms
+    /// proposal cadence, the same commitment can be re-submitted several
+    /// times before AlephBFT finalizes the first copy — the timestamp
+    /// makes the filter exact. Entries older than
+    /// `FROST_REBROADCAST_INTERVAL` are eligible for re-broadcast in
+    /// case AlephBFT silently dropped the original unit (more likely in
+    /// larger federations near session boundaries). Cleared when our
+    /// own commitment is processed.
+    in_flight_commitments: Mutex<HashMap<FrostSigningCommitments, SystemTime>>,
     /// Wall-clock timestamp of when we first observed each `(txid, attempt)`
     /// locally. Used to fire a per-peer advance vote when the session has
     /// been waiting longer than `local_advance_timeout()`. Per-peer state;
@@ -1657,13 +1705,16 @@ pub struct Wallet {
     /// votes. Keeps us from re-broadcasting the same vote at every
     /// `consensus_proposal` tick before the first one has been finalized.
     in_flight_advance_votes: Mutex<HashSet<(Txid, u32)>>,
-    /// `(Txid, attempt)` tuples for which we have broadcast our signature
-    /// share at least once. Unlike `in_flight_commitments`, entries here
-    /// are *not* cleared when our share comes back through
-    /// `process_consensus_item` — the same per-attempt share never needs
-    /// to be re-broadcast. Cleared only when the attempt advances or the
-    /// tx finalizes.
-    broadcast_signature_shares: Mutex<HashSet<(Txid, u32)>>,
+    /// Wall-clock timestamp of our last broadcast attempt for each
+    /// `(Txid, attempt)`. We don't blindly skip already-broadcast shares
+    /// — AlephBFT can drop a unit when its broadcast lands close to a
+    /// session boundary, especially in larger federations where each
+    /// peer has a smaller fraction of the per-round byte budget. If our
+    /// share hasn't been delivered through consensus by
+    /// `REBROADCAST_INTERVAL` after the last try, we propose it again.
+    /// Cleared when our share comes back through `process_consensus_item`
+    /// (entry no longer needed) or when the tx finalizes.
+    broadcast_signature_shares: Mutex<HashMap<(Txid, u32), SystemTime>>,
 }
 
 impl Wallet {
@@ -1690,10 +1741,10 @@ impl Wallet {
             our_peer_id,
             btc_rpc,
             db: db.clone(),
-            in_flight_commitments: Mutex::new(HashSet::new()),
+            in_flight_commitments: Mutex::new(HashMap::new()),
             tx_attempt_first_seen: Mutex::new(HashMap::new()),
             in_flight_advance_votes: Mutex::new(HashSet::new()),
-            broadcast_signature_shares: Mutex::new(HashSet::new()),
+            broadcast_signature_shares: Mutex::new(HashMap::new()),
         }
     }
 

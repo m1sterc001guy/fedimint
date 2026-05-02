@@ -31,6 +31,7 @@ pub enum DbKeyPrefix {
     FrostSigningPackages = 0x3e,
     FrostSigningAttempt = 0x3f,
     FrostAdvanceVote = 0x40,
+    LocalFrostSignatureShare = 0x41,
 }
 
 impl std::fmt::Display for DbKeyPrefix {
@@ -289,6 +290,39 @@ impl_db_lookup!(
     query_prefix = FrostSignatureSharePrefix,
     query_prefix = FrostSignatureShareTxidPrefix,
     query_prefix = FrostSignatureShareAttemptPrefix
+);
+
+/// Local-only stash of our own pre-computed signature share for `(txid,
+/// attempt)`. Written by `compute_and_store_frost_signature_shares` when
+/// we're a signer; read by `consensus_proposal` to broadcast; cleared on
+/// tx finalization.
+///
+/// Kept separate from the consensus-replicated `FrostSignatureShareKey` so
+/// that consensus inputs (suspects in `pick_signing_session`) only ever
+/// see shares that have actually been delivered through AlephBFT — every
+/// guardian's view is identical at every consensus item boundary.
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub struct LocalFrostSignatureShareKey {
+    pub txid: Txid,
+    pub attempt: u32,
+}
+
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub struct LocalFrostSignatureShareTxidPrefix(pub Txid);
+
+#[derive(Debug, Clone, Encodable, Decodable)]
+pub struct LocalFrostSignatureSharePrefix;
+
+impl_db_record!(
+    key = LocalFrostSignatureShareKey,
+    value = FrostSignatureShares,
+    db_prefix = DbKeyPrefix::LocalFrostSignatureShare
+);
+
+impl_db_lookup!(
+    key = LocalFrostSignatureShareKey,
+    query_prefix = LocalFrostSignatureSharePrefix,
+    query_prefix = LocalFrostSignatureShareTxidPrefix
 );
 
 #[derive(Debug, Clone, Encodable, Decodable, Serialize)]

@@ -29,7 +29,7 @@ use secp256k1::{PublicKey, Scalar};
 use crate::db::{
     FrostSignatureShareKey, FrostSigningAttempt, FrostSigningAttemptKey,
     FrostSigningAttemptTxidPrefix, FrostSigningCommitmentsPeerPrefix, FrostSigningNoncesKey,
-    FrostSigningNoncesPrefix, FrostSigningPackagesKey,
+    FrostSigningNoncesPrefix, FrostSigningPackagesKey, LocalFrostSignatureShareKey,
 };
 use crate::{FederationTx, Wallet};
 
@@ -202,12 +202,14 @@ impl Wallet {
         .await;
 
         if is_signer {
+            // Local-only stash. The canonical, consensus-replicated
+            // `FrostSignatureShareKey` entry is written when our broadcast
+            // comes back through AlephBFT. Splitting these keeps
+            // `pick_signing_session`'s suspects (which reads
+            // `FrostSignatureShareKey`) a pure function of consensus state
+            // — every guardian agrees on it at every item boundary.
             dbtx.insert_new_entry(
-                &FrostSignatureShareKey {
-                    txid,
-                    attempt,
-                    peer_id: self.our_peer_id,
-                },
+                &LocalFrostSignatureShareKey { txid, attempt },
                 &FrostSignatureShares { signature_shares },
             )
             .await;
@@ -225,16 +227,28 @@ impl Wallet {
 /// bytes flowing through AlephBFT.
 pub(crate) const FROST_NONCE_BUFFER_TARGET: usize = 64;
 
+/// How often a peer re-broadcasts its FROST signature share (or
+/// commitment) when the previous broadcast hasn't yet been delivered
+/// through consensus. AlephBFT can drop a unit when its broadcast lands
+/// close to a session boundary — most likely with larger federations
+/// where each peer commands a smaller fraction of the per-round byte
+/// budget. Picking a value comparable to the typical AlephBFT session
+/// duration (~20–30 s) keeps re-broadcasts to ~1 per session per item
+/// instead of ~10/sec.
+pub(crate) const FROST_REBROADCAST_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
 /// Local wall-clock window each peer waits before broadcasting a
 /// `FrostAdvanceVote` for a stuck signing session. Per-peer (not
 /// consensus) — peers' clocks may differ, but the consensus is on the
-/// *vote count*, not the timing.
+/// *vote count*, not the timing. Held at 30s in every environment
+/// (including devimint) so that one-input txs get a fair chance to
+/// finish on the original signing_session before peers start firing
+/// advance votes — premature advance creates a swarm of new attempts,
+/// which inflates consensus-item volume and can push AlephBFT past its
+/// per-instance byte budget at different boundaries on different peers.
 pub(crate) fn local_advance_timeout() -> std::time::Duration {
-    if fedimint_core::envs::is_running_in_test_env() {
-        std::time::Duration::from_secs(2)
-    } else {
-        std::time::Duration::from_secs(30)
-    }
+    std::time::Duration::from_secs(30)
 }
 
 /// One-shot startup backfill: top the local FROST nonce buffer up to
