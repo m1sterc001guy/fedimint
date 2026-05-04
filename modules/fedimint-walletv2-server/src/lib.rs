@@ -826,22 +826,8 @@ impl ServerModule for Wallet {
 
             dbtx.insert_new_entry(&UnsignedTxKey(txid), &unsigned).await;
 
-            if matches!(self.cfg.consensus.descriptor, WalletDescriptor::Frost(_)) {
-                if let Err(err) = self
-                    .compute_and_store_frost_signature_shares(dbtx, &unsigned, 0)
-                    .await
-                {
-                    // Tx is created without an attempt; the next
-                    // FrostSigningCommitments processing will retry via
-                    // try_progress_pending_signings once buffers refill.
-                    tracing::warn!(
-                        target: LOG_MODULE_WALLETV2,
-                        ?txid,
-                        err = %err.fmt_compact_anyhow(),
-                        "Couldn't start initial FROST signing attempt for receive tx; will retry when commitments replenish"
-                    );
-                }
-            }
+            self.start_initial_frost_signing(dbtx, &unsigned, txid, "receive")
+                .await;
         } else {
             dbtx.insert_new_entry(
                 &FederationWalletKey,
@@ -984,22 +970,8 @@ impl ServerModule for Wallet {
 
         dbtx.insert_new_entry(&UnsignedTxKey(txid), &unsigned).await;
 
-        if matches!(self.cfg.consensus.descriptor, WalletDescriptor::Frost(_)) {
-            if let Err(err) = self
-                .compute_and_store_frost_signature_shares(dbtx, &unsigned, 0)
-                .await
-            {
-                // Tx is created without an attempt; the next
-                // FrostSigningCommitments processing will retry via
-                // try_progress_pending_signings once buffers refill.
-                tracing::warn!(
-                    target: LOG_MODULE_WALLETV2,
-                    ?txid,
-                    err = %err.fmt_compact_anyhow(),
-                    "Couldn't start initial FROST signing attempt for send tx; will retry when commitments replenish"
-                );
-            }
-        }
+        self.start_initial_frost_signing(dbtx, &unsigned, txid, "send")
+            .await;
 
         let amount = output_value
             .to_sat()

@@ -1100,6 +1100,39 @@ impl Wallet {
 
         Ok(())
     }
+
+    /// Kick off the initial FROST signing attempt (`attempt = 0`) for a
+    /// freshly created `unsigned_tx`. No-op when the federation isn't
+    /// FROST. Errors building the attempt (typically a thin commitment
+    /// buffer) are logged at `warn` level rather than propagated — the
+    /// next `FrostSigningCommitments` processing will retry via
+    /// `try_progress_pending_signings`. `kind` is "receive" or "send"
+    /// for log clarity.
+    pub(crate) async fn start_initial_frost_signing(
+        &self,
+        dbtx: &mut DatabaseTransaction<'_>,
+        unsigned: &FederationTx,
+        txid: Txid,
+        kind: &'static str,
+    ) {
+        if !matches!(self.cfg.consensus.descriptor, WalletDescriptor::Frost(_)) {
+            return;
+        }
+        if let Err(err) = self
+            .compute_and_store_frost_signature_shares(dbtx, unsigned, 0)
+            .await
+        {
+            // Tx is created without an attempt; the next
+            // FrostSigningCommitments processing will retry via
+            // try_progress_pending_signings once buffers refill.
+            tracing::warn!(
+                target: LOG_MODULE_WALLETV2,
+                ?txid,
+                err = %err.fmt_compact_anyhow(),
+                "Couldn't start initial FROST signing attempt for {kind} tx; will retry when commitments replenish"
+            );
+        }
+    }
 }
 
 /// Target number of unused FROST signing nonces each peer keeps on disk.
