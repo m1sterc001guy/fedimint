@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, ensure};
 use bitcoin::hashes::{Hash, sha256};
 use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::{Txid, XOnlyPublicKey};
@@ -15,6 +15,7 @@ use fedimint_core::{NumPeersExt, PeerId};
 use fedimint_logging::LOG_MODULE_WALLETV2;
 use fedimint_server_core::config::{PeerHandleOps, PeerHandleOpsExt};
 use fedimint_walletv2_common::WalletConsensusItem;
+use fedimint_walletv2_common::config::WalletDescriptor;
 use fedimint_walletv2_common::taproot::frost::{FrostSignatureShares, FrostSigningCommitments};
 use frost_secp256k1_tr as frost;
 use frost_secp256k1_tr::keys::{
@@ -31,10 +32,13 @@ use rand_chacha::ChaCha8Rng;
 use secp256k1::{PublicKey, Scalar};
 
 use crate::db::{
-    FrostAdvanceVoteAttemptPrefix, FrostAdvanceVoteKey, FrostSignatureShareKey,
+    FrostAdvanceVoteAttemptPrefix, FrostAdvanceVoteKey, FrostAdvanceVoteTxidPrefix,
+    FrostSignatureShareAttemptPrefix, FrostSignatureShareKey, FrostSignatureShareTxidPrefix,
     FrostSigningAttempt, FrostSigningAttemptKey, FrostSigningAttemptTxidPrefix,
-    FrostSigningCommitmentsPeerPrefix, FrostSigningNoncesKey, FrostSigningNoncesPrefix,
-    FrostSigningPackagesKey, LocalFrostSignatureShareKey, UnsignedTxPrefix,
+    FrostSigningCommitmentsKey, FrostSigningCommitmentsPeerPrefix, FrostSigningNoncesKey,
+    FrostSigningNoncesPrefix, FrostSigningPackagesKey, FrostSigningPackagesTxidPrefix,
+    LocalFrostSignatureShareKey, LocalFrostSignatureShareTxidPrefix, UnconfirmedTxKey,
+    UnsignedTxKey, UnsignedTxPrefix,
 };
 use crate::{FederationTx, Wallet};
 
@@ -639,6 +643,462 @@ impl Wallet {
         }
 
         items
+    }
+
+    /// Handle a `WalletConsensusItem::FrostSigningCommitments` from `peer`:
+    /// store under `FrostSigningCommitmentsKey`, drop the corresponding
+    /// in-flight entry if it's our own broadcast coming back, and run
+    /// `try_progress_pending_signings` to opportunistically advance any
+    /// tx that was waiting on commitment-buffer availability. Duplicates
+    /// are rejected so they don't pollute `AcceptedItemKey` on recovery.
+    pub(crate) async fn process_frost_commitments(
+        &self,
+        dbtx: &mut DatabaseTransaction<'_>,
+        peer: PeerId,
+        commitments: FrostSigningCommitments,
+    ) -> anyhow::Result<()> {
+        // Reject duplicates so they're not stored in `AcceptedItemKey`
+        // and replayed on recovery. Mirrors the `Feerate` redundancy
+        // handling.
+        let was_present = dbtx
+            .insert_entry(
+                &FrostSigningCommitmentsKey {
+                    peer_id: peer,
+                    frost_commitments: commitments.clone(),
+                },
+                &(),
+            )
+            .await
+            .is_some();
+
+        if was_present {
+            return Err(anyhow!("FROST signing commitment is redundant"));
+        }
+
+        let commitment_count = dbtx
+            .find_by_prefix(&FrostSigningCommitmentsPeerPrefix(peer))
+            .await
+            .count()
+            .await;
+
+        tracing::info!(
+            target: LOG_MODULE_WALLETV2,
+            ?peer,
+            commitment_count,
+            target = FROST_NONCE_BUFFER_TARGET,
+            "Stored FROST signing commitment"
+        );
+
+        // Our own commitment has now been finalized — drop it from
+        // the in-flight set so the next `consensus_proposal` can
+        // freely propose new commitments without the race window.
+        if peer == self.our_peer_id {
+            self.frost
+                .in_flight_commitments
+                .lock()
+                .expect("in_flight_commitments mutex poisoned")
+                .remove(&commitments);
+        }
+
+        // A fresh commitment may have unblocked a tx that was
+        // waiting on commitment-buffer availability. Retry any
+        // pending signings.
+        self.try_progress_pending_signings(dbtx).await?;
+
+        Ok(())
+    }
+
+    /// Handle a `WalletConsensusItem::FrostSignatureShare` from `peer`:
+    /// verify each per-input share against the stored signing packages
+    /// and the FROST `pubkey_package`, store under
+    /// `FrostSignatureShareKey`, and — once the per-attempt share count
+    /// hits `threshold` — aggregate into the final tap-key signatures,
+    /// attach the witnesses, move the tx to `UnconfirmedTxKey`, broadcast
+    /// it to bitcoind, and clean up all per-attempt state for this txid.
+    /// Returns `Ok(())` for already-finalized txs (late share) and
+    /// `Err` only for genuinely invalid shares (bad sig, wrong attempt,
+    /// peer not in signing session, duplicate).
+    pub(crate) async fn process_frost_signature_share(
+        &self,
+        dbtx: &mut DatabaseTransaction<'_>,
+        peer: PeerId,
+        txid: Txid,
+        attempt: u32,
+        signature_shares: FrostSignatureShares,
+    ) -> anyhow::Result<()> {
+        tracing::info!(
+            target: LOG_MODULE_WALLETV2,
+            ?peer,
+            attempt,
+            "Received signature shares for tx from peer"
+        );
+
+        let Some(unsigned_tx) = dbtx.get_value(&UnsignedTxKey(txid)).await else {
+            tracing::info!(
+                target: LOG_MODULE_WALLETV2,
+                "Tx already finalized, skipping signature share..."
+            );
+            return Ok(());
+        };
+
+        // The wire `attempt` identifies which attempt this share
+        // is for. Multiple attempts can coexist; we just need a
+        // record for *this* one. No staleness check is needed —
+        // late shares for old attempts are still mathematically
+        // valid against the old attempt's stored signing_packages,
+        // and any attempt reaching threshold finalizes the tx.
+        let stored_attempt = dbtx
+            .get_value(&FrostSigningAttemptKey { txid, attempt })
+            .await
+            .ok_or_else(|| {
+                anyhow!(
+                    "FROST signature share references a nonexistent attempt {attempt} of tx {txid}"
+                )
+            })?;
+        ensure!(
+            stored_attempt.signing_session.contains(&peer),
+            "Peer {peer} broadcast a signature share but is not in the \
+             signing session for tx {txid} attempt {attempt}",
+        );
+
+        // Verify each per-input share before storing. Catches a malicious
+        // or buggy peer here (where we can reject just their consensus
+        // item) instead of at aggregation time, where one bad share
+        // would otherwise blow up the whole session.
+        ensure!(
+            matches!(self.cfg.consensus.descriptor, WalletDescriptor::Frost(_)),
+            "FrostSignatureShare on non-FROST federation",
+        );
+        let pubkey_package_base = self
+            .cfg
+            .consensus
+            .frost_pubkey_package
+            .as_ref()
+            .expect("FROST federation must have a frost_pubkey_package")
+            .0
+            .clone();
+        ensure!(
+            signature_shares.signature_shares.len() == unsigned_tx.tx.input.len(),
+            "Wrong number of FROST signature shares from peer {peer}",
+        );
+
+        let signing_packages = dbtx
+            .get_value(&FrostSigningPackagesKey { txid, attempt })
+            .await
+            .ok_or_else(|| {
+                anyhow!(
+                    "Missing FROST signing packages for tx {txid} attempt {attempt} \
+                     — DB inconsistency"
+                )
+            })?;
+        ensure!(
+            signing_packages.len() == unsigned_tx.tx.input.len(),
+            "Stored FROST signing packages count mismatch for tx {txid} attempt {attempt}",
+        );
+
+        for (input_index, share) in signature_shares.signature_shares.iter().enumerate() {
+            let utxo = &unsigned_tx.spent_tx_outs[input_index];
+            let merkle_root = self.tap_leaf_hash(&utxo.tweak).to_byte_array();
+            verify_signature_share(
+                &pubkey_package_base,
+                &utxo.tweak,
+                &merkle_root,
+                peer,
+                &signing_packages[input_index].0,
+                share,
+            )?;
+        }
+
+        // Reject duplicate broadcasts symmetrically across all
+        // peers — including our own. The local-self-precompute
+        // path stashes our share in `LocalFrostSignatureShareKey`
+        // (separate key), so when our own broadcast comes back
+        // through here it's a *first* write to
+        // `FrostSignatureShareKey` and `was_present` is `false`,
+        // exactly as for any other peer's first broadcast. Every
+        // guardian therefore reaches the same Ok/Err decision on
+        // every share item — `FrostSignatureShareKey` is a pure
+        // function of consensus state.
+        let was_present = dbtx
+            .insert_entry(
+                &FrostSignatureShareKey {
+                    txid,
+                    attempt,
+                    peer_id: peer,
+                },
+                &signature_shares,
+            )
+            .await
+            .is_some();
+        if was_present {
+            return Err(anyhow!(
+                "FROST signature share from peer {peer} for tx {txid} attempt {attempt} \
+                 is redundant"
+            ));
+        }
+
+        // Lookup all signature shares for *this attempt only* — old
+        // attempts' shares are still in the DB but live under a
+        // different prefix and don't pollute the count.
+        let shares = dbtx
+            .find_by_prefix(&FrostSignatureShareAttemptPrefix { txid, attempt })
+            .await
+            .collect::<Vec<_>>()
+            .await;
+        let threshold = self.cfg.consensus.bitcoin_pks.to_num_peers().threshold();
+        if shares.len() == threshold {
+            let pubkey_package = self
+                .cfg
+                .consensus
+                .frost_pubkey_package
+                .clone()
+                .ok_or_else(|| anyhow!("FROST federation must have a frost_pubkey_package"))?
+                .0;
+
+            let mut final_sigs = Vec::with_capacity(unsigned_tx.tx.input.len());
+            for input_index in 0..unsigned_tx.tx.input.len() {
+                let utxo = &unsigned_tx.spent_tx_outs[input_index];
+                let signing_package = &signing_packages[input_index].0;
+
+                let shares_for_input = shares
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            peer_id_to_identifier(k.peer_id),
+                            v.signature_shares[input_index],
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+
+                let pubkey_package =
+                    apply_utxo_tweak_to_pubkey_package(&pubkey_package, &utxo.tweak);
+                let merkle_root = self.tap_leaf_hash(&utxo.tweak).to_byte_array();
+
+                let final_sig = frost_secp256k1_tr::aggregate_with_tweak(
+                    signing_package,
+                    &shares_for_input,
+                    &pubkey_package,
+                    Some(&merkle_root),
+                )?;
+
+                tracing::info!(
+                    target: LOG_MODULE_WALLETV2,
+                    input_index,
+                    "Aggregated FROST signature for input"
+                );
+
+                final_sigs.push(final_sig);
+            }
+
+            // Attach key-path witnesses, move tx unsigned → unconfirmed,
+            // clean up the per-peer share entries + cached signing
+            // packages + signing-attempt record + advance votes
+            // (across all attempts), and broadcast.
+            let mut unsigned = unsigned_tx;
+            finalize_tx_frost(&mut unsigned, &final_sigs);
+
+            // All per-attempt state for this tx — across every
+            // attempt that ever ran — gets cleaned up here, since
+            // shares, packages, and attempt records are all keyed
+            // by `(txid, attempt)`.
+            dbtx.remove_entry(&UnsignedTxKey(txid)).await;
+            dbtx.remove_by_prefix(&FrostSignatureShareTxidPrefix(txid))
+                .await;
+            dbtx.remove_by_prefix(&LocalFrostSignatureShareTxidPrefix(txid))
+                .await;
+            dbtx.remove_by_prefix(&FrostSigningPackagesTxidPrefix(txid))
+                .await;
+            dbtx.remove_by_prefix(&FrostSigningAttemptTxidPrefix(txid))
+                .await;
+            dbtx.remove_by_prefix(&FrostAdvanceVoteTxidPrefix(txid))
+                .await;
+            dbtx.insert_new_entry(&UnconfirmedTxKey(txid), &unsigned)
+                .await;
+            // Drop in-memory broadcast guards for this tx — no more
+            // shares to broadcast and no more votes to file.
+            self.frost
+                .broadcast_signature_shares
+                .lock()
+                .expect("broadcast_signature_shares mutex poisoned")
+                .retain(|(t, _), _| *t != txid);
+            self.frost
+                .tx_attempt_first_seen
+                .lock()
+                .expect("tx_attempt_first_seen mutex poisoned")
+                .retain(|(t, _), _| *t != txid);
+
+            if let Err(err) = self.btc_rpc.submit_transaction(unsigned.tx).await {
+                tracing::warn!(
+                    target: LOG_MODULE_WALLETV2,
+                    err = %err.fmt_compact_anyhow(),
+                    "Error broadcasting finalized FROST transaction"
+                );
+            }
+        } else {
+            tracing::info!(
+                target: LOG_MODULE_WALLETV2,
+                ?peer,
+                len = %shares.len(),
+                "Not enough shares for this transaction yet."
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handle a `WalletConsensusItem::FrostAdvanceVote` from `peer`:
+    /// record under `FrostAdvanceVoteKey`, then if the per-(txid, attempt)
+    /// vote count crosses `f+1` and `attempt + 1` doesn't already exist,
+    /// build the next attempt by calling
+    /// `compute_and_store_frost_signature_shares(.., attempt + 1)`.
+    /// Errors building the next attempt (e.g., thin commitment buffer)
+    /// are swallowed — the vote is still recorded, and
+    /// `try_progress_pending_signings` will retry on the next
+    /// commitment.
+    pub(crate) async fn process_frost_advance_vote(
+        &self,
+        dbtx: &mut DatabaseTransaction<'_>,
+        peer: PeerId,
+        txid: Txid,
+        attempt: u32,
+    ) -> anyhow::Result<()> {
+        // Validate the wire `attempt` corresponds to a real attempt
+        // in our DB. We don't reject votes for older attempts —
+        // those are still real attempts whose data is preserved;
+        // we just won't re-advance past the next one (see below).
+        ensure!(
+            dbtx.get_value(&FrostSigningAttemptKey { txid, attempt })
+                .await
+                .is_some(),
+            "FROST advance vote references a nonexistent attempt {attempt} of tx {txid}",
+        );
+
+        // Dedup: each peer votes at most once per (txid, attempt).
+        let was_present = dbtx
+            .insert_entry(
+                &FrostAdvanceVoteKey {
+                    txid,
+                    attempt,
+                    voter: peer,
+                },
+                &(),
+            )
+            .await
+            .is_some();
+        if was_present {
+            return Err(anyhow!("Duplicate FROST advance vote from peer {peer}"));
+        }
+
+        if peer == self.our_peer_id {
+            self.frost
+                .in_flight_advance_votes
+                .lock()
+                .expect("in_flight_advance_votes mutex poisoned")
+                .remove(&(txid, attempt));
+        }
+
+        tracing::info!(
+            target: LOG_MODULE_WALLETV2,
+            ?peer,
+            ?txid,
+            attempt,
+            "Recorded FROST advance vote"
+        );
+
+        // Tally votes for this (txid, attempt). Advance once `f+1`
+        // distinct voters agree the session is stuck — that's the
+        // smallest threshold at which Byzantine peers can't trigger
+        // advance alone.
+        let vote_count = dbtx
+            .find_by_prefix(&FrostAdvanceVoteAttemptPrefix { txid, attempt })
+            .await
+            .count()
+            .await;
+        let advance_threshold = self.cfg.consensus.bitcoin_pks.to_num_peers().max_evil() + 1;
+        if vote_count < advance_threshold {
+            return Ok(());
+        }
+
+        // Idempotent advance: if `(txid, attempt + 1)` already
+        // exists, the federation has already advanced — extra
+        // votes for `attempt` are recorded for posterity but
+        // don't trigger another advance. No teardown needed:
+        // attempts are append-only and old data lives at its own
+        // per-attempt prefix until tx finalization.
+        let next_attempt = attempt + 1;
+        let next_already_exists = dbtx
+            .get_value(&FrostSigningAttemptKey {
+                txid,
+                attempt: next_attempt,
+            })
+            .await
+            .is_some();
+        if next_already_exists {
+            tracing::info!(
+                target: LOG_MODULE_WALLETV2,
+                ?txid,
+                attempt,
+                next_attempt,
+                "FROST advance threshold reached, but next attempt already exists"
+            );
+            return Ok(());
+        }
+
+        let unsigned_tx = dbtx
+            .get_value(&UnsignedTxKey(txid))
+            .await
+            .expect("active attempt implies UnsignedTxKey exists");
+
+        // Append a new attempt at `attempt + 1`. Old attempt N's
+        // shares, packages, and attempt record stay in their
+        // per-attempt slots. Late shares for attempt N can still
+        // arrive and contribute toward attempt N's threshold —
+        // and any attempt that reaches threshold finalizes the
+        // tx. Cleanup happens at finalization.
+        //
+        // If `compute_and_store` fails (typically because the
+        // federation's commitment buffer is too thin to form a
+        // viable session right now), don't propagate the error —
+        // the vote was already recorded above. The next
+        // FrostSigningCommitments processing will retry via
+        // try_progress_pending_signings once buffers refill.
+        match self
+            .compute_and_store_frost_signature_shares(dbtx, &unsigned_tx, next_attempt)
+            .await
+        {
+            Ok(()) => {
+                let next_attempt_record = dbtx
+                    .get_value(&FrostSigningAttemptKey {
+                        txid,
+                        attempt: next_attempt,
+                    })
+                    .await
+                    .expect("compute_and_store just persisted this attempt");
+
+                tracing::info!(
+                    target: LOG_MODULE_WALLETV2,
+                    ?txid,
+                    attempt,
+                    next_attempt,
+                    vote_count,
+                    advance_threshold,
+                    next_signing_session = ?next_attempt_record.signing_session,
+                    "FROST advance threshold reached; built next attempt"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: LOG_MODULE_WALLETV2,
+                    ?txid,
+                    attempt,
+                    next_attempt,
+                    err = %err.fmt_compact_anyhow(),
+                    "FROST advance threshold reached but couldn't build next attempt; will retry when commitments replenish"
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 
