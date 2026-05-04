@@ -13,9 +13,7 @@
 pub mod db;
 mod taproot;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Mutex;
-use std::time::SystemTime;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::absolute::LockTime;
@@ -104,9 +102,9 @@ use crate::db::{
     UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
 };
 use crate::taproot::frost::{
-    FROST_NONCE_BUFFER_TARGET, FROST_REBROADCAST_INTERVAL, FrostSigningNonces, FrostSigningPackage,
-    apply_utxo_tweak_to_pubkey_package, local_advance_timeout, peer_id_to_identifier,
-    spawn_initial_nonce_backfill, verify_signature_share,
+    FROST_NONCE_BUFFER_TARGET, FROST_REBROADCAST_INTERVAL, FrostRuntime, FrostSigningNonces,
+    FrostSigningPackage, apply_utxo_tweak_to_pubkey_package, local_advance_timeout,
+    peer_id_to_identifier, spawn_initial_nonce_backfill, verify_signature_share,
 };
 
 /// Number of confirmations required for a transaction to be considered as
@@ -645,6 +643,7 @@ impl ServerModule for Wallet {
             // lands close to a session boundary in larger federations.
             let now = fedimint_core::time::now();
             let in_flight_snapshot: HashSet<FrostSigningCommitments> = self
+                .frost
                 .in_flight_commitments
                 .lock()
                 .expect("in_flight_commitments mutex poisoned")
@@ -672,6 +671,7 @@ impl ServerModule for Wallet {
 
                 {
                     let mut in_flight = self
+                        .frost
                         .in_flight_commitments
                         .lock()
                         .expect("in_flight_commitments mutex poisoned");
@@ -726,6 +726,7 @@ impl ServerModule for Wallet {
                 // can see whose share is missing from their own DB.
                 let timer_expired = {
                     let mut map = self
+                        .frost
                         .tx_attempt_first_seen
                         .lock()
                         .expect("tx_attempt_first_seen mutex poisoned");
@@ -739,6 +740,7 @@ impl ServerModule for Wallet {
                 };
                 if timer_expired {
                     let in_flight = self
+                        .frost
                         .in_flight_advance_votes
                         .lock()
                         .expect("in_flight_advance_votes mutex poisoned")
@@ -752,7 +754,8 @@ impl ServerModule for Wallet {
                         .await
                         .is_some();
                     if !in_flight && !already_voted {
-                        self.in_flight_advance_votes
+                        self.frost
+                            .in_flight_advance_votes
                             .lock()
                             .expect("in_flight_advance_votes mutex poisoned")
                             .insert((txid, latest_attempt));
@@ -783,7 +786,8 @@ impl ServerModule for Wallet {
                     .await
                     .is_some();
                 if already_delivered {
-                    self.broadcast_signature_shares
+                    self.frost
+                        .broadcast_signature_shares
                         .lock()
                         .expect("broadcast_signature_shares mutex poisoned")
                         .remove(&(txid, latest_attempt));
@@ -796,6 +800,7 @@ impl ServerModule for Wallet {
                 let now = fedimint_core::time::now();
                 let should_broadcast = {
                     let map = self
+                        .frost
                         .broadcast_signature_shares
                         .lock()
                         .expect("broadcast_signature_shares mutex poisoned");
@@ -815,7 +820,8 @@ impl ServerModule for Wallet {
                     attempt: latest_attempt,
                 };
                 if let Some(shares) = dbtx.get_value(&key).await {
-                    self.broadcast_signature_shares
+                    self.frost
+                        .broadcast_signature_shares
                         .lock()
                         .expect("broadcast_signature_shares mutex poisoned")
                         .insert((txid, latest_attempt), now);
@@ -938,7 +944,8 @@ impl ServerModule for Wallet {
                 // the in-flight set so the next `consensus_proposal` can
                 // freely propose new commitments without the race window.
                 if peer == self.our_peer_id {
-                    self.in_flight_commitments
+                    self.frost
+                        .in_flight_commitments
                         .lock()
                         .expect("in_flight_commitments mutex poisoned")
                         .remove(&commitments);
@@ -1139,11 +1146,13 @@ impl ServerModule for Wallet {
                         .await;
                     // Drop in-memory broadcast guards for this tx — no more
                     // shares to broadcast and no more votes to file.
-                    self.broadcast_signature_shares
+                    self.frost
+                        .broadcast_signature_shares
                         .lock()
                         .expect("broadcast_signature_shares mutex poisoned")
                         .retain(|(t, _), _| *t != txid);
-                    self.tx_attempt_first_seen
+                    self.frost
+                        .tx_attempt_first_seen
                         .lock()
                         .expect("tx_attempt_first_seen mutex poisoned")
                         .retain(|(t, _), _| *t != txid);
@@ -1190,7 +1199,8 @@ impl ServerModule for Wallet {
                 }
 
                 if peer == self.our_peer_id {
-                    self.in_flight_advance_votes
+                    self.frost
+                        .in_flight_advance_votes
                         .lock()
                         .expect("in_flight_advance_votes mutex poisoned")
                         .remove(&(txid, attempt));
@@ -1735,37 +1745,7 @@ pub struct Wallet {
     our_peer_id: PeerId,
     db: Database,
     btc_rpc: ServerBitcoinRpcMonitor,
-    /// FROST commitments we've put into a `consensus_proposal` output but
-    /// haven't yet seen come back through `process_consensus_item`,
-    /// keyed by commitment with the wall-clock timestamp of the last
-    /// broadcast attempt. The DB filter on its own is racy: at 100ms
-    /// proposal cadence, the same commitment can be re-submitted several
-    /// times before AlephBFT finalizes the first copy — the timestamp
-    /// makes the filter exact. Entries older than
-    /// `FROST_REBROADCAST_INTERVAL` are eligible for re-broadcast in
-    /// case AlephBFT silently dropped the original unit (more likely in
-    /// larger federations near session boundaries). Cleared when our
-    /// own commitment is processed.
-    in_flight_commitments: Mutex<HashMap<FrostSigningCommitments, SystemTime>>,
-    /// Wall-clock timestamp of when we first observed each `(txid, attempt)`
-    /// locally. Used to fire a per-peer advance vote when the session has
-    /// been waiting longer than `local_advance_timeout()`. Per-peer state;
-    /// not consensus.
-    tx_attempt_first_seen: Mutex<HashMap<(Txid, u32), SystemTime>>,
-    /// Same in-flight pattern as `in_flight_commitments`, but for advance
-    /// votes. Keeps us from re-broadcasting the same vote at every
-    /// `consensus_proposal` tick before the first one has been finalized.
-    in_flight_advance_votes: Mutex<HashSet<(Txid, u32)>>,
-    /// Wall-clock timestamp of our last broadcast attempt for each
-    /// `(Txid, attempt)`. We don't blindly skip already-broadcast shares
-    /// — AlephBFT can drop a unit when its broadcast lands close to a
-    /// session boundary, especially in larger federations where each
-    /// peer has a smaller fraction of the per-round byte budget. If our
-    /// share hasn't been delivered through consensus by
-    /// `REBROADCAST_INTERVAL` after the last try, we propose it again.
-    /// Cleared when our share comes back through `process_consensus_item`
-    /// (entry no longer needed) or when the tx finalizes.
-    broadcast_signature_shares: Mutex<HashMap<(Txid, u32), SystemTime>>,
+    frost: FrostRuntime,
 }
 
 impl Wallet {
@@ -1792,10 +1772,7 @@ impl Wallet {
             our_peer_id,
             btc_rpc,
             db: db.clone(),
-            in_flight_commitments: Mutex::new(HashMap::new()),
-            tx_attempt_first_seen: Mutex::new(HashMap::new()),
-            in_flight_advance_votes: Mutex::new(HashSet::new()),
-            broadcast_signature_shares: Mutex::new(HashMap::new()),
+            frost: FrostRuntime::default(),
         }
     }
 

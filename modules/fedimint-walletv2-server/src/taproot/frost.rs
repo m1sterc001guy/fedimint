@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use anyhow::anyhow;
 use bitcoin::hashes::{Hash, sha256};
@@ -34,6 +36,43 @@ use crate::db::{
     LocalFrostSignatureShareKey, UnsignedTxPrefix,
 };
 use crate::{FederationTx, Wallet};
+
+/// In-memory FROST tracking state. Every entry is local — never read
+/// from or written to `dbtx` — so it doesn't influence consensus.
+#[derive(Debug, Default)]
+pub(crate) struct FrostRuntime {
+    /// FROST commitments we've put into a `consensus_proposal` output but
+    /// haven't yet seen come back through `process_consensus_item`,
+    /// keyed by commitment with the wall-clock timestamp of the last
+    /// broadcast attempt. The DB filter on its own is racy: at 100ms
+    /// proposal cadence, the same commitment can be re-submitted several
+    /// times before AlephBFT finalizes the first copy — the timestamp
+    /// makes the filter exact. Entries older than
+    /// `FROST_REBROADCAST_INTERVAL` are eligible for re-broadcast in
+    /// case AlephBFT silently dropped the original unit (more likely in
+    /// larger federations near session boundaries). Cleared when our
+    /// own commitment is processed.
+    pub(crate) in_flight_commitments: Mutex<HashMap<FrostSigningCommitments, SystemTime>>,
+    /// Wall-clock timestamp of when we first observed each `(txid, attempt)`
+    /// locally. Used to fire a per-peer advance vote when the session has
+    /// been waiting longer than `local_advance_timeout()`. Per-peer state;
+    /// not consensus.
+    pub(crate) tx_attempt_first_seen: Mutex<HashMap<(Txid, u32), SystemTime>>,
+    /// Same in-flight pattern as `in_flight_commitments`, but for advance
+    /// votes. Keeps us from re-broadcasting the same vote at every
+    /// `consensus_proposal` tick before the first one has been finalized.
+    pub(crate) in_flight_advance_votes: Mutex<HashSet<(Txid, u32)>>,
+    /// Wall-clock timestamp of our last broadcast attempt for each
+    /// `(Txid, attempt)`. We don't blindly skip already-broadcast shares
+    /// — AlephBFT can drop a unit when its broadcast lands close to a
+    /// session boundary, especially in larger federations where each
+    /// peer has a smaller fraction of the per-round byte budget. If our
+    /// share hasn't been delivered through consensus by
+    /// `REBROADCAST_INTERVAL` after the last try, we propose it again.
+    /// Cleared when our share comes back through `process_consensus_item`
+    /// (entry no longer needed) or when the tx finalizes.
+    pub(crate) broadcast_signature_shares: Mutex<HashMap<(Txid, u32), SystemTime>>,
+}
 
 impl Wallet {
     /// Compute the BIP-341 key-path sighash for the given input of
