@@ -82,8 +82,6 @@ use fedimint_walletv2_common::{
     FederationWallet, MODULE_CONSENSUS_VERSION, TxInfo, WalletInputError, WalletOutputError,
     descriptor, is_potential_receive, tweak_public_key,
 };
-use frost_secp256k1_tr::Identifier;
-use frost_secp256k1_tr::round1::SigningNonces;
 use futures::StreamExt;
 use miniscript::descriptor::Wsh;
 use rand::rngs::OsRng;
@@ -100,11 +98,10 @@ use crate::db::{
     FrostSignatureSharePrefix, FrostSignatureShareTxidPrefix, FrostSigningAttempt,
     FrostSigningAttemptKey, FrostSigningAttemptPrefix, FrostSigningAttemptTxidPrefix,
     FrostSigningCommitmentsKey, FrostSigningCommitmentsPeerPrefix, FrostSigningCommitmentsPrefix,
-    FrostSigningNoncesKey, FrostSigningNoncesPrefix, FrostSigningPackagesKey,
-    FrostSigningPackagesPrefix, FrostSigningPackagesTxidPrefix, LocalFrostSignatureShareKey,
-    LocalFrostSignatureSharePrefix, LocalFrostSignatureShareTxidPrefix, SchnorrSignaturesPrefix,
-    TxInfoKey, TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey,
-    UnsignedTxPrefix,
+    FrostSigningNoncesPrefix, FrostSigningPackagesKey, FrostSigningPackagesPrefix,
+    FrostSigningPackagesTxidPrefix, LocalFrostSignatureShareKey, LocalFrostSignatureSharePrefix,
+    LocalFrostSignatureShareTxidPrefix, SchnorrSignaturesPrefix, TxInfoKey, TxInfoPrefix,
+    UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
 };
 use crate::taproot::frost::{
     FROST_NONCE_BUFFER_TARGET, FROST_REBROADCAST_INTERVAL, FrostSigningNonces, FrostSigningPackage,
@@ -1800,148 +1797,6 @@ impl Wallet {
             in_flight_advance_votes: Mutex::new(HashSet::new()),
             broadcast_signature_shares: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// Take the first available `FrostSigningCommitments` for each peer in
-    /// `signing_session` and remove them from the DB. Called by every peer
-    /// (including non-session peers) so that DB state — and therefore the
-    /// derived `SigningPackage` — stays in sync across the federation.
-    pub(crate) async fn consume_session_commitments(
-        &self,
-        dbtx: &mut DatabaseTransaction<'_>,
-        signing_session: &[PeerId],
-    ) -> anyhow::Result<BTreeMap<Identifier, FrostSigningCommitments>> {
-        let mut commitments_map = BTreeMap::new();
-        for peer_id in signing_session {
-            let commitment = dbtx
-                .find_by_prefix(&FrostSigningCommitmentsPeerPrefix(*peer_id))
-                .await
-                .next()
-                .await
-                .ok_or_else(|| anyhow!("No FROST commitments available for peer {peer_id}"))?;
-            commitments_map.insert(
-                peer_id_to_identifier(*peer_id),
-                commitment.0.frost_commitments.clone(),
-            );
-            dbtx.remove_entry(&commitment.0).await;
-        }
-        Ok(commitments_map)
-    }
-
-    /// Look up our own `SigningNonces` matching our entry in
-    /// `commitments_map` and remove it from the DB. Only signing-session
-    /// peers should call this — for non-session peers our_peer_id won't be
-    /// in the map.
-    pub(crate) async fn consume_our_nonce(
-        &self,
-        dbtx: &mut DatabaseTransaction<'_>,
-        commitments_map: &BTreeMap<Identifier, FrostSigningCommitments>,
-    ) -> anyhow::Result<SigningNonces> {
-        let our_commitment = commitments_map
-            .get(&peer_id_to_identifier(self.our_peer_id))
-            .ok_or_else(|| anyhow!("Our peer is not in the signing session"))?;
-        let nonce = dbtx
-            .remove_entry(&FrostSigningNoncesKey(our_commitment.clone()))
-            .await
-            .ok_or_else(|| {
-                anyhow!("FROST nonce for our own commitment is missing — DB inconsistency")
-            })?
-            .0;
-
-        // Inline 1:1 replacement: keep our local nonce buffer at
-        // `FROST_NONCE_BUFFER_TARGET` invariantly. Local-only state, no
-        // consensus implications.
-        let key_package = self
-            .cfg
-            .private
-            .frost_key_package
-            .as_ref()
-            .expect("FROST federation must have a frost_key_package");
-        let (new_nonce, new_commitment) =
-            frost_secp256k1_tr::round1::commit(key_package.signing_share(), &mut OsRng);
-        dbtx.insert_new_entry(
-            &FrostSigningNoncesKey(FrostSigningCommitments(new_commitment)),
-            &FrostSigningNonces(new_nonce),
-        )
-        .await;
-
-        Ok(nonce)
-    }
-
-    /// Walk all unsigned txs and (re)try to start signing wherever we
-    /// previously couldn't because of a thin commitment buffer:
-    ///
-    /// - Tx with no attempt at all → try `compute_and_store(.., 0)` to create
-    ///   attempt 0. This is the "sign-later" path for an `UnsignedTx` that was
-    ///   created in `process_input` / `process_output` while commitments were
-    ///   drained.
-    /// - Tx whose latest attempt has reached the advance vote threshold but
-    ///   doesn't yet have an `attempt + 1` record → try `compute_and_store(..,
-    ///   latest + 1)`. This catches the case where the advance handler had to
-    ///   defer attempt creation.
-    ///
-    /// Errors are logged at trace level — the next call (typically the
-    /// next `FrostSigningCommitments` processing) will retry, so we don't
-    /// want to spam logs while waiting for buffers to refill.
-    pub(crate) async fn try_progress_pending_signings(
-        &self,
-        dbtx: &mut DatabaseTransaction<'_>,
-    ) -> anyhow::Result<()> {
-        let unsigned_txs: Vec<(Txid, FederationTx)> = dbtx
-            .find_by_prefix(&UnsignedTxPrefix)
-            .await
-            .map(|(k, v)| (k.0, v))
-            .collect()
-            .await;
-
-        let advance_threshold = self.cfg.consensus.bitcoin_pks.to_num_peers().max_evil() + 1;
-
-        for (txid, unsigned_tx) in unsigned_txs {
-            let latest_attempt: Option<u32> = dbtx
-                .find_by_prefix(&FrostSigningAttemptTxidPrefix(txid))
-                .await
-                .map(|(k, _)| k.attempt)
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .max();
-
-            let target_attempt = match latest_attempt {
-                None => Some(0),
-                Some(latest) => {
-                    let vote_count = dbtx
-                        .find_by_prefix(&FrostAdvanceVoteAttemptPrefix {
-                            txid,
-                            attempt: latest,
-                        })
-                        .await
-                        .count()
-                        .await;
-                    if vote_count >= advance_threshold {
-                        Some(latest + 1)
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            if let Some(target) = target_attempt {
-                if let Err(err) = self
-                    .compute_and_store_frost_signature_shares(dbtx, &unsigned_tx, target)
-                    .await
-                {
-                    tracing::trace!(
-                        target: LOG_MODULE_WALLETV2,
-                        ?txid,
-                        target_attempt = target,
-                        err = %err.fmt_compact_anyhow(),
-                        "Couldn't progress FROST signing for tx; will retry on next commitment"
-                    );
-                }
-            }
-        }
-
-        Ok(())
     }
 
     fn spawn_broadcast_unconfirmed_txs_task(
