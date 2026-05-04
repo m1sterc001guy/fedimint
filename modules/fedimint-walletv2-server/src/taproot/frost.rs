@@ -1739,6 +1739,7 @@ mod tests {
     use fedimint_walletv2_common::taproot::frost::FrostSigningCommitments;
     use frost_secp256k1_tr::keys::{IdentifierList, KeyPackage, SigningShare};
     use frost_secp256k1_tr::round1;
+    use rand::rngs::OsRng;
 
     use super::pick_signing_session;
     use crate::db::{FrostSigningAttempt, FrostSigningAttemptKey, FrostSigningCommitmentsKey};
@@ -1749,9 +1750,8 @@ mod tests {
     /// Generates a one-off `SigningShare` we can repeatedly call
     /// `commit()` on to mint distinct synthetic commitments.
     fn signing_share_for_tests() -> SigningShare {
-        let mut rng = rand::rngs::OsRng;
         let (shares, _pubkey_package) =
-            frost_secp256k1_tr::keys::generate_with_dealer(7, 5, IdentifierList::Default, &mut rng)
+            frost_secp256k1_tr::keys::generate_with_dealer(7, 5, IdentifierList::Default, OsRng)
                 .expect("trusted dealer key gen");
         let any_share = shares.into_values().next().expect("at least one share");
         let key_package = KeyPackage::try_from(any_share).expect("share -> key_package");
@@ -1855,7 +1855,7 @@ mod tests {
         let b = run_pick(&db_b, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
 
         assert_eq!(a, b);
-        assert_eq!(a.as_ref().map(|s| s.len()), Some(THRESHOLD));
+        assert_eq!(a.as_ref().map(std::vec::Vec::len), Some(THRESHOLD));
     }
 
     /// Asserts that `attempt` enters the shuffle seed: same
