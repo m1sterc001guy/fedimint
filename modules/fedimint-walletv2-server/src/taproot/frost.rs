@@ -1722,3 +1722,364 @@ impl serde::Serialize for FrostSigningPackage {
         serializer.serialize_str(&fedimint_core::hex::encode(bytes))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Determinism tests for `pick_signing_session`. Each test asserts a
+    //! specific invariant about the function's input/output relationship
+    //! over synthetic DB state. Built on `MemDatabase` so they run as
+    //! cheap unit tests.
+    use std::collections::{BTreeMap, HashSet};
+    use std::str::FromStr;
+
+    use bitcoin::Txid;
+    use fedimint_core::PeerId;
+    use fedimint_core::db::mem_impl::MemDatabase;
+    use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped, IRawDatabaseExt};
+    use fedimint_walletv2_common::taproot::frost::FrostSigningCommitments;
+    use frost_secp256k1_tr::keys::{IdentifierList, KeyPackage, SigningShare};
+    use frost_secp256k1_tr::round1;
+
+    use super::pick_signing_session;
+    use crate::db::{FrostSigningAttempt, FrostSigningAttemptKey, FrostSigningCommitmentsKey};
+
+    const N: usize = 7;
+    const THRESHOLD: usize = 5;
+
+    /// Generates a one-off `SigningShare` we can repeatedly call
+    /// `commit()` on to mint distinct synthetic commitments.
+    fn signing_share_for_tests() -> SigningShare {
+        let mut rng = rand::rngs::OsRng;
+        let (shares, _pubkey_package) =
+            frost_secp256k1_tr::keys::generate_with_dealer(7, 5, IdentifierList::Default, &mut rng)
+                .expect("trusted dealer key gen");
+        let any_share = shares.into_values().next().expect("at least one share");
+        let key_package = KeyPackage::try_from(any_share).expect("share -> key_package");
+        *key_package.signing_share()
+    }
+
+    /// Mints `count` distinct commitments. Values are real
+    /// `round1::commit` outputs but their content doesn't matter for
+    /// `pick_signing_session` — only uniqueness within the per-peer
+    /// prefix scan.
+    fn mint_commitments(count: usize) -> Vec<FrostSigningCommitments> {
+        let signing_share = signing_share_for_tests();
+        let mut rng = rand::rngs::OsRng;
+        (0..count)
+            .map(|_| {
+                let (_nonces, commitments) = round1::commit(&signing_share, &mut rng);
+                FrostSigningCommitments(commitments)
+            })
+            .collect()
+    }
+
+    fn peers(n: usize) -> Vec<PeerId> {
+        (0..n)
+            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
+            .collect()
+    }
+
+    /// Builds a fresh `Database` and seeds it with the given
+    /// commitment-count per peer (peers not in the map get 0).
+    async fn db_with_commitments(per_peer: &BTreeMap<PeerId, usize>) -> Database {
+        let db = MemDatabase::new().into_database();
+        let mut dbtx = db.begin_transaction().await;
+        for (&peer_id, &count) in per_peer {
+            for c in mint_commitments(count) {
+                dbtx.insert_entry(
+                    &FrostSigningCommitmentsKey {
+                        peer_id,
+                        frost_commitments: c,
+                    },
+                    &(),
+                )
+                .await;
+            }
+        }
+        dbtx.commit_tx().await;
+        db
+    }
+
+    async fn insert_attempt(db: &Database, txid: Txid, attempt: u32, signing_session: Vec<PeerId>) {
+        let mut dbtx = db.begin_transaction().await;
+        dbtx.insert_entry(
+            &FrostSigningAttemptKey { txid, attempt },
+            &FrostSigningAttempt { signing_session },
+        )
+        .await;
+        dbtx.commit_tx().await;
+    }
+
+    fn dummy_txid(seed: u8) -> Txid {
+        use bitcoin::hashes::Hash;
+        Txid::from_byte_array([seed; 32])
+    }
+
+    /// Runs `pick_signing_session` against a freshly opened transaction.
+    async fn run_pick(
+        db: &Database,
+        all_peers: &[PeerId],
+        threshold: usize,
+        txid: Txid,
+        attempt: u32,
+        required_commitments: usize,
+        suspects: &HashSet<PeerId>,
+    ) -> Option<Vec<PeerId>> {
+        let mut dbtx = db.begin_transaction().await;
+        pick_signing_session(
+            &mut dbtx.to_ref_nc(),
+            all_peers,
+            threshold,
+            txid,
+            attempt,
+            required_commitments,
+            suspects,
+        )
+        .await
+    }
+
+    /// Asserts that two databases with identical synthetic state produce
+    /// identical `signing_session` outputs for the same inputs.
+    #[tokio::test]
+    async fn phase_1_deterministic_across_peers() {
+        let all_peers = peers(N);
+        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 8)).collect();
+
+        let db_a = db_with_commitments(&counts).await;
+        let db_b = db_with_commitments(&counts).await;
+
+        let txid = dummy_txid(1);
+        let suspects = HashSet::new();
+
+        let a = run_pick(&db_a, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
+        let b = run_pick(&db_b, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
+
+        assert_eq!(a, b);
+        assert_eq!(a.as_ref().map(|s| s.len()), Some(THRESHOLD));
+    }
+
+    /// Asserts that `attempt` enters the shuffle seed: same
+    /// (state, attempt) yields the same session, different attempt
+    /// yields a different shuffled order.
+    #[tokio::test]
+    async fn attempt_drives_shuffle_seed() {
+        let all_peers = peers(N);
+        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 8)).collect();
+        let db = db_with_commitments(&counts).await;
+        let txid = dummy_txid(2);
+        let suspects = HashSet::new();
+
+        let a0 = run_pick(&db, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
+        let a0_again = run_pick(&db, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
+        let a1 = run_pick(&db, &all_peers, THRESHOLD, txid, 1, 1, &suspects).await;
+
+        assert_eq!(a0, a0_again);
+        let a0 = a0.expect("phase 1 succeeds with all viable");
+        let a1 = a1.expect("phase 1 succeeds with all viable");
+        assert_ne!(a0, a1, "attempt should change shuffled order");
+    }
+
+    /// Asserts that peers below `required_commitments` are excluded from
+    /// the result.
+    #[tokio::test]
+    async fn viable_filter_excludes_underbuffered() {
+        let all_peers = peers(N);
+        let mut counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
+        let starved = PeerId::from_str("6").unwrap();
+        counts.insert(starved, 0);
+
+        let db = db_with_commitments(&counts).await;
+        let txid = dummy_txid(3);
+        let suspects = HashSet::new();
+
+        let session = run_pick(&db, &all_peers, THRESHOLD, txid, 0, 2, &suspects)
+            .await
+            .expect("six viable peers ≥ threshold");
+        assert!(!session.contains(&starved));
+        assert_eq!(session.len(), THRESHOLD);
+    }
+
+    /// Asserts that suspects are skipped in Phase 1 when enough
+    /// non-suspect viable peers remain.
+    #[tokio::test]
+    async fn suspect_filter_excluded_from_phase_1() {
+        let all_peers = peers(N);
+        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
+        let db = db_with_commitments(&counts).await;
+        let txid = dummy_txid(4);
+
+        let mut suspects = HashSet::new();
+        suspects.insert(PeerId::from_str("5").unwrap());
+        suspects.insert(PeerId::from_str("6").unwrap());
+
+        let session = run_pick(&db, &all_peers, THRESHOLD, txid, 0, 1, &suspects)
+            .await
+            .expect("5 non-suspect viable = threshold");
+        for s in &suspects {
+            assert!(!session.contains(s), "Phase 1 must drop suspect {s}");
+        }
+    }
+
+    /// Asserts that Phase 2 (round-robin fallback) is reached when Phase 1
+    /// can't fill the session, and that its lex-first output is identical
+    /// across databases.
+    #[tokio::test]
+    async fn phase_2_fallback_lex_first() {
+        let all_peers = peers(N);
+        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
+
+        let mut suspects = HashSet::new();
+        for i in 4..=6 {
+            suspects.insert(PeerId::from_str(&i.to_string()).unwrap());
+        }
+
+        let db_a = db_with_commitments(&counts).await;
+        let db_b = db_with_commitments(&counts).await;
+        let txid = dummy_txid(5);
+
+        let a = run_pick(&db_a, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
+        let b = run_pick(&db_b, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
+
+        assert_eq!(a, b, "phase 2 deterministic across databases");
+
+        let lex_first: Vec<PeerId> = (0..5)
+            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
+            .collect();
+        assert_eq!(a, Some(lex_first));
+    }
+
+    /// Asserts that Phase 2 honors `prior_sessions`: when the lex-first
+    /// combo has already been used, Phase 2 skips to the next
+    /// combination.
+    #[tokio::test]
+    async fn phase_2_skips_prior_session() {
+        let all_peers = peers(N);
+        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
+        let suspects: HashSet<_> = (4..=6)
+            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
+            .collect();
+
+        let db = db_with_commitments(&counts).await;
+        let txid = dummy_txid(6);
+
+        let prior: Vec<PeerId> = (0..5)
+            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
+            .collect();
+        insert_attempt(&db, txid, 0, prior.clone()).await;
+
+        let session = run_pick(&db, &all_peers, THRESHOLD, txid, 1, 1, &suspects)
+            .await
+            .expect("more combinations remain");
+        let next: HashSet<PeerId> = session.iter().copied().collect();
+        let prior_set: HashSet<PeerId> = prior.iter().copied().collect();
+        assert_ne!(next, prior_set, "must not reuse prior session");
+    }
+
+    /// Asserts that the function returns `None` when fewer than
+    /// `threshold` viable peers exist.
+    #[tokio::test]
+    async fn returns_none_when_not_enough_viable() {
+        let all_peers = peers(N);
+        let mut counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 0)).collect();
+        for i in 0..4 {
+            counts.insert(PeerId::from_str(&i.to_string()).unwrap(), 8);
+        }
+        let db = db_with_commitments(&counts).await;
+        let txid = dummy_txid(7);
+        let suspects = HashSet::new();
+
+        let result = run_pick(&db, &all_peers, THRESHOLD, txid, 0, 2, &suspects).await;
+        assert!(result.is_none(), "fewer viable than threshold ⇒ None");
+    }
+
+    /// Asserts determinism holds as suspects accumulate across attempts:
+    /// two identical-state databases walk identical suspect growth and
+    /// agree at every step.
+    #[tokio::test]
+    async fn determinism_holds_across_growing_suspects() {
+        let all_peers = peers(N);
+        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 8)).collect();
+        let txid = dummy_txid(8);
+
+        let db_a = db_with_commitments(&counts).await;
+        let db_b = db_with_commitments(&counts).await;
+
+        let mut suspects = HashSet::new();
+        for i in 0..=4 {
+            let a = run_pick(&db_a, &all_peers, THRESHOLD, txid, i, 1, &suspects).await;
+            let b = run_pick(&db_b, &all_peers, THRESHOLD, txid, i, 1, &suspects).await;
+            assert_eq!(a, b, "attempt {i}: results diverge");
+            suspects.insert(PeerId::from_str(&i.to_string()).unwrap());
+        }
+    }
+
+    /// Asserts that, given enough prior sessions, Phase 2 enumerates
+    /// every C(N, threshold) distinct subset of viable peers exactly
+    /// once before returning `None`. This validates the ROAST guarantee
+    /// that any signing-capable subset will eventually be tried.
+    #[tokio::test]
+    async fn phase_2_enumerates_every_combination() {
+        let all_peers = peers(N);
+        // All N peers viable.
+        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
+
+        // Mark enough peers suspect so Phase 1 always fails (4 < 5):
+        // forces every iteration into Phase 2.
+        let suspects: HashSet<_> = (4..=6)
+            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
+            .collect();
+
+        let db = db_with_commitments(&counts).await;
+        let txid = dummy_txid(9);
+
+        // Number of distinct threshold-sized subsets of N viable peers:
+        // C(N, threshold). For N=7, threshold=5 this is 21.
+        let expected_combinations = num_combinations(N, THRESHOLD);
+
+        let mut seen: HashSet<Vec<PeerId>> = HashSet::new();
+        for attempt in 0..expected_combinations as u32 {
+            let session = run_pick(&db, &all_peers, THRESHOLD, txid, attempt, 1, &suspects)
+                .await
+                .unwrap_or_else(|| {
+                    panic!("attempt {attempt}: Phase 2 should still have a fresh combination")
+                });
+
+            // Record canonical form (sorted) for set-equality semantics.
+            let mut canonical = session.clone();
+            canonical.sort();
+            assert!(
+                seen.insert(canonical),
+                "attempt {attempt}: duplicate session, Phase 2 didn't advance"
+            );
+
+            insert_attempt(&db, txid, attempt, session).await;
+        }
+
+        assert_eq!(seen.len(), expected_combinations);
+
+        // After exhausting every combination, Phase 2 must return None.
+        let exhausted = run_pick(
+            &db,
+            &all_peers,
+            THRESHOLD,
+            txid,
+            expected_combinations as u32,
+            1,
+            &suspects,
+        )
+        .await;
+        assert!(
+            exhausted.is_none(),
+            "after C(N, threshold) attempts, no further sessions should be available"
+        );
+    }
+
+    fn num_combinations(n: usize, k: usize) -> usize {
+        let k = k.min(n - k);
+        let mut result = 1usize;
+        for i in 0..k {
+            result = result * (n - i) / (i + 1);
+        }
+        result
+    }
+}
