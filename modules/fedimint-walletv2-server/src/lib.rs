@@ -13,7 +13,7 @@
 pub mod db;
 mod taproot;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::absolute::LockTime;
@@ -72,9 +72,7 @@ use fedimint_walletv2_common::endpoint_constants::{
     OUTPUT_INFO_SLICE_ENDPOINT, PENDING_TRANSACTION_CHAIN_ENDPOINT, RECEIVE_FEE_ENDPOINT,
     SEND_FEE_ENDPOINT, TRANSACTION_CHAIN_ENDPOINT, TRANSACTION_ID_ENDPOINT,
 };
-use fedimint_walletv2_common::taproot::frost::{
-    FrostPublicKeyPackage, FrostSignatureShares, FrostSigningCommitments,
-};
+use fedimint_walletv2_common::taproot::frost::{FrostPublicKeyPackage, FrostSignatureShares};
 use fedimint_walletv2_common::taproot::{descriptor_tr, tweak_xonly_public_key};
 use fedimint_walletv2_common::{
     FederationWallet, MODULE_CONSENSUS_VERSION, TxInfo, WalletInputError, WalletOutputError,
@@ -97,14 +95,14 @@ use crate::db::{
     FrostSigningAttemptKey, FrostSigningAttemptPrefix, FrostSigningAttemptTxidPrefix,
     FrostSigningCommitmentsKey, FrostSigningCommitmentsPeerPrefix, FrostSigningCommitmentsPrefix,
     FrostSigningNoncesPrefix, FrostSigningPackagesKey, FrostSigningPackagesPrefix,
-    FrostSigningPackagesTxidPrefix, LocalFrostSignatureShareKey, LocalFrostSignatureSharePrefix,
+    FrostSigningPackagesTxidPrefix, LocalFrostSignatureSharePrefix,
     LocalFrostSignatureShareTxidPrefix, SchnorrSignaturesPrefix, TxInfoKey, TxInfoPrefix,
     UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
 };
 use crate::taproot::frost::{
-    FROST_NONCE_BUFFER_TARGET, FROST_REBROADCAST_INTERVAL, FrostRuntime, FrostSigningNonces,
-    FrostSigningPackage, apply_utxo_tweak_to_pubkey_package, local_advance_timeout,
-    peer_id_to_identifier, spawn_initial_nonce_backfill, verify_signature_share,
+    FROST_NONCE_BUFFER_TARGET, FrostRuntime, FrostSigningNonces, FrostSigningPackage,
+    apply_utxo_tweak_to_pubkey_package, peer_id_to_identifier, spawn_initial_nonce_backfill,
+    verify_signature_share,
 };
 
 /// Number of confirmations required for a transaction to be considered as
@@ -620,222 +618,7 @@ impl ServerModule for Wallet {
         };
 
         if matches!(self.cfg.consensus.descriptor, WalletDescriptor::Frost(_)) {
-            let my_commitments = dbtx
-                .find_by_prefix(&FrostSigningCommitmentsPeerPrefix(self.our_peer_id))
-                .await
-                .map(|c| c.0.frost_commitments)
-                .collect::<HashSet<_>>()
-                .await;
-
-            let my_nonces = dbtx
-                .find_by_prefix(&FrostSigningNoncesPrefix)
-                .await
-                .collect::<Vec<_>>()
-                .await;
-
-            // Snapshot the in-flight set: commitments we've already pushed to
-            // a previous proposal but that haven't yet been finalized through
-            // AlephBFT. Without this, the DB filter alone races with the
-            // proposal cadence (~100ms) vs. consensus round-trip (~150–300ms)
-            // and the same commitment goes out repeatedly. Stale entries
-            // (older than `FROST_REBROADCAST_INTERVAL`) are eligible for
-            // re-broadcast — AlephBFT can drop a unit when its broadcast
-            // lands close to a session boundary in larger federations.
-            let now = fedimint_core::time::now();
-            let in_flight_snapshot: HashSet<FrostSigningCommitments> = self
-                .frost
-                .in_flight_commitments
-                .lock()
-                .expect("in_flight_commitments mutex poisoned")
-                .iter()
-                .filter(|(_, t)| {
-                    now.duration_since(**t).unwrap_or_default() < FROST_REBROADCAST_INTERVAL
-                })
-                .map(|(c, _)| c.clone())
-                .collect();
-
-            let new_commitments: Vec<FrostSigningCommitments> = my_nonces
-                .into_iter()
-                .filter_map(|(commitment, _)| {
-                    let c = commitment.0;
-                    (!my_commitments.contains(&c) && !in_flight_snapshot.contains(&c)).then_some(c)
-                })
-                .collect();
-
-            if !new_commitments.is_empty() {
-                tracing::info!(
-                    target: LOG_MODULE_WALLETV2,
-                    commitment_len = %new_commitments.len(),
-                    "Added commitments to be broadcasted"
-                );
-
-                {
-                    let mut in_flight = self
-                        .frost
-                        .in_flight_commitments
-                        .lock()
-                        .expect("in_flight_commitments mutex poisoned");
-                    for c in &new_commitments {
-                        in_flight.insert(c.clone(), now);
-                    }
-                }
-
-                items.extend(
-                    new_commitments
-                        .into_iter()
-                        .map(WalletConsensusItem::FrostSigningCommitments),
-                );
-            }
-
-            // Broadcast our pre-computed signature share for each active signing
-            // session. We compute the share inline in `process_input` /
-            // `process_output` when the unsigned tx is created and store it
-            // locally at our own peer_id; here we surface it so the other
-            // signers can aggregate. Receivers look up the (deterministic)
-            // SigningPackage and the FederationTx in their own DB by txid.
-            // The signing_session for each tx is read from FrostSigningAttemptKey
-            // — set when the tx was created — so the choice of signers is
-            // a per-tx fact, not a global constant.
-            let txids = dbtx
-                .find_by_prefix(&UnsignedTxPrefix)
-                .await
-                .map(|(key, _)| key.0)
-                .collect::<Vec<_>>()
-                .await;
-            for txid in txids {
-                // Find the latest attempt for this tx — attempts are
-                // append-only, so the highest attempt number is the
-                // current one. None means the tx hasn't reached the
-                // FROST signing path yet (e.g. first peg-in, which only
-                // inserts the FederationWalletKey).
-                let Some((latest_attempt, attempt)) = dbtx
-                    .find_by_prefix(&FrostSigningAttemptTxidPrefix(txid))
-                    .await
-                    .map(|(k, v)| (k.attempt, v))
-                    .collect::<Vec<_>>()
-                    .await
-                    .into_iter()
-                    .max_by_key(|(att, _)| *att)
-                else {
-                    continue;
-                };
-
-                // If the current attempt has been waiting longer than our
-                // local advance timeout, broadcast a vote to abandon it.
-                // Any peer can vote, including non-session observers — they
-                // can see whose share is missing from their own DB.
-                let timer_expired = {
-                    let mut map = self
-                        .frost
-                        .tx_attempt_first_seen
-                        .lock()
-                        .expect("tx_attempt_first_seen mutex poisoned");
-                    let first_seen = map
-                        .entry((txid, latest_attempt))
-                        .or_insert_with(fedimint_core::time::now);
-                    fedimint_core::time::now()
-                        .duration_since(*first_seen)
-                        .unwrap_or_default()
-                        > local_advance_timeout()
-                };
-                if timer_expired {
-                    let in_flight = self
-                        .frost
-                        .in_flight_advance_votes
-                        .lock()
-                        .expect("in_flight_advance_votes mutex poisoned")
-                        .contains(&(txid, latest_attempt));
-                    let already_voted = dbtx
-                        .get_value(&FrostAdvanceVoteKey {
-                            txid,
-                            attempt: latest_attempt,
-                            voter: self.our_peer_id,
-                        })
-                        .await
-                        .is_some();
-                    if !in_flight && !already_voted {
-                        self.frost
-                            .in_flight_advance_votes
-                            .lock()
-                            .expect("in_flight_advance_votes mutex poisoned")
-                            .insert((txid, latest_attempt));
-                        tracing::info!(
-                            target: LOG_MODULE_WALLETV2,
-                            ?txid,
-                            attempt = latest_attempt,
-                            "Broadcasting FROST advance vote for stuck signing session"
-                        );
-                        items.push(WalletConsensusItem::FrostAdvanceVote((
-                            txid,
-                            latest_attempt,
-                        )));
-                    }
-                }
-
-                if !attempt.signing_session.contains(&self.our_peer_id) {
-                    continue;
-                }
-                // Skip if our share has already been delivered through
-                // consensus — no need to re-broadcast.
-                let already_delivered = dbtx
-                    .get_value(&FrostSignatureShareKey {
-                        txid,
-                        attempt: latest_attempt,
-                        peer_id: self.our_peer_id,
-                    })
-                    .await
-                    .is_some();
-                if already_delivered {
-                    self.frost
-                        .broadcast_signature_shares
-                        .lock()
-                        .expect("broadcast_signature_shares mutex poisoned")
-                        .remove(&(txid, latest_attempt));
-                    continue;
-                }
-                // Otherwise broadcast at most once per
-                // `REBROADCAST_INTERVAL`. AlephBFT can drop our unit when
-                // the broadcast lands close to a session boundary; the
-                // retry recovers without spamming every proposal cycle.
-                let now = fedimint_core::time::now();
-                let should_broadcast = {
-                    let map = self
-                        .frost
-                        .broadcast_signature_shares
-                        .lock()
-                        .expect("broadcast_signature_shares mutex poisoned");
-                    match map.get(&(txid, latest_attempt)) {
-                        None => true,
-                        Some(last) => {
-                            now.duration_since(*last).unwrap_or_default()
-                                >= FROST_REBROADCAST_INTERVAL
-                        }
-                    }
-                };
-                if !should_broadcast {
-                    continue;
-                }
-                let key = LocalFrostSignatureShareKey {
-                    txid,
-                    attempt: latest_attempt,
-                };
-                if let Some(shares) = dbtx.get_value(&key).await {
-                    self.frost
-                        .broadcast_signature_shares
-                        .lock()
-                        .expect("broadcast_signature_shares mutex poisoned")
-                        .insert((txid, latest_attempt), now);
-                    tracing::info!(
-                        target: LOG_MODULE_WALLETV2,
-                        "Broadcasting our FROST signature share"
-                    );
-                    items.push(WalletConsensusItem::FrostSignatureShare((
-                        txid,
-                        latest_attempt,
-                        shares,
-                    )));
-                }
-            }
+            items.extend(self.frost_consensus_proposal(dbtx).await);
         }
 
         if let Some(status) = self.btc_rpc.status() {
