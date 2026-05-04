@@ -1412,8 +1412,7 @@ pub(crate) fn trusted_setup(
 /// 1. `part1` — generate our polynomial commitment + secret; broadcast the
 ///    commitment to all peers via `exchange_encodable`.
 /// 2. `part2` — using everyone's commitments, build per-peer shares; send each
-///    peer their share privately (still over `exchange_encodable`, just keyed
-///    by recipient).
+///    peer their share privately.
 /// 3. `part3` — combine our received shares with our retained secret to produce
 ///    our final `KeyPackage` and the aggregate `PublicKeyPackage`.
 ///
