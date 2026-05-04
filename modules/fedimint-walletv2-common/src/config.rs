@@ -140,14 +140,23 @@ impl WalletConfigConsensus {
                     .expect("Cannot satisfy the taproot change descriptor.")
                     .to_wu()
             }
-            (WalletDescriptorKind::Frost, None) => descriptor_tr(
-                &bitcoin_pks,
-                &sha256::Hash::all_zeros(),
-                frost_internal_key.expect("Frost descriptor requires a FROST internal key"),
-            )
-            .max_weight_to_satisfy()
-            .expect("Cannot satisfy the taproot change descriptor.")
-            .to_wu(),
+            (WalletDescriptorKind::Frost, None) => {
+                // FROST always spends via key-path (single 64-byte
+                // Schnorr signature). The on-chain `script_pubkey` for
+                // a FROST utxo is built by `descriptor_tr` with the
+                // `multi_a` script tree present as a fallback, but we
+                // never actually script-spend — sizing here off the
+                // script-path would over-estimate witness weight by
+                // an order of magnitude. Use the key-path-only shape
+                // for accurate sizing.
+                descriptor_tr_single_peer(
+                    frost_internal_key.expect("Frost descriptor requires a FROST internal key"),
+                    &sha256::Hash::all_zeros(),
+                )
+                .max_weight_to_satisfy()
+                .expect("Cannot satisfy the FROST keypath descriptor.")
+                .to_wu()
+            }
         };
 
         let descriptor = match (descriptor_kind, single_peer_xonly) {
