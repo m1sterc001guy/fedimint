@@ -74,7 +74,9 @@ use fedimint_walletv2_common::endpoint_constants::{
     OUTPUT_INFO_SLICE_ENDPOINT, PENDING_TRANSACTION_CHAIN_ENDPOINT, RECEIVE_FEE_ENDPOINT,
     SEND_FEE_ENDPOINT, TRANSACTION_CHAIN_ENDPOINT, TRANSACTION_ID_ENDPOINT,
 };
-use fedimint_walletv2_common::taproot::frost::{FrostPublicKeyPackage, FrostSigningCommitments};
+use fedimint_walletv2_common::taproot::frost::{
+    FrostPublicKeyPackage, FrostSignatureShares, FrostSigningCommitments,
+};
 use fedimint_walletv2_common::taproot::{descriptor_tr, tweak_xonly_public_key};
 use fedimint_walletv2_common::{
     FederationWallet, MODULE_CONSENSUS_VERSION, TxInfo, WalletInputError, WalletOutputError,
@@ -93,16 +95,19 @@ use tracing::{debug, info};
 
 use crate::db::{
     BlockCountVoteKey, BlockCountVotePrefix, FeeRateVoteKey, FeeRateVotePrefix,
-    FrostAdvanceVoteAttemptPrefix, FrostAdvanceVoteKey, FrostAdvanceVoteTxidPrefix,
-    FrostSignatureShareAttemptPrefix, FrostSignatureShareKey, FrostSignatureShareTxidPrefix,
-    FrostSigningAttemptKey, FrostSigningAttemptTxidPrefix, FrostSigningCommitmentsKey,
-    FrostSigningCommitmentsPeerPrefix, FrostSigningNoncesKey, FrostSigningNoncesPrefix,
-    FrostSigningPackagesKey, FrostSigningPackagesTxidPrefix, LocalFrostSignatureShareKey,
-    LocalFrostSignatureShareTxidPrefix, SchnorrSignaturesPrefix, TxInfoKey, TxInfoPrefix,
-    UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
+    FrostAdvanceVoteAttemptPrefix, FrostAdvanceVoteKey, FrostAdvanceVotePrefix,
+    FrostAdvanceVoteTxidPrefix, FrostSignatureShareAttemptPrefix, FrostSignatureShareKey,
+    FrostSignatureSharePrefix, FrostSignatureShareTxidPrefix, FrostSigningAttempt,
+    FrostSigningAttemptKey, FrostSigningAttemptPrefix, FrostSigningAttemptTxidPrefix,
+    FrostSigningCommitmentsKey, FrostSigningCommitmentsPeerPrefix, FrostSigningCommitmentsPrefix,
+    FrostSigningNoncesKey, FrostSigningNoncesPrefix, FrostSigningPackagesKey,
+    FrostSigningPackagesPrefix, FrostSigningPackagesTxidPrefix, LocalFrostSignatureShareKey,
+    LocalFrostSignatureSharePrefix, LocalFrostSignatureShareTxidPrefix, SchnorrSignaturesPrefix,
+    TxInfoKey, TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey,
+    UnsignedTxPrefix,
 };
 use crate::taproot::frost::{
-    FROST_NONCE_BUFFER_TARGET, FROST_REBROADCAST_INTERVAL, FrostSigningNonces,
+    FROST_NONCE_BUFFER_TARGET, FROST_REBROADCAST_INTERVAL, FrostSigningNonces, FrostSigningPackage,
     apply_utxo_tweak_to_pubkey_package, local_advance_timeout, peer_id_to_identifier,
     spawn_initial_nonce_backfill, verify_signature_share,
 };
@@ -282,25 +287,74 @@ impl ModuleInit for WalletInit {
                     );
                 }
                 DbKeyPrefix::FrostSigningCommitments => {
-                    todo!()
+                    push_db_pair_items!(
+                        dbtx,
+                        FrostSigningCommitmentsPrefix,
+                        FrostSigningCommitmentsKey,
+                        (),
+                        wallet,
+                        "FROST Signing Commitments"
+                    );
                 }
                 DbKeyPrefix::FrostSigningNonce => {
-                    todo!()
+                    push_db_pair_items!(
+                        dbtx,
+                        FrostSigningNoncesPrefix,
+                        FrostSigningNoncesKey,
+                        FrostSigningNonces,
+                        wallet,
+                        "FROST Signing Nonces"
+                    );
                 }
                 DbKeyPrefix::FrostSignatureShare => {
-                    todo!()
+                    push_db_pair_items!(
+                        dbtx,
+                        FrostSignatureSharePrefix,
+                        FrostSignatureShareKey,
+                        FrostSignatureShares,
+                        wallet,
+                        "FROST Signature Shares"
+                    );
                 }
                 DbKeyPrefix::FrostSigningPackages => {
-                    todo!()
+                    push_db_pair_items!(
+                        dbtx,
+                        FrostSigningPackagesPrefix,
+                        FrostSigningPackagesKey,
+                        Vec<FrostSigningPackage>,
+                        wallet,
+                        "FROST Signing Packages"
+                    );
                 }
                 DbKeyPrefix::FrostSigningAttempt => {
-                    todo!()
+                    push_db_pair_items!(
+                        dbtx,
+                        FrostSigningAttemptPrefix,
+                        FrostSigningAttemptKey,
+                        FrostSigningAttempt,
+                        wallet,
+                        "FROST Signing Attempts"
+                    );
                 }
                 DbKeyPrefix::FrostAdvanceVote => {
-                    todo!()
+                    push_db_pair_items!(
+                        dbtx,
+                        FrostAdvanceVotePrefix,
+                        FrostAdvanceVoteKey,
+                        (),
+                        wallet,
+                        "FROST Advance Votes"
+                    );
                 }
                 DbKeyPrefix::LocalFrostSignatureShare => {
-                    todo!()
+                    push_db_pair_items!(
+                        dbtx,
+                        LocalFrostSignatureSharePrefix,
+                        LocalFrostSignatureShareKey,
+                        FrostSignatureShares,
+                        wallet,
+                        "Local FROST Signature Shares"
+                    );
                 }
             }
         }

@@ -767,6 +767,13 @@ impl Decodable for FrostSigningNonces {
     }
 }
 
+impl serde::Serialize for FrostSigningNonces {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let bytes = self.0.serialize().map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&fedimint_core::hex::encode(bytes))
+    }
+}
+
 /// `Encodable`/`Decodable` wrapper for `SigningPackage`. Cached in the DB at
 /// `FrostSigningPackagesKey(txid)` so that any peer (including non-session
 /// peers) can verify and aggregate `FrostSignatureShare` consensus items
@@ -790,5 +797,12 @@ impl Decodable for FrostSigningPackage {
         SigningPackage::deserialize(&bytes)
             .map(FrostSigningPackage)
             .map_err(DecodeError::from_err)
+    }
+}
+
+impl serde::Serialize for FrostSigningPackage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let bytes = self.0.serialize().map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&fedimint_core::hex::encode(bytes))
     }
 }
