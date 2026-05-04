@@ -140,7 +140,7 @@ pub enum WalletConsensusItem {
     Feerate(Option<u64>),
     Signatures(Txid, Vec<Signature>),
     SchnorrSignatures(Txid, Vec<schnorr::Signature>),
-    FrostSigningCommitments(FrostSigningCommitments),
+    FrostSigningCommitments(Box<FrostSigningCommitments>),
     FrostSignatureShare((Txid, u32, FrostSignatureShares)),
     FrostAdvanceVote((Txid, u32)),
     #[encodable_default]

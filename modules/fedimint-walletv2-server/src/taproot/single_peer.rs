@@ -153,7 +153,7 @@ impl Wallet {
 
     /// Attach the key-path witness to each input of `federation_tx`
     /// in-place. For BIP-341 key-path spends the witness is just the
-    /// 64-byte Schnorr signature (SIGHASH_DEFAULT keeps it 64 bytes;
+    /// 64-byte Schnorr signature (`SIGHASH_DEFAULT` keeps it 64 bytes;
     /// any other sighash type would append a single byte). No script,
     /// no control block — that's the whole point of collapsing to
     /// `SinglePeer` instead of using the script-path multisig path.
@@ -169,7 +169,7 @@ impl Wallet {
 
         for (index, sig) in signatures.iter().enumerate() {
             // BIP-341 key-path witness: just the schnorr signature bytes.
-            // SIGHASH_DEFAULT keeps the witness at 64 bytes (no trailing
+            // `SIGHASH_DEFAULT` keeps the witness at 64 bytes (no trailing
             // sighash byte).
             let bitcoin_sig = bitcoin::taproot::Signature {
                 signature: *sig,

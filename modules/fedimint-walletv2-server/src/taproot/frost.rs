@@ -51,10 +51,10 @@ pub(crate) struct FrostRuntime {
     /// keyed by commitment with the wall-clock timestamp of the last
     /// broadcast attempt. The DB filter on its own is racy: at 100ms
     /// proposal cadence, the same commitment can be re-submitted several
-    /// times before AlephBFT finalizes the first copy — the timestamp
+    /// times before `AlephBFT` finalizes the first copy — the timestamp
     /// makes the filter exact. Entries older than
     /// `FROST_REBROADCAST_INTERVAL` are eligible for re-broadcast in
-    /// case AlephBFT silently dropped the original unit (more likely in
+    /// case `AlephBFT` silently dropped the original unit (more likely in
     /// larger federations near session boundaries). Cleared when our
     /// own commitment is processed.
     pub(crate) in_flight_commitments: Mutex<HashMap<FrostSigningCommitments, SystemTime>>,
@@ -69,7 +69,7 @@ pub(crate) struct FrostRuntime {
     pub(crate) in_flight_advance_votes: Mutex<HashSet<(Txid, u32)>>,
     /// Wall-clock timestamp of our last broadcast attempt for each
     /// `(Txid, attempt)`. We don't blindly skip already-broadcast shares
-    /// — AlephBFT can drop a unit when its broadcast lands close to a
+    /// — `AlephBFT` can drop a unit when its broadcast lands close to a
     /// session boundary, especially in larger federations where each
     /// peer has a smaller fraction of the per-round byte budget. If our
     /// share hasn't been delivered through consensus by
@@ -106,7 +106,7 @@ impl Wallet {
     /// available later for verifying and aggregating shares without it
     /// having to ride along with each `FrostSignatureShare` consensus item.
     /// Signing-session peers additionally consume their per-input nonce and
-    /// produce their `SignatureShare`s, stored under their own peer_id for
+    /// produce their `SignatureShare`s, stored under their own `peer_id` for
     /// the next `consensus_proposal` to broadcast.
     ///
     /// `attempt` is `0` when this runs from `process_input` /
@@ -197,7 +197,7 @@ impl Wallet {
 
             let signing_package_commitments: BTreeMap<Identifier, _> = commitments_map
                 .iter()
-                .map(|(id, commitment)| (*id, commitment.0.clone()))
+                .map(|(id, commitment)| (*id, commitment.0))
                 .collect();
             let signing_package = SigningPackage::new(signing_package_commitments, &message);
 
@@ -292,7 +292,7 @@ impl Wallet {
 
     /// Look up our own `SigningNonces` matching our entry in
     /// `commitments_map` and remove it from the DB. Only signing-session
-    /// peers should call this — for non-session peers our_peer_id won't be
+    /// peers should call this — for non-session peers `our_peer_id` won't be
     /// in the map.
     pub(crate) async fn consume_our_nonce(
         &self,
@@ -387,10 +387,11 @@ impl Wallet {
                 }
             };
 
-            if let Some(target) = target_attempt {
-                if let Err(err) = self
+            if let Some(target) = target_attempt
+                && let Err(err) = self
                     .compute_and_store_frost_signature_shares(dbtx, &unsigned_tx, target)
                     .await
+            {
                 {
                     tracing::trace!(
                         target: LOG_MODULE_WALLETV2,
@@ -407,7 +408,7 @@ impl Wallet {
     }
 
     /// Build the FROST-specific items this peer wants to propose for the
-    /// next AlephBFT round:
+    /// next `AlephBFT` round:
     ///
     /// - any unbroadcasted commitments from our local nonce buffer,
     /// - an advance vote for any tx whose latest attempt has been waiting
@@ -417,7 +418,7 @@ impl Wallet {
     ///   yet landed in `FrostSignatureShareKey`.
     ///
     /// Re-broadcasts are gated by `FROST_REBROADCAST_INTERVAL` to recover
-    /// from AlephBFT silently dropping a unit (more likely with larger
+    /// from `AlephBFT` silently dropping a unit (more likely with larger
     /// federations near session boundaries) without spamming every
     /// proposal cycle.
     pub(crate) async fn frost_consensus_proposal(
@@ -489,7 +490,7 @@ impl Wallet {
             items.extend(
                 new_commitments
                     .into_iter()
-                    .map(WalletConsensusItem::FrostSigningCommitments),
+                    .map(|c| WalletConsensusItem::FrostSigningCommitments(Box::new(c))),
             );
         }
 
@@ -856,9 +857,9 @@ impl Wallet {
                 .0;
 
             let mut final_sigs = Vec::with_capacity(unsigned_tx.tx.input.len());
-            for input_index in 0..unsigned_tx.tx.input.len() {
+            for (input_index, signing_package) in signing_packages.iter().enumerate() {
                 let utxo = &unsigned_tx.spent_tx_outs[input_index];
-                let signing_package = &signing_packages[input_index].0;
+                let signing_package = &signing_package.0;
 
                 let shares_for_input = shares
                     .iter()
@@ -1140,15 +1141,15 @@ impl Wallet {
 /// the commitment-aware signer selection still find a viable session) before
 /// the federation runs out of fresh nonces. Each unused commitment is also
 /// broadcast as a consensus item, so this also caps the per-peer commitment
-/// bytes flowing through AlephBFT.
+/// bytes flowing through `AlephBFT`.
 pub(crate) const FROST_NONCE_BUFFER_TARGET: usize = 64;
 
 /// How often a peer re-broadcasts its FROST signature share (or
 /// commitment) when the previous broadcast hasn't yet been delivered
-/// through consensus. AlephBFT can drop a unit when its broadcast lands
+/// through consensus. `AlephBFT` can drop a unit when its broadcast lands
 /// close to a session boundary — most likely with larger federations
 /// where each peer commands a smaller fraction of the per-round byte
-/// budget. Picking a value comparable to the typical AlephBFT session
+/// budget. Picking a value comparable to the typical `AlephBFT` session
 /// duration (~20–30 s) keeps re-broadcasts to ~1 per session per item
 /// instead of ~10/sec.
 pub(crate) const FROST_REBROADCAST_INTERVAL: std::time::Duration =
@@ -1159,9 +1160,9 @@ pub(crate) const FROST_REBROADCAST_INTERVAL: std::time::Duration =
 /// consensus) — peers' clocks may differ, but the consensus is on the
 /// *vote count*, not the timing. Held at 30s in every environment
 /// (including devimint) so that one-input txs get a fair chance to
-/// finish on the original signing_session before peers start firing
+/// finish on the original `signing_session` before peers start firing
 /// advance votes — premature advance creates a swarm of new attempts,
-/// which inflates consensus-item volume and can push AlephBFT past its
+/// which inflates consensus-item volume and can push `AlephBFT` past its
 /// per-instance byte budget at different boundaries on different peers.
 pub(crate) fn local_advance_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(30)
@@ -1375,7 +1376,7 @@ pub(crate) fn trusted_setup(
         total_peers,
         threshold,
         frost::keys::IdentifierList::Default,
-        &mut OsRng,
+        OsRng,
     )?;
     let internal_key = frost_verifying_key_to_xonly(&pubkey_package);
     let key_packages = peers
@@ -1426,7 +1427,7 @@ pub(crate) async fn dkg(
     let threshold = peers.num_peers().threshold() as u16;
     let total_peers = peers.num_peers().total() as u16;
     let (round1_secret_package, round1_package) =
-        frost::keys::dkg::part1(our_identifier, total_peers, threshold, &mut OsRng)?;
+        frost::keys::dkg::part1(our_identifier, total_peers, threshold, OsRng)?;
 
     let round1_packages = peers
         .exchange_encodable(FrostPolynomial(round1_package))
@@ -1473,7 +1474,7 @@ pub(crate) async fn dkg(
 }
 
 /// Apply the per-UTXO additive tweak to a FROST `KeyPackage` homomorphically:
-///   s_i' = s_i + t,   Q_i' = Q_i + t·G,   Q' = Q + t·G
+///   `s_i`' = `s_i` + `t`,   `Q_i`' = `Q_i` + `t·G`,   `Q`' = `Q` + `t·G`
 ///
 /// The descriptor's internal key for a UTXO is
 /// `tweak_xonly_public_key(internal_key, tweak)`, which assumes Even-Y
@@ -1529,7 +1530,7 @@ pub(crate) fn apply_utxo_tweak_to_key_package(
 }
 
 /// Apply the per-UTXO additive tweak to a FROST `PublicKeyPackage`
-/// homomorphically:   Q' = Q + t·G,   Q_i' = Q_i + t·G
+/// homomorphically:   `Q`' = `Q` + `t·G`,   `Q_i`' = `Q_i` + `t·G`
 ///
 /// Mirrors `apply_utxo_tweak_to_key_package` on the public side. The BIP-341
 /// tap tweak is applied separately by `aggregate_with_tweak`.

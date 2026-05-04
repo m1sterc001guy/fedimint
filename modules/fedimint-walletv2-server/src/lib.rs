@@ -684,7 +684,7 @@ impl ServerModule for Wallet {
                 }
             }
             WalletConsensusItem::FrostSigningCommitments(commitments) => {
-                self.process_frost_commitments(dbtx, peer, commitments)
+                self.process_frost_commitments(dbtx, peer, *commitments)
                     .await
             }
             WalletConsensusItem::FrostSignatureShare((txid, attempt, signature_shares)) => {

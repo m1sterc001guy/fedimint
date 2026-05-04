@@ -299,7 +299,7 @@ impl_db_lookup!(
 ///
 /// Kept separate from the consensus-replicated `FrostSignatureShareKey` so
 /// that consensus inputs (suspects in `pick_signing_session`) only ever
-/// see shares that have actually been delivered through AlephBFT — every
+/// see shares that have actually been delivered through `AlephBFT` — every
 /// guardian's view is identical at every consensus item boundary.
 #[derive(Debug, Clone, Encodable, Decodable)]
 pub struct LocalFrostSignatureShareKey {
@@ -353,7 +353,7 @@ impl_db_lookup!(
 /// never overwritten — advancing creates a new record at `(txid,
 /// attempt + 1)`. Old records linger until tx finalization, which lets
 /// late shares for old attempts still verify against the original
-/// signing_session and (in principle) complete that attempt.
+/// `signing_session` and (in principle) complete that attempt.
 #[derive(Debug, Clone, Encodable, Decodable, Serialize)]
 pub struct FrostSigningAttempt {
     pub signing_session: Vec<PeerId>,
