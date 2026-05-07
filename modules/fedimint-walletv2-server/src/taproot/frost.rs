@@ -24,7 +24,6 @@ use frost_secp256k1_tr::keys::{
 use frost_secp256k1_tr::round2::SignatureShare;
 use frost_secp256k1_tr::{Identifier, SigningPackage, VerifyingKey};
 use futures::StreamExt;
-use itertools::Itertools;
 use rand::SeedableRng;
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
@@ -944,6 +943,13 @@ impl Wallet {
             );
         }
 
+        // A late share's arrival is the signal that this peer is no
+        // longer a suspect — the next pick_signing_session call will
+        // see a smaller suspect set. Re-run the retry loop now so a
+        // previously failing advance can succeed without waiting on a
+        // commitment broadcast or a new transaction.
+        self.try_progress_pending_signings(dbtx).await?;
+
         Ok(())
     }
 
@@ -1239,26 +1245,17 @@ pub(crate) fn peer_id_to_identifier(peer_id: PeerId) -> Identifier {
 }
 
 /// Deterministically pick a `threshold`-sized signing session for `(txid,
-/// attempt)`. Two phases:
+/// attempt)`. Walks a shuffle of `all_peers` seeded by `(txid, attempt)`,
+/// skipping suspects and peers whose `FrostSigningCommitments` pool is
+/// shorter than `required_commitments` (one commitment per input is consumed
+/// per session peer). Returns the first `threshold` peers, or `None` if not
+/// enough viable non-suspects remain.
 ///
-/// 1. **Hash-shuffle, non-suspects only.** Walk a shuffle of `all_peers` seeded
-///    by `(txid, attempt)`, skipping suspects and peers whose
-///    `FrostSigningCommitments` pool is shorter than `required_commitments`
-///    (one commitment per input is consumed per session peer). If we collect
-///    `threshold` peers, return.
-///
-/// 2. **Round-robin enumeration of viable subsets.** Phase 1 failed — typically
-///    because too many peers are suspects. Walk every threshold-sized subset of
-///    viable peers (sorted by `PeerId`) and return the first one whose set
-///    doesn't equal a prior attempt's signing session. If every subset has been
-///    tried, return `None`. By that point the federation is stuck — every
-///    possible signing session is already pending in the DB, so progress has to
-///    come from late shares completing a prior attempt or from operator
-///    recovery.
-///
-/// `suspects` only filters Phase 1; Phase 2 explores the full space. All
-/// inputs (commitment counts, prior sessions) are read from
+/// All inputs (commitment counts, suspects) are derived from
 /// consensus-replicated DB state, so every peer computes the same answer.
+/// Each new `attempt` reseeds the shuffle, and the suspect set shrinks
+/// whenever a previously slow honest peer broadcasts a late share — together
+/// these guarantee progress without any round-robin fallback.
 pub(crate) async fn pick_signing_session(
     dbtx: &mut DatabaseTransaction<'_>,
     all_peers: &[PeerId],
@@ -1268,7 +1265,6 @@ pub(crate) async fn pick_signing_session(
     required_commitments: usize,
     suspects: &HashSet<PeerId>,
 ) -> Option<Vec<PeerId>> {
-    // Read commitment counts once and reuse across both phases.
     let mut commitment_counts: HashMap<PeerId, usize> = HashMap::new();
     for &peer in all_peers {
         let count = dbtx
@@ -1281,7 +1277,6 @@ pub(crate) async fn pick_signing_session(
     let viable =
         |peer: &PeerId| commitment_counts.get(peer).copied().unwrap_or(0) >= required_commitments;
 
-    // Phase 1: hash-shuffle, non-suspects with viable buffers.
     let seed: [u8; 32] = (txid, attempt)
         .consensus_hash::<sha256::Hash>()
         .to_byte_array();
@@ -1289,64 +1284,16 @@ pub(crate) async fn pick_signing_session(
     let mut shuffled = all_peers.to_vec();
     shuffled.shuffle(&mut rng);
 
-    let phase_1: Vec<PeerId> = shuffled
+    let session: Vec<PeerId> = shuffled
         .iter()
         .copied()
         .filter(|p| !suspects.contains(p) && viable(p))
         .take(threshold)
         .collect();
-    if phase_1.len() == threshold {
-        return Some(phase_1);
+    if session.len() == threshold {
+        return Some(session);
     }
-
-    // Phase 2: round-robin enumeration over all viable peers. Pick the
-    // first threshold-sized subset that doesn't match a prior session.
-    let mut viable_peers: Vec<PeerId> = all_peers.iter().copied().filter(|p| viable(p)).collect();
-    viable_peers.sort();
-
-    if viable_peers.len() < threshold {
-        return None;
-    }
-
-    let prior_sessions: Vec<HashSet<PeerId>> = dbtx
-        .find_by_prefix(&FrostSigningAttemptTxidPrefix(txid))
-        .await
-        .map(|(_, attempt_record)| attempt_record.signing_session.into_iter().collect())
-        .collect::<Vec<_>>()
-        .await;
-
-    tracing::warn!(
-        target: LOG_MODULE_WALLETV2,
-        ?txid,
-        attempt,
-        suspect_count = suspects.len(),
-        viable_peers = viable_peers.len(),
-        prior_session_count = prior_sessions.len(),
-        "Phase 1 (hash-shuffle of non-suspects) couldn't fill the signing session; \
-         falling back to round-robin enumeration of viable subsets"
-    );
-
-    let candidate = viable_peers
-        .into_iter()
-        .combinations(threshold)
-        .find(|combo| {
-            let set: HashSet<PeerId> = combo.iter().copied().collect();
-            !prior_sessions.iter().any(|prev| prev == &set)
-        });
-
-    if candidate.is_none() {
-        tracing::error!(
-            target: LOG_MODULE_WALLETV2,
-            ?txid,
-            attempt,
-            prior_session_count = prior_sessions.len(),
-            "Cannot form a new FROST signing session: every threshold-sized subset of \
-             viable peers has already been tried. Federation is stuck — every prior \
-             attempt is still pending; one of them must complete via late shares, or \
-             operator recovery is required."
-        );
-    }
-    candidate
+    None
 }
 
 /// Generate FROST key material centrally via a trusted dealer for
@@ -1742,7 +1689,7 @@ mod tests {
     use rand::rngs::OsRng;
 
     use super::pick_signing_session;
-    use crate::db::{FrostSigningAttempt, FrostSigningAttemptKey, FrostSigningCommitmentsKey};
+    use crate::db::FrostSigningCommitmentsKey;
 
     const N: usize = 7;
     const THRESHOLD: usize = 5;
@@ -1800,16 +1747,6 @@ mod tests {
         db
     }
 
-    async fn insert_attempt(db: &Database, txid: Txid, attempt: u32, signing_session: Vec<PeerId>) {
-        let mut dbtx = db.begin_transaction().await;
-        dbtx.insert_entry(
-            &FrostSigningAttemptKey { txid, attempt },
-            &FrostSigningAttempt { signing_session },
-        )
-        .await;
-        dbtx.commit_tx().await;
-    }
-
     fn dummy_txid(seed: u8) -> Txid {
         use bitcoin::hashes::Hash;
         Txid::from_byte_array([seed; 32])
@@ -1841,7 +1778,7 @@ mod tests {
     /// Asserts that two databases with identical synthetic state produce
     /// identical `signing_session` outputs for the same inputs.
     #[tokio::test]
-    async fn phase_1_deterministic_across_peers() {
+    async fn pick_deterministic_across_peers() {
         let all_peers = peers(N);
         let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 8)).collect();
 
@@ -1874,8 +1811,8 @@ mod tests {
         let a1 = run_pick(&db, &all_peers, THRESHOLD, txid, 1, 1, &suspects).await;
 
         assert_eq!(a0, a0_again);
-        let a0 = a0.expect("phase 1 succeeds with all viable");
-        let a1 = a1.expect("phase 1 succeeds with all viable");
+        let a0 = a0.expect("succeeds with all viable");
+        let a1 = a1.expect("succeeds with all viable");
         assert_ne!(a0, a1, "attempt should change shuffled order");
     }
 
@@ -1899,10 +1836,10 @@ mod tests {
         assert_eq!(session.len(), THRESHOLD);
     }
 
-    /// Asserts that suspects are skipped in Phase 1 when enough
-    /// non-suspect viable peers remain.
+    /// Asserts that suspects are skipped when enough non-suspect viable
+    /// peers remain.
     #[tokio::test]
-    async fn suspect_filter_excluded_from_phase_1() {
+    async fn suspects_excluded_from_session() {
         let all_peers = peers(N);
         let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
         let db = db_with_commitments(&counts).await;
@@ -1916,63 +1853,8 @@ mod tests {
             .await
             .expect("5 non-suspect viable = threshold");
         for s in &suspects {
-            assert!(!session.contains(s), "Phase 1 must drop suspect {s}");
+            assert!(!session.contains(s), "must drop suspect {s}");
         }
-    }
-
-    /// Asserts that Phase 2 (round-robin fallback) is reached when Phase 1
-    /// can't fill the session, and that its lex-first output is identical
-    /// across databases.
-    #[tokio::test]
-    async fn phase_2_fallback_lex_first() {
-        let all_peers = peers(N);
-        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
-
-        let mut suspects = HashSet::new();
-        for i in 4..=6 {
-            suspects.insert(PeerId::from_str(&i.to_string()).unwrap());
-        }
-
-        let db_a = db_with_commitments(&counts).await;
-        let db_b = db_with_commitments(&counts).await;
-        let txid = dummy_txid(5);
-
-        let a = run_pick(&db_a, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
-        let b = run_pick(&db_b, &all_peers, THRESHOLD, txid, 0, 1, &suspects).await;
-
-        assert_eq!(a, b, "phase 2 deterministic across databases");
-
-        let lex_first: Vec<PeerId> = (0..5)
-            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
-            .collect();
-        assert_eq!(a, Some(lex_first));
-    }
-
-    /// Asserts that Phase 2 honors `prior_sessions`: when the lex-first
-    /// combo has already been used, Phase 2 skips to the next
-    /// combination.
-    #[tokio::test]
-    async fn phase_2_skips_prior_session() {
-        let all_peers = peers(N);
-        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
-        let suspects: HashSet<_> = (4..=6)
-            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
-            .collect();
-
-        let db = db_with_commitments(&counts).await;
-        let txid = dummy_txid(6);
-
-        let prior: Vec<PeerId> = (0..5)
-            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
-            .collect();
-        insert_attempt(&db, txid, 0, prior.clone()).await;
-
-        let session = run_pick(&db, &all_peers, THRESHOLD, txid, 1, 1, &suspects)
-            .await
-            .expect("more combinations remain");
-        let next: HashSet<PeerId> = session.iter().copied().collect();
-        let prior_set: HashSet<PeerId> = prior.iter().copied().collect();
-        assert_ne!(next, prior_set, "must not reuse prior session");
     }
 
     /// Asserts that the function returns `None` when fewer than
@@ -2011,75 +1893,5 @@ mod tests {
             assert_eq!(a, b, "attempt {i}: results diverge");
             suspects.insert(PeerId::from_str(&i.to_string()).unwrap());
         }
-    }
-
-    /// Asserts that, given enough prior sessions, Phase 2 enumerates
-    /// every C(N, threshold) distinct subset of viable peers exactly
-    /// once before returning `None`. This validates the ROAST guarantee
-    /// that any signing-capable subset will eventually be tried.
-    #[tokio::test]
-    async fn phase_2_enumerates_every_combination() {
-        let all_peers = peers(N);
-        // All N peers viable.
-        let counts: BTreeMap<_, _> = all_peers.iter().map(|p| (*p, 4)).collect();
-
-        // Mark enough peers suspect so Phase 1 always fails (4 < 5):
-        // forces every iteration into Phase 2.
-        let suspects: HashSet<_> = (4..=6)
-            .map(|i| PeerId::from_str(&i.to_string()).unwrap())
-            .collect();
-
-        let db = db_with_commitments(&counts).await;
-        let txid = dummy_txid(9);
-
-        // Number of distinct threshold-sized subsets of N viable peers:
-        // C(N, threshold). For N=7, threshold=5 this is 21.
-        let expected_combinations = num_combinations(N, THRESHOLD);
-
-        let mut seen: HashSet<Vec<PeerId>> = HashSet::new();
-        for attempt in 0..expected_combinations as u32 {
-            let session = run_pick(&db, &all_peers, THRESHOLD, txid, attempt, 1, &suspects)
-                .await
-                .unwrap_or_else(|| {
-                    panic!("attempt {attempt}: Phase 2 should still have a fresh combination")
-                });
-
-            // Record canonical form (sorted) for set-equality semantics.
-            let mut canonical = session.clone();
-            canonical.sort();
-            assert!(
-                seen.insert(canonical),
-                "attempt {attempt}: duplicate session, Phase 2 didn't advance"
-            );
-
-            insert_attempt(&db, txid, attempt, session).await;
-        }
-
-        assert_eq!(seen.len(), expected_combinations);
-
-        // After exhausting every combination, Phase 2 must return None.
-        let exhausted = run_pick(
-            &db,
-            &all_peers,
-            THRESHOLD,
-            txid,
-            expected_combinations as u32,
-            1,
-            &suspects,
-        )
-        .await;
-        assert!(
-            exhausted.is_none(),
-            "after C(N, threshold) attempts, no further sessions should be available"
-        );
-    }
-
-    fn num_combinations(n: usize, k: usize) -> usize {
-        let k = k.min(n - k);
-        let mut result = 1usize;
-        for i in 0..k {
-            result = result * (n - i) / (i + 1);
-        }
-        result
     }
 }
