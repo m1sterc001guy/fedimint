@@ -1,0 +1,53 @@
+{
+  "txid": "094618946a15921adff2ecfa47f6b75ad51a5e39c2fd28c3a7c7b91d44af46b7",
+  "hash": "186ddeb3b3dbbb2620738e3474c620f73ddd875f2983df69d0fd2017ab434078",
+  "version": 2,
+  "size": 731,
+  "vsize": 277,
+  "weight": 1106,
+  "locktime": 0,
+  "vin": [
+    {
+      "txid": "9d7dadc6f0d3a921c940af77e0f77f25b993e1e68de8b8b173978b669b5bca70",
+      "vout": 0,
+      "scriptSig": {
+        "asm": "",
+        "hex": ""
+      },
+      "txinwitness": [
+        "",
+        "3044022025f33003c549d6f03787ed177a10bfc1067889f058b646a5de39ee50782eda3e022054151ee89afe39faa5ee52349c8dc191e7464128a7be4481f59e14d42ef52a4e01",
+        "30440220652103af9163171a7ccbbc390e940cb899930ae42835424539b85efcde8b70680220742abd044e1ad1b5d32499dc100d48667767e9ba0ea75209e0ff772474a556da01",
+        "3044022039c3416e2410720edc01d625018158a717756903fe5519948078ce002330357702207769d33aee09fd45065d0a4eb80bd17b705b43f8640e40c775191e5f54aa63e101",
+        "304402202ce9451e60782485b62f30bb890022114e5722dfc47da9ec59d0844d03253462022029fa64696d184f50f5a1206b49ef04553651afa5be8217b7dffd42598e59c1f001",
+        "3044022012e3949613bf44b00a029aab05af965cde4cdf0bf81c47e800044bdf7813860102205ec4fe97166e868ebc39fa93b36cf0b33c543d063b2f9adaa92b5ada82b90e1b01",
+        "5521028fe56d843b976a652129e276d6af80f3ddf0e0554d788a52c6338d18a309369d2102b9433a9ef4abb68c27d398f9b39134e52a2c14e0368915851bdc93d42de301332102d0ff1c2baaa3f7c858b31982403a362b84911922f45a7663d43b011d9c27588621033c94484aab905e6376b770c3f5e9b77f3f0bbb1bebbf7bc36506ac3348eb93fb21037f2893533674f64ff6485b252f36929d8c549af4484b9107fb52af1e5f6efdf92103aac4de6c0023f93cf06b523dd2c5ae844cdaf972150012aba1d9c56b1b33089e2103ce548d9af7930b0641dd2898d5957243e87fb4c73b2dd61561bb24f8f5350bd057ae"
+      ],
+      "sequence": 4294967293
+    }
+  ],
+  "vout": [
+    {
+      "value": 0.02988830,
+      "n": 0,
+      "scriptPubKey": {
+        "asm": "0 acc169565322b4626c17636696ec3f03109ed9715165648130a8e6069e914db0",
+        "desc": "addr(bcrt1q4nqkj4jny26xymqhvdnfdmplqvgfakt329jkfqfs4rnqd853fkcqzytf0s)#27pn5q0t",
+        "hex": "0020acc169565322b4626c17636696ec3f03109ed9715165648130a8e6069e914db0",
+        "address": "bcrt1q4nqkj4jny26xymqhvdnfdmplqvgfakt329jkfqfs4rnqd853fkcqzytf0s",
+        "type": "witness_v0_scripthash"
+      }
+    },
+    {
+      "value": 0.00010000,
+      "n": 1,
+      "scriptPubKey": {
+        "asm": "0 8ad6e60729e44cb7afd3b2c75bec58f92b3cc491",
+        "desc": "addr(bcrt1q3ttwvpefu3xt0t7nktr4hmzcly4ne3y3hydunz)#vml2m570",
+        "hex": "00148ad6e60729e44cb7afd3b2c75bec58f92b3cc491",
+        "address": "bcrt1q3ttwvpefu3xt0t7nktr4hmzcly4ne3y3hydunz",
+        "type": "witness_v0_keyhash"
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "txid": "06e751088fcd6fb9712d14d8516eab3e043f22972a7895a099739baf2a5acc94",
+  "hash": "b9057099d594a361ab95c9e0fa5110e8aab8c28423fabd0cfb7940a58749e211",
+  "version": 2,
+  "size": 497,
+  "vsize": 218,
+  "weight": 872,
+  "locktime": 0,
+  "vin": [
+    {
+      "txid": "4db556dfdcf41df4c9826295e98427e64ae6ad8c36130eb6c6dd5a5aa36000e4",
+      "vout": 0,
+      "scriptSig": {
+        "asm": "",
+        "hex": ""
+      },
+      "txinwitness": [
+        "d5c3635783f23be6d8d9ff2293d2be62e4707470292d27a31930a8b684ccabfdae966af8f30a489dfb672fb4e8e6274a408d9a8c78fdaa2ac7575192b83b554b",
+        "1cf53e37833a7b09e5206f47e38eee8d660381e1b9012cd23c8e86b7457b93f54615be7ea0e35a918f8c5839c5cfba8b35fa9e7c18dc0947df8bb1242849920d",
+        "fc7ba235581d2b3d7600b34b172bb50536360155b012f94c36a3220573a4ad09e42c7f1249cb753aedb7dae08e9f76a9cebfb287e39d573e6db52309079b2a4d",
+        "",
+        "201aed5181bb0dc8601e9ebe92c37b5878413342be99702e3ffde0185a3ce399a0ac205664d860e7ba2bb7ddd28dc6605004dacd1d9cfb7f6239d7916c01b9f8f98251ba20ba9ba94dfd6f48a0a5c37a2413dd230c1e36fe96a8f935db69cbfda69946fa5fba20fb0cb9c2ee843120566587199160b622fc2da4f735b6aa1de20457dc4cb358b2ba539c",
+        "c1a4c803cd11214e787533d98fc6cd4de60f7bfb124365018d93c201ce7465b3e6"
+      ],
+      "sequence": 4294967293
+    }
+  ],
+  "vout": [
+    {
+      "value": 0.02989125,
+      "n": 0,
+      "scriptPubKey": {
+        "asm": "1 44e990d530b4ea04fdcaa90f0d337daaeff5a854b88b24e75729052f4d3bc7c5",
+        "desc": "rawtr(44e990d530b4ea04fdcaa90f0d337daaeff5a854b88b24e75729052f4d3bc7c5)#ygkjl8pn",
+        "hex": "512044e990d530b4ea04fdcaa90f0d337daaeff5a854b88b24e75729052f4d3bc7c5",
+        "address": "bcrt1pgn5ep4fskn4qflw24y8s6vma4thlt2z5hz9jfe6h9yzj7nfmclzswdc0ng",
+        "type": "witness_v1_taproot"
+      }
+    },
+    {
+      "value": 0.00010000,
+      "n": 1,
+      "scriptPubKey": {
+        "asm": "0 4ad6f2a8cd8cbd8d0e7cd74ba7c8c402f6212b2c",
+        "desc": "addr(bcrt1qftt092xd3j7c6rnu6a960jxyqtmzz2ev4mqnnl)#p723dv72",
+        "hex": "00144ad6f2a8cd8cbd8d0e7cd74ba7c8c402f6212b2c",
+        "address": "bcrt1qftt092xd3j7c6rnu6a960jxyqtmzz2ev4mqnnl",
+        "type": "witness_v0_keyhash"
+      }
+    }
+  ]
+}
