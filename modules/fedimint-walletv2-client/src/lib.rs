@@ -45,6 +45,7 @@ use fedimint_core::module::{
     AmountUnit, Amounts, ApiVersion, CommonModuleInit, ModuleCommon, ModuleInit, MultiApiVersion,
 };
 use fedimint_core::task::{TaskGroup, block_in_place, sleep};
+use fedimint_core::util::FmtCompactAnyhow;
 use fedimint_core::{Amount, OutPoint, TransactionId, apply, async_trait_maybe_send};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use fedimint_logging::LOG_CLIENT_MODULE_WALLETV2;
@@ -417,13 +418,19 @@ impl WalletClientModule {
     }
 
     /// Issue ecash for an unspent output with a given fee.
+    ///
+    /// Returns an error if the transaction cannot be assembled locally — most
+    /// commonly because the remaining value after `fee` is too small to cover
+    /// the mint module's output fee. Callers should treat this as "skip this
+    /// output" rather than propagating, since the output is not economically
+    /// claimable.
     async fn receive_output(
         &self,
         output_index: u64,
         value: bitcoin::Amount,
         address_index: u64,
         fee: bitcoin::Amount,
-    ) -> (OperationId, TransactionId) {
+    ) -> anyhow::Result<(OperationId, TransactionId)> {
         let operation_id = OperationId::new_random();
 
         let client_input = ClientInput::<WalletInput> {
@@ -469,8 +476,7 @@ impl WalletClientModule {
                 },
                 TransactionBuilder::new().with_inputs(client_input_bundle),
             )
-            .await
-            .expect("Input amount is sufficient to finalize transaction");
+            .await?;
 
         let mut dbtx = self.client_ctx.module_db().begin_transaction().await;
 
@@ -488,7 +494,7 @@ impl WalletClientModule {
 
         dbtx.commit_tx().await;
 
-        (operation_id, range.txid())
+        Ok((operation_id, range.txid()))
     }
 
     fn spawn_output_scanner(&self, task_group: &TaskGroup, client_span: &tracing::Span) {
@@ -589,16 +595,32 @@ impl WalletClientModule {
                         .ok_or(anyhow!("No consensus feerate is available"))?;
 
                     if output.value > receive_fee {
-                        let (operation_id, txid) = self
+                        match self
                             .receive_output(output.index, output.value, address_index, receive_fee)
-                            .await;
-
-                        self.client_ctx
-                            .transaction_updates(operation_id)
                             .await
-                            .await_tx_accepted(txid)
-                            .await
-                            .map_err(|e| anyhow!("Claim transaction was rejected: {e}"))?;
+                        {
+                            Ok((operation_id, txid)) => {
+                                self.client_ctx
+                                    .transaction_updates(operation_id)
+                                    .await
+                                    .await_tx_accepted(txid)
+                                    .await
+                                    .map_err(|e| anyhow!("Claim transaction was rejected: {e}"))?;
+                            }
+                            Err(err) => {
+                                // Most likely the residual value after the
+                                // receive fee can't cover the mint module's
+                                // output fee. Skip past it via the
+                                // unconditional cursor advance below.
+                                warn!(
+                                    target: LOG_CLIENT_MODULE_WALLETV2,
+                                    output_index = output.index,
+                                    value_sat = output.value.to_sat(),
+                                    err = %err.fmt_compact_anyhow(),
+                                    "Failed to build claim transaction, skipping output",
+                                );
+                            }
+                        }
                     }
                 }
             }
