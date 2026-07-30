@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use bitcoin::PublicKey;
 use bitcoin::sighash::SighashCache;
+use bitcoin::{PublicKey, XOnlyPublicKey};
 use fedimint_core::Feerate;
 use frost_secp256k1_tr as frost;
 use miniscript::Descriptor;
@@ -87,53 +87,26 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            info!("Doing final key generation for participant 1...");
-            let participant_identifier = 1.try_into().expect("should be nonzero");
-            let round2_secret_package = &round2_secret_packages[&participant_identifier];
-            let round1_packages = &received_round1_packages[&participant_identifier];
-            let round2_packages = &received_round2_packages[&participant_identifier];
-            let (key_package, pubkey_package) =
-                frost::keys::dkg::part3(round2_secret_package, round1_packages, round2_packages)?;
-            info!(?key_package, "Key Package");
-            info!(?pubkey_package, "Pubkey Package");
+            let (_key_package_1, descriptor_1) = final_key_generation(
+                1,
+                &round2_secret_packages,
+                &received_round1_packages,
+                &received_round2_packages,
+            )?;
 
-            let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
-            let pubkey =
-                PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
-            // The group key is already tweaked with the unspendable-script-path
-            // TapTweak by the `-tr` ciphersuite's DKG; it serves as the
-            // descriptor's internal key, so signing must use `sign_with_tweak`
-            // with no merkle root to match the descriptor's key-path tweak.
-            let internal_key = pubkey.inner.x_only_public_key().0;
-            let descriptor = Descriptor::Tr(
-                Tr::new(internal_key, None).expect("Could not create Taproot descriptor"),
+            let (_key_package_2, descriptor_2) = final_key_generation(
+                2,
+                &round2_secret_packages,
+                &received_round1_packages,
+                &received_round2_packages,
+            )?;
+
+            assert_eq!(
+                descriptor_1, descriptor_2,
+                "all participants must derive the same descriptor"
             );
-            info!(%descriptor, "Taproot Descriptor");
 
-            info!("Doing final key generation for participant 2...");
-            let participant_identifier = 2.try_into().expect("should be nonzero");
-            let round2_secret_package = &round2_secret_packages[&participant_identifier];
-            let round1_packages = &received_round1_packages[&participant_identifier];
-            let round2_packages = &received_round2_packages[&participant_identifier];
-            let (key_package, pubkey_package) =
-                frost::keys::dkg::part3(round2_secret_package, round1_packages, round2_packages)?;
-            info!(?key_package, "Key Package");
-            info!(?pubkey_package, "Pubkey Package");
-
-            let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
-            let pubkey =
-                PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
-            // The group key is already tweaked with the unspendable-script-path
-            // TapTweak by the `-tr` ciphersuite's DKG; it serves as the
-            // descriptor's internal key, so signing must use `sign_with_tweak`
-            // with no merkle root to match the descriptor's key-path tweak.
-            let internal_key = pubkey.inner.x_only_public_key().0;
-            let descriptor = Descriptor::Tr(
-                Tr::new(internal_key, None).expect("Could not create Taproot descriptor"),
-            );
-            info!(%descriptor, "Taproot Descriptor");
-
-            let address = descriptor.address(bitcoin::Network::Regtest)?;
+            let address = descriptor_1.address(bitcoin::Network::Regtest)?;
             info!(%address, "Address");
 
             // "Peg-in" to the FROST address
@@ -152,4 +125,42 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         })
         .await
+}
+
+/// Runs the final round of the DKG for the given participant, producing their
+/// private key package and the federation's Taproot descriptor.
+fn final_key_generation(
+    participant_index: u16,
+    round2_secret_packages: &BTreeMap<frost::Identifier, frost::keys::dkg::round2::SecretPackage>,
+    received_round1_packages: &BTreeMap<
+        frost::Identifier,
+        BTreeMap<frost::Identifier, frost::keys::dkg::round1::Package>,
+    >,
+    received_round2_packages: &BTreeMap<
+        frost::Identifier,
+        BTreeMap<frost::Identifier, frost::keys::dkg::round2::Package>,
+    >,
+) -> anyhow::Result<(frost::keys::KeyPackage, Descriptor<XOnlyPublicKey>)> {
+    info!(%participant_index, "Doing final key generation...");
+    let participant_identifier = participant_index.try_into().expect("should be nonzero");
+    let round2_secret_package = &round2_secret_packages[&participant_identifier];
+    let round1_packages = &received_round1_packages[&participant_identifier];
+    let round2_packages = &received_round2_packages[&participant_identifier];
+    let (key_package, pubkey_package) =
+        frost::keys::dkg::part3(round2_secret_package, round1_packages, round2_packages)?;
+    info!(?key_package, "Key Package");
+    info!(?pubkey_package, "Pubkey Package");
+
+    let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
+    let pubkey = PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
+    // The group key is already tweaked with the unspendable-script-path
+    // TapTweak by the `-tr` ciphersuite's DKG; it serves as the
+    // descriptor's internal key, so signing must use `sign_with_tweak`
+    // with no merkle root to match the descriptor's key-path tweak.
+    let internal_key = pubkey.inner.x_only_public_key().0;
+    let descriptor =
+        Descriptor::Tr(Tr::new(internal_key, None).expect("Could not create Taproot descriptor"));
+    info!(%descriptor, "Taproot Descriptor");
+
+    Ok((key_package, descriptor))
 }
