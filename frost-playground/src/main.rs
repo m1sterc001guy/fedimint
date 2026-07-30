@@ -1,14 +1,11 @@
 use std::collections::BTreeMap;
 
+use bitcoin::PublicKey;
 use bitcoin::sighash::SighashCache;
-use bitcoin::{PublicKey, secp256k1};
 use fedimint_core::Feerate;
-use fedimint_wallet_common::keys::CompressedPublicKey;
-use fedimint_wallet_common::tweakable::Tweakable;
-use frost_secp256k1 as frost;
+use frost_secp256k1_tr as frost;
 use miniscript::Descriptor;
 use miniscript::descriptor::Tr;
-use rand::rngs::OsRng;
 use tracing::info;
 
 #[tokio::main]
@@ -103,9 +100,13 @@ async fn main() -> anyhow::Result<()> {
             let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
             let pubkey =
                 PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
-            let compressed = CompressedPublicKey { key: pubkey.inner };
+            // The group key is already tweaked with the unspendable-script-path
+            // TapTweak by the `-tr` ciphersuite's DKG; it serves as the
+            // descriptor's internal key, so signing must use `sign_with_tweak`
+            // with no merkle root to match the descriptor's key-path tweak.
+            let internal_key = pubkey.inner.x_only_public_key().0;
             let descriptor = Descriptor::Tr(
-                Tr::new(compressed, None).expect("Could not create Taproot descriptor"),
+                Tr::new(internal_key, None).expect("Could not create Taproot descriptor"),
             );
             info!(%descriptor, "Taproot Descriptor");
 
@@ -122,18 +123,17 @@ async fn main() -> anyhow::Result<()> {
             let verifying_key_bytes = pubkey_package.verifying_key().serialize()?;
             let pubkey =
                 PublicKey::from_slice(&verifying_key_bytes).expect("valid compressed pubkey");
-            let compressed = CompressedPublicKey { key: pubkey.inner };
+            // The group key is already tweaked with the unspendable-script-path
+            // TapTweak by the `-tr` ciphersuite's DKG; it serves as the
+            // descriptor's internal key, so signing must use `sign_with_tweak`
+            // with no merkle root to match the descriptor's key-path tweak.
+            let internal_key = pubkey.inner.x_only_public_key().0;
             let descriptor = Descriptor::Tr(
-                Tr::new(compressed, None).expect("Could not create Taproot descriptor"),
+                Tr::new(internal_key, None).expect("Could not create Taproot descriptor"),
             );
             info!(%descriptor, "Taproot Descriptor");
 
-            let secp = secp256k1::Secp256k1::new();
-            let tweak_key = secp.generate_keypair(&mut OsRng);
-            let public_tweak_key = tweak_key.1;
-            let address = descriptor
-                .tweak(&public_tweak_key, &secp)
-                .address(bitcoin::Network::Regtest)?;
+            let address = descriptor.address(bitcoin::Network::Regtest)?;
             info!(%address, "Address");
 
             // "Peg-in" to the FROST address

@@ -18,8 +18,7 @@ anyhow = { workspace = true }
 bitcoin = { workspace = true }
 devimint = { workspace = true }
 fedimint-core = { workspace = true }
-fedimint-wallet-common = { workspace = true }
-frost-secp256k1 = "2.2.0"
+frost-secp256k1-tr = "3.0.0"
 miniscript = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
