@@ -313,11 +313,16 @@ To withdraw funds from a federation back to on-chain Bitcoin:
 
 1. Navigate to the federation card
 2. Click the **Withdraw** tab
-3. Enter the amount (in sats) or select "all"
+3. Enter the amount (in sats), or `all` to withdraw the entire balance
 4. Enter the destination Bitcoin address
 5. Click **Preview** to see fees and transaction details
-6. Review the breakdown: amount, fee rate, transaction size, peg-out fee, mint fee estimate
+6. Review the breakdown: amount, fee rate, transaction size, peg-out fee, federation fee
 7. Click **Confirm Withdraw** to execute
+
+Withdrawing `all` resolves to the largest amount the balance covers once both
+fees are paid — the on-chain peg-out fee and the federation's fee for funding
+it — so the preview amount is less than the balance, and only an amount too
+small to withdraw is left behind.
 
 ![Pegout Bitcoin](images/gateway/withdraw.png)
 

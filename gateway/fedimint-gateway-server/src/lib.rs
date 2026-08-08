@@ -402,23 +402,24 @@ async fn withdraw_v2(
 
     let withdraw_amount = match amount {
         BitcoinAmountOrAll::All => {
-            let balance = bitcoin::Amount::from_sat(
-                client
-                    .get_balance_for_btc()
-                    .await
-                    .map_err(|err| {
-                        AdminGatewayError::Unexpected(anyhow!(
-                            "Balance not available: {}",
-                            err.fmt_compact_anyhow()
-                        ))
-                    })?
-                    .msats
-                    / 1000,
-            );
-            balance
-                .checked_sub(fee)
-                .ok_or_else(|| AdminGatewayError::WithdrawError {
-                    failure_reason: format!("Insufficient funds. Balance: {balance} Fee: {fee}"),
+            let balance = client.get_balance_for_btc().await.map_err(|err| {
+                AdminGatewayError::Unexpected(anyhow!(
+                    "Balance not available: {}",
+                    err.fmt_compact_anyhow()
+                ))
+            })?;
+
+            // The balance also has to cover the federation's fees for funding
+            // the send, not just the on-chain fee, so solve for the amount
+            // rather than subtracting the on-chain fee from it.
+            wallet_module
+                .spendable_amount(balance, fee)
+                .await
+                .map_err(|e| AdminGatewayError::WithdrawError {
+                    failure_reason: format!(
+                        "Insufficient funds. Balance: {balance}, on-chain fee: {fee}: {}",
+                        e.fmt_compact_anyhow()
+                    ),
                 })?
         }
         BitcoinAmountOrAll::Amount(a) => a,
@@ -475,14 +476,30 @@ async fn calculate_max_withdrawable(
         ))
     })?;
 
-    let peg_out_fees = if let Ok(wallet_module) = client.get_first_module::<WalletClientModule>() {
-        wallet_module
-            .get_withdraw_fees(
-                address,
-                bitcoin::Amount::from_sat(balance.sats_round_down()),
-            )
-            .await?
-    } else if let Ok(wallet_module) =
+    // Withdrawing everything is not "balance minus the on-chain fee": the
+    // balance also has to cover the federation's own fees for funding the
+    // peg-out — the mint's fees on the notes spent and on any change, plus
+    // sub-denomination dust. Neither fee is a closed form of the amount, so ask
+    // the wallet module to solve for the largest amount that covers both.
+    if let Ok(wallet_module) = client.get_first_module::<WalletClientModule>() {
+        let spendable = wallet_module
+            .spendable_amount(balance, address)
+            .await
+            .map_err(|e| AdminGatewayError::WithdrawError {
+                failure_reason: format!(
+                    "Could not compute the maximum withdrawable amount: {}",
+                    e.fmt_compact_anyhow()
+                ),
+            })?;
+
+        return Ok(WithdrawDetails {
+            amount: spendable.amount.into(),
+            mint_fees: Some(spendable.federation_fees),
+            peg_out_fees: spendable.peg_out_fees,
+        });
+    }
+
+    if let Ok(wallet_module) =
         client.get_first_module::<fedimint_walletv2_client::WalletClientModule>()
     {
         let fee = wallet_module
@@ -491,33 +508,38 @@ async fn calculate_max_withdrawable(
             .map_err(|e| AdminGatewayError::WithdrawError {
                 failure_reason: e.to_string(),
             })?;
-        PegOutFees::from_amount(fee)
-    } else {
-        return Err(AdminGatewayError::Unexpected(anyhow!(
-            "No wallet module found"
-        )));
-    };
 
-    let max_withdrawable_before_mint_fees = balance
-        .checked_sub(peg_out_fees.amount().into())
-        .ok_or_else(|| AdminGatewayError::WithdrawError {
-            failure_reason: "Insufficient balance to cover peg-out fees".to_string(),
-        })?;
+        let amount = wallet_module
+            .spendable_amount(balance, fee)
+            .await
+            .map_err(|e| AdminGatewayError::WithdrawError {
+                failure_reason: format!(
+                    "Could not compute the maximum withdrawable amount: {}",
+                    e.fmt_compact_anyhow()
+                ),
+            })?;
 
-    // MintV2 doesn't have fee estimation - only compute fees for MintV1
-    let mint_fees = if let Ok(mint_module) = client.get_first_module::<MintClientModule>() {
-        mint_module.estimate_spend_all_fees().await
-    } else {
-        Amount::ZERO
-    };
+        let federation_fees = wallet_module
+            .send_fee_quote(amount + fee)
+            .await
+            .map(|quote| quote.total().get_bitcoin())
+            .map_err(|e| AdminGatewayError::WithdrawError {
+                failure_reason: format!(
+                    "Could not quote the federation's withdrawal fees: {}",
+                    e.fmt_compact_anyhow()
+                ),
+            })?;
 
-    let max_withdrawable = max_withdrawable_before_mint_fees.saturating_sub(mint_fees);
+        return Ok(WithdrawDetails {
+            amount: Amount::from_sats(amount.to_sat()),
+            mint_fees: Some(federation_fees),
+            peg_out_fees: PegOutFees::from_amount(fee),
+        });
+    }
 
-    Ok(WithdrawDetails {
-        amount: max_withdrawable,
-        mint_fees: Some(mint_fees),
-        peg_out_fees,
-    })
+    Err(AdminGatewayError::Unexpected(anyhow!(
+        "No wallet module found"
+    )))
 }
 
 impl Gateway {
@@ -2671,33 +2693,28 @@ impl IAdminGateway for Gateway {
             }
             // CLI flow: fetch fees (existing behavior for backwards compatibility)
             None => match amount {
-                // If the amount is "all", then we need to subtract the fees from
-                // the amount we are withdrawing
+                // If the amount is "all", solve for the largest amount the
+                // balance covers once both the on-chain fee and the
+                // federation's fees for funding the peg-out are paid.
                 BitcoinAmountOrAll::All => {
-                    let balance = bitcoin::Amount::from_sat(
-                        client
-                            .value()
-                            .get_balance_for_btc()
-                            .await
-                            .map_err(|err| {
-                                AdminGatewayError::Unexpected(anyhow!(
-                                    "Balance not available: {}",
-                                    err.fmt_compact_anyhow()
-                                ))
-                            })?
-                            .msats
-                            / 1000,
-                    );
-                    let fees = wallet_module.get_withdraw_fees(&address, balance).await?;
-                    let withdraw_amount = balance.checked_sub(fees.amount());
-                    if withdraw_amount.is_none() {
-                        return Err(AdminGatewayError::WithdrawError {
+                    let balance = client.value().get_balance_for_btc().await.map_err(|err| {
+                        AdminGatewayError::Unexpected(anyhow!(
+                            "Balance not available: {}",
+                            err.fmt_compact_anyhow()
+                        ))
+                    })?;
+
+                    let spendable = wallet_module
+                        .spendable_amount(balance, &address)
+                        .await
+                        .map_err(|e| AdminGatewayError::WithdrawError {
                             failure_reason: format!(
-                                "Insufficient funds. Balance: {balance} Fees: {fees:?}"
+                                "Insufficient funds. Balance: {balance}: {}",
+                                e.fmt_compact_anyhow()
                             ),
-                        });
-                    }
-                    (withdraw_amount.expect("checked above"), fees)
+                        })?;
+
+                    (spendable.amount, spendable.peg_out_fees)
                 }
                 BitcoinAmountOrAll::Amount(amount) => (
                     amount,
@@ -2759,12 +2776,28 @@ impl IAdminGateway for Gateway {
             }
             BitcoinAmountOrAll::Amount(btc_amount) => {
                 if let Ok(wallet_module) = client.value().get_first_module::<WalletClientModule>() {
+                    let peg_out_fees = wallet_module
+                        .get_withdraw_fees(&address_checked, btc_amount)
+                        .await?;
+
+                    // The federation also charges for funding the peg-out
+                    // output, so quote it too rather than showing a total that
+                    // only covers the on-chain fee.
+                    let federation_fees = wallet_module
+                        .send_fee_quote(btc_amount + peg_out_fees.amount())
+                        .await
+                        .map(|quote| quote.total().get_bitcoin())
+                        .map_err(|e| AdminGatewayError::WithdrawError {
+                            failure_reason: format!(
+                                "Could not quote the federation's withdrawal fees: {}",
+                                e.fmt_compact_anyhow()
+                            ),
+                        })?;
+
                     WithdrawDetails {
                         amount: btc_amount.into(),
-                        mint_fees: None,
-                        peg_out_fees: wallet_module
-                            .get_withdraw_fees(&address_checked, btc_amount)
-                            .await?,
+                        mint_fees: Some(federation_fees),
+                        peg_out_fees,
                     }
                 } else if let Ok(wallet_module) = client
                     .value()
@@ -2775,9 +2808,21 @@ impl IAdminGateway for Gateway {
                             failure_reason: e.to_string(),
                         }
                     })?;
+
+                    let federation_fees = wallet_module
+                        .send_fee_quote(btc_amount + fee)
+                        .await
+                        .map(|quote| quote.total().get_bitcoin())
+                        .map_err(|e| AdminGatewayError::WithdrawError {
+                            failure_reason: format!(
+                                "Could not quote the federation's withdrawal fees: {}",
+                                e.fmt_compact_anyhow()
+                            ),
+                        })?;
+
                     WithdrawDetails {
                         amount: btc_amount.into(),
-                        mint_fees: None,
+                        mint_fees: Some(federation_fees),
                         peg_out_fees: PegOutFees::from_amount(fee),
                     }
                 } else {

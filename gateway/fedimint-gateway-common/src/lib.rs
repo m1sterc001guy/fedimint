@@ -144,7 +144,12 @@ pub struct WithdrawPreviewResponse {
     pub address: String,
     pub peg_out_fees: PegOutFees,
     pub total_cost: Amount,
-    /// Estimated mint fees when withdrawing all. None for partial withdrawals.
+    /// The federation's fee for funding the peg-out output — the peg-out output
+    /// fee, the mint input fees on the notes spent, the mint output fees on any
+    /// change, and sub-denomination dust. Charged on top of `withdraw_amount`
+    /// and `peg_out_fees`, and already included in `total_cost`.
+    ///
+    /// `None` only when the federation could not be asked for a quote.
     #[serde(default)]
     pub mint_fees: Option<Amount>,
 }

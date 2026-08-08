@@ -580,16 +580,13 @@ pub async fn handle_command(
             let wallet_module = client.get_first_module::<WalletClientModule>()?;
             let address = address.require_network(wallet_module.get_network())?;
             let (amount, fees) = match amount {
-                // If the amount is "all", then we need to subtract the fees from
-                // the amount we are withdrawing
+                // If the amount is "all", solve for the largest amount the
+                // balance covers once both the on-chain fee and the
+                // federation's fees for funding the peg-out are paid.
                 BitcoinAmountOrAll::All => {
-                    let balance =
-                        bitcoin::Amount::from_sat(client.get_balance_for_btc().await?.msats / 1000);
-                    let fees = wallet_module.get_withdraw_fees(&address, balance).await?;
-                    let Some(amount) = balance.checked_sub(fees.amount()) else {
-                        bail!("Not enough funds to pay fees");
-                    };
-                    (amount, fees)
+                    let balance = client.get_balance_for_btc().await?;
+                    let spendable = wallet_module.spendable_amount(balance, &address).await?;
+                    (spendable.amount, spendable.peg_out_fees)
                 }
                 BitcoinAmountOrAll::Amount(amount) => (
                     amount,

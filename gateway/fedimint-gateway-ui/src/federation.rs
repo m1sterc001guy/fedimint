@@ -824,10 +824,10 @@ pub async fn withdraw_preview_handler<E: Display>(
                                     td { "Peg-out Fee" }
                                     td { (format!("{} sats", response.peg_out_fees.amount().to_sat())) }
                                 }
-                                @if let Some(mint_fee) = response.mint_fees {
+                                @if let Some(federation_fee) = response.mint_fees {
                                     tr {
-                                        td { "Mint Fee (est.)" }
-                                        td { (format!("~{} sats", mint_fee.sats_round_down())) }
+                                        td { "Federation Fee" }
+                                        td { (format!("{} sats", federation_fee.sats_round_down())) }
                                     }
                                 }
                                 tr {

@@ -28,7 +28,7 @@ use fedimint_api_client::api::{DynModuleApi, FederationResult};
 use fedimint_client::DynGlobalClientContext;
 use fedimint_client::transaction::{
     ClientInput, ClientInputBundle, ClientInputSM, ClientOutput, ClientOutputBundle,
-    ClientOutputSM, FeeQuote, FeeQuoteRequest, TransactionBuilder,
+    ClientOutputSM, FeeQuote, FeeQuoteRequest, TransactionBuilder, max_affordable_send_amount,
 };
 use fedimint_client_module::db::ClientModuleMigrationFn;
 use fedimint_client_module::module::init::{ClientModuleInit, ClientModuleInitArgs};
@@ -294,6 +294,62 @@ impl WalletClientModule {
                 },
             )
             .await
+    }
+
+    /// Computes the largest amount that can be sent on-chain in full out of
+    /// `balance`, i.e. the value to pass to [`Self::send`] in order to spend
+    /// (close to) the entire balance.
+    ///
+    /// An on-chain send deducts two kinds of fee from the balance:
+    /// - `send_fee`, the on-chain fee the federation charges for the send,
+    ///   which is added on top of the sent value to form the wallet output (see
+    ///   [`Self::send_fee`]), and
+    /// - the *federation* fee of funding that output — the wallet output fee,
+    ///   the mint input fees on the funding notes, the mint output fees on any
+    ///   change, and sub-denomination dust — as quoted by
+    ///   [`Self::send_fee_quote`].
+    ///
+    /// `send_fee` is taken as an argument rather than fetched, so that the
+    /// caller sends with the very fee the amount was solved against; a fee
+    /// fetched separately can have moved in between, leaving the two
+    /// inconsistent.
+    ///
+    /// The maximum is found by binary search over the real fee quote (see
+    /// [`max_affordable_send_amount`]) rather than a closed form, because the
+    /// federation fee is stepwise in the amount. The quote is point-in-time and
+    /// moves with the balance, exactly like [`Self::send_fee_quote`]; the
+    /// eventual [`Self::send`] remains the source of truth and may still fail
+    /// if the balance or the federation's fee rate change in between.
+    ///
+    /// Returns an error if the balance cannot cover a send above the
+    /// federation's dust limit.
+    pub async fn spendable_amount(
+        &self,
+        balance: Amount,
+        send_fee: bitcoin::Amount,
+    ) -> anyhow::Result<bitcoin::Amount> {
+        let send_fee = Amount::from_sats(send_fee.to_sat());
+
+        // `max_affordable_send_amount` searches in msats while an on-chain send
+        // is denominated in whole sats, so the gross-up snaps the amount down to
+        // a sat boundary before adding the send fee. That keeps the value handed
+        // to the fee quote — and the amount returned below — exactly the ones a
+        // real send would use, rather than a sub-sat approximation of them.
+        let amount = max_affordable_send_amount(
+            balance,
+            Amount::from_sats(self.cfg.dust_limit.to_sat()),
+            balance,
+            |amount: Amount| Amount::from_sats(amount.sats_round_down()) + send_fee,
+            |output_value: Amount| {
+                self.send_fee_quote(bitcoin::Amount::from_sat(output_value.sats_round_down()))
+            },
+        )
+        .await
+        .ok_or_else(|| {
+            anyhow!("Balance is too low to send anything above the dust limit after fees")
+        })?;
+
+        Ok(bitcoin::Amount::from_sat(amount.sats_round_down()))
     }
 
     /// Fetch the current fee required to claim an onchain deposit (peg-in).

@@ -1195,6 +1195,78 @@ impl Federation {
         Ok(())
     }
 
+    /// Peg-outs a gateway's *entire* ecash balance for this federation and
+    /// verifies the withdrawal both succeeds and leaves nothing meaningful
+    /// behind.
+    ///
+    /// Withdrawing everything is the case fee estimation gets wrong most
+    /// easily. The balance has to cover the federation's own fees for funding
+    /// the peg-out — the mint's per-note fees on the notes spent and on any
+    /// change — on top of the on-chain fee, so a naive `balance - onchain_fee`
+    /// asks to spend more than there is and the transaction never submits.
+    ///
+    /// Deliberately a single gateway. Draining a second one right afterwards
+    /// exercises the federation's own limits on back-to-back max-value
+    /// peg-outs — walletv2 demands `feerate_base << pending_txs` and keeps a
+    /// non-dust change output — rather than anything about how the withdrawal
+    /// amount is computed, which is per-gateway and identical either way.
+    pub async fn pegout_all_gateway(&self, gw: &super::gatewayd::Gatewayd) -> Result<()> {
+        let ln_type = gw.ln.ln_type();
+        info!(%ln_type, "Pegging-out all remaining gateway funds");
+        let fed_id = self.calculate_federation_id();
+
+        async fn ecash_balance(gw: &super::gatewayd::Gatewayd, fed_id: &str) -> Result<Amount> {
+            Ok(gw
+                .client()
+                .get_balances()
+                .await?
+                .ecash_balances
+                .into_iter()
+                .find(|fed| fed.federation_id.to_string() == fed_id)
+                .context("Gateway has not joined federation")?
+                .ecash_balance_msats)
+        }
+
+        let prev_balance = ecash_balance(gw, &fed_id).await?;
+        anyhow::ensure!(
+            prev_balance > Amount::ZERO,
+            "{ln_type} gateway has no ecash to withdraw"
+        );
+
+        let pegout_address = self.bitcoind.get_new_address().await?;
+        let pegout = gw
+            .client()
+            .pegout_all(fed_id.clone(), pegout_address)
+            .await?;
+
+        self.bitcoind.mine_blocks(21).await?;
+        self.bitcoind.poll_get_transaction(pegout.txid).await?;
+        self.await_block_sync().await?;
+
+        let after_balance = ecash_balance(gw, &fed_id).await?;
+
+        // Only what is too small to withdraw may survive: the sub-satoshi
+        // remainder of the balance, plus whatever one more satoshi would have
+        // cost in federation fees. Anything beyond that means the amount was
+        // computed with fees the withdrawal didn't actually charge, and the
+        // operator is stuck with a residue they asked to have emptied.
+        anyhow::ensure!(
+            after_balance < Amount::from_sats(10),
+            "{ln_type} gateway still holds {after_balance} after withdrawing all \
+             (was {prev_balance}, on-chain fee {})",
+            pegout.fees.amount()
+        );
+
+        info!(
+            %ln_type,
+            %prev_balance,
+            %after_balance,
+            "Withdrew all gateway ecash"
+        );
+
+        Ok(())
+    }
+
     pub fn calculate_federation_id(&self) -> String {
         self.client_config()
             .unwrap()

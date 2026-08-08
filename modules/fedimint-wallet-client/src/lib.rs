@@ -48,7 +48,8 @@ use fedimint_client_module::module::{ClientContext, ClientModule, IClientModule,
 use fedimint_client_module::oplog::UpdateStreamOrOutcome;
 use fedimint_client_module::sm::{Context, DynState, ModuleNotifier, State, StateTransition};
 use fedimint_client_module::transaction::{
-    ClientOutput, ClientOutputBundle, ClientOutputSM, FeeQuote, FeeQuoteRequest, TransactionBuilder,
+    ClientOutput, ClientOutputBundle, ClientOutputSM, FeeQuote, FeeQuoteRequest,
+    TransactionBuilder, max_affordable_send_amount,
 };
 use fedimint_client_module::{DynGlobalClientContext, sm_enum_variant_translation};
 use fedimint_core::core::{Decoder, IntoDynInstance, ModuleInstanceId, ModuleKind, OperationId};
@@ -171,6 +172,29 @@ pub enum AllocateDepositOutcome {
     /// same as the one returned in the tuple and refers to the original
     /// allocation; it's exposed here as well for explicit diagnostic use.
     Reused { original_tweak_idx: TweakIdx },
+}
+
+/// How many times [`WalletClientModule::spendable_amount`] re-quotes the
+/// on-chain fee while converging on an amount it matches.
+///
+/// Two rounds are enough to converge, and one more is spent per quote the
+/// federation refuses as too large to fund; the rest is headroom.
+const MAX_SPENDABLE_AMOUNT_ROUNDS: usize = 6;
+
+/// The amount and fees of a "withdraw everything" peg-out, as computed by
+/// [`WalletClientModule::spendable_amount`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpendableAmount {
+    /// The largest amount that can be withdrawn on-chain in full, and the
+    /// `amount` to pass to [`WalletClientModule::withdraw`].
+    pub amount: bitcoin::Amount,
+    /// The on-chain miner fee, and the `fee` to pass to
+    /// [`WalletClientModule::withdraw`]. Charged on top of [`Self::amount`].
+    pub peg_out_fees: PegOutFees,
+    /// The federation fee of funding the peg-out output: the peg-out output
+    /// fee, the mint input fees on the funding notes, the mint output fees on
+    /// any change, and sub-denomination dust.
+    pub federation_fees: fedimint_core::Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -896,6 +920,139 @@ impl WalletClientModule {
                 },
             )
             .await
+    }
+
+    /// Computes the largest amount that can be withdrawn on-chain to `address`
+    /// in full out of `balance`, together with the [`PegOutFees`] the
+    /// withdrawal has to be submitted with — i.e. the arguments a "withdraw
+    /// everything" [`Self::withdraw`] should use.
+    ///
+    /// A peg-out deducts two kinds of fee from the balance:
+    /// - the on-chain *miner* fee, which the federation quotes as
+    ///   [`PegOutFees`] and which is added on top of the withdrawal amount to
+    ///   form the wallet output (see [`Self::get_withdraw_fees`]), and
+    /// - the *federation* fee of funding that output — the peg-out output fee,
+    ///   the mint input fees on the funding notes, the mint output fees on any
+    ///   change, and sub-denomination dust — as quoted by
+    ///   [`Self::send_fee_quote`].
+    ///
+    /// Neither is a closed form of the amount, so this searches rather than
+    /// subtracts. The federation fee is stepwise in the amount (it is charged
+    /// per note, so note selection, denomination rounding, change and dust move
+    /// it in steps), and is solved by binary search over the real quote via
+    /// [`max_affordable_send_amount`]. The miner fee is stepwise too — it grows
+    /// with the number of UTXOs the federation selects — and, because the
+    /// federation rejects a peg-out whose quoted weight does not match the
+    /// weight it recomputes for the submitted amount, it has to be quoted at
+    /// the very amount being withdrawn. So the two are solved together: quote
+    /// the miner fee, solve for the amount it allows, and re-quote until the
+    /// amount stops moving.
+    ///
+    /// Both quotes are point-in-time and move with the balance, exactly like
+    /// [`Self::get_withdraw_fees`]; the eventual [`Self::withdraw`] remains the
+    /// source of truth and may still fail if the balance, the federation's fee
+    /// rate or its UTXO set change in between.
+    ///
+    /// Returns an error if the balance cannot cover a withdrawal above the
+    /// destination's dust limit.
+    pub async fn spendable_amount(
+        &self,
+        balance: fedimint_core::Amount,
+        address: &bitcoin::Address,
+    ) -> anyhow::Result<SpendableAmount> {
+        // The federation rejects a peg-out below the destination's dust limit,
+        // so it is the floor of the search.
+        let dust_limit = address.script_pubkey().minimal_non_dust();
+
+        let mut candidate = bitcoin::Amount::from_sat(balance.sats_round_down());
+        let mut backoff_step = None;
+
+        for _ in 0..MAX_SPENDABLE_AMOUNT_ROUNDS {
+            let peg_out_fees = match self.get_withdraw_fees(address, candidate).await {
+                Ok(fees) => fees,
+                // Too large for the federation to fund out of its UTXOs: it
+                // pays a peg-out from its own coins and needs room for the
+                // miner fee and a non-dust change output on top of the
+                // withdrawal, which it lacks when this client holds (nearly)
+                // all of its on-chain funds. Step down and retry; the answer is
+                // strictly smaller anyway.
+                Err(err) => {
+                    // A quote at the dust limit is the smallest the federation
+                    // can be asked for, and since the miner fee only grows as
+                    // more UTXOs get selected, its fee is a lower bound for
+                    // every larger amount — the natural step to back off by.
+                    // Only worth fetching once a quote has actually been
+                    // refused.
+                    let step = if let Some(step) = backoff_step {
+                        step
+                    } else {
+                        let step = self
+                            .get_withdraw_fees(address, dust_limit)
+                            .await
+                            .context("Federation would not quote a dust-sized peg-out either")?
+                            .amount()
+                            + dust_limit;
+                        backoff_step = Some(step);
+                        step
+                    };
+
+                    candidate = candidate
+                        .checked_sub(step)
+                        .filter(|next| *next >= dust_limit)
+                        .ok_or(err)
+                        .context("Federation cannot fund a peg-out of this balance")?;
+                    continue;
+                }
+            };
+
+            let miner_fee = fedimint_core::Amount::from_sats(peg_out_fees.amount().to_sat());
+
+            // `max_affordable_send_amount` searches in msats while a peg-out is
+            // denominated in whole sats, so the gross-up snaps the amount down
+            // to a sat boundary before adding the miner fee. That keeps the
+            // value handed to the fee quote — and the amount returned below —
+            // exactly the ones a real withdrawal would use, rather than a
+            // sub-sat approximation of them.
+            let amount = max_affordable_send_amount(
+                balance,
+                fedimint_core::Amount::from_sats(dust_limit.to_sat()),
+                fedimint_core::Amount::from_sats(candidate.to_sat()),
+                |amount: fedimint_core::Amount| {
+                    fedimint_core::Amount::from_sats(amount.sats_round_down()) + miner_fee
+                },
+                |output_value: fedimint_core::Amount| {
+                    self.send_fee_quote(bitcoin::Amount::from_sat(output_value.sats_round_down()))
+                },
+            )
+            .await
+            .context("Balance is too low to withdraw anything above the dust limit after fees")?;
+
+            let amount = bitcoin::Amount::from_sat(amount.sats_round_down());
+
+            if amount == candidate {
+                let federation_fees = self
+                    .send_fee_quote(amount + peg_out_fees.amount())
+                    .await?
+                    .total()
+                    .get_bitcoin();
+
+                return Ok(SpendableAmount {
+                    amount,
+                    peg_out_fees,
+                    federation_fees,
+                });
+            }
+
+            // The miner fee was quoted for more than we can actually afford.
+            // Re-quote at the amount we just solved for; a smaller amount never
+            // selects more UTXOs, so the next round converges.
+            candidate = amount;
+        }
+
+        bail!(
+            "Could not settle on a withdrawal amount and matching fee within \
+             {MAX_SPENDABLE_AMOUNT_ROUNDS} rounds"
+        )
     }
 
     /// Returns a summary of the wallet's coins
