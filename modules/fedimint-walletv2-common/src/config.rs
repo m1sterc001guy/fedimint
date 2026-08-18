@@ -132,6 +132,66 @@ impl WalletConfigConsensus {
     }
 }
 
+/// Weight of the `CompactSize` encoding of `n`, in witness units.
+const fn varint_weight(n: u64) -> u64 {
+    if n < 253 {
+        4
+    } else if n <= u16::MAX as u64 {
+        12
+    } else {
+        20
+    }
+}
+
+impl WalletConfigConsensus {
+    /// Weight of a single input spending a federation multisig output.
+    pub fn multisig_input_weight(&self) -> u64 {
+        let witness_weight = descriptor(&self.bitcoin_pks, &sha256::Hash::all_zeros())
+            .max_weight_to_satisfy()
+            .expect("Cannot satisfy the change descriptor.")
+            .to_wu();
+
+        32 * 4 // txid
+            + 4 * 4 // vout
+            + 4 // Script length
+            + 4 * 4 // nSequence
+            + witness_weight
+    }
+
+    /// Weight of a single output. Every standard script pubkey we can pay to
+    /// fits in 34 bytes, so this is an upper bound for change and destinations
+    /// alike.
+    pub const fn output_weight() -> u64 {
+        8 * 4 // nValue
+            + 4 // scriptPubKey length
+            + 34 * 4 // scriptPubKey
+    }
+
+    /// Total vbytes of a batch transaction with `inputs` multisig inputs and
+    /// `outputs` outputs.
+    ///
+    /// This generalises [`Self::send_tx_vbytes`] and
+    /// [`Self::receive_tx_vbytes`]: `batch_vbytes(1, 2)` equals the former and
+    /// `batch_vbytes(2, 1)` the latter, which the unit tests below assert. That
+    /// equality is what guarantees a batch never collects less in fees than it
+    /// costs to broadcast, since a single-item batch collects exactly the fee
+    /// quoted for a standalone transaction of the same shape.
+    pub fn batch_vbytes(&self, inputs: u64, outputs: u64) -> u64 {
+        let tx_overhead_weight = 4 * 4 // nVersion
+            + 1 // SegWit marker
+            + 1 // SegWit flag
+            + varint_weight(inputs)
+            + varint_weight(outputs)
+            + 4 * 4; // nLockTime
+
+        weight_to_vbytes(
+            tx_overhead_weight
+                + inputs * self.multisig_input_weight()
+                + outputs * Self::output_weight(),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Encodable, Decodable)]
 pub struct FeeConsensus {
     pub base: Amount,
@@ -235,5 +295,76 @@ pub struct WalletClientConfig {
 impl std::fmt::Display for WalletClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "WalletClientConfig {self:?}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_consensus(num_peers: u16) -> WalletConfigConsensus {
+        let bitcoin_pks = (0..num_peers)
+            .map(|index| {
+                let mut bytes = [1u8; 32];
+                bytes[1..3].copy_from_slice(&index.to_be_bytes());
+
+                let secret = SecretKey::from_slice(&bytes).expect("Valid secret key");
+
+                (PeerId::from(index), secret.public_key(secp256k1::SECP256K1))
+            })
+            .collect();
+
+        WalletConfigConsensus::new(
+            bitcoin_pks,
+            FeeConsensus::new(0).expect("Relative fee is within range"),
+            Network::Regtest,
+        )
+    }
+
+    /// A batch of a single peg-out has exactly the shape of a standalone send,
+    /// and a batch consolidating a single deposit exactly that of a standalone
+    /// receive. This is what makes the deferred fee model safe: a one-item
+    /// batch collects precisely the fee quoted for it, never less.
+    #[test]
+    fn batch_vbytes_generalises_the_standalone_shapes() {
+        for num_peers in [1, 4, 7, 10, 20] {
+            let cfg = config_consensus(num_peers);
+
+            assert_eq!(
+                cfg.batch_vbytes(1, 2),
+                cfg.send_tx_vbytes,
+                "Single-send batch differs from a standalone send at {num_peers} peers"
+            );
+
+            assert_eq!(
+                cfg.batch_vbytes(2, 1),
+                cfg.receive_tx_vbytes,
+                "Single-receive batch differs from a standalone receive at {num_peers} peers"
+            );
+        }
+    }
+
+    /// Larger batches must never collect less than they cost, or a batch could
+    /// be broadcast underfunded.
+    #[test]
+    fn batch_vbytes_never_exceed_the_fees_collected() {
+        let cfg = config_consensus(4);
+
+        for receives in 0..8u64 {
+            for sends in 0..8u64 {
+                if receives + sends == 0 {
+                    continue;
+                }
+
+                let collected = receives * cfg.receive_tx_vbytes + sends * cfg.send_tx_vbytes;
+                let cost = cfg.batch_vbytes(1 + receives, 1 + sends);
+
+                assert!(
+                    cost <= collected,
+                    "Batch of {receives} receives and {sends} sends costs {cost} vB but only \
+                     collects {collected} vB worth of fees"
+                );
+            }
+        }
     }
 }

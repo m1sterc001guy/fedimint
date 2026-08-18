@@ -23,8 +23,8 @@ use bitcoin::transaction::Version;
 use bitcoin::{Amount, Network, Sequence, Transaction, TxIn, TxOut, Txid};
 use common::config::WalletConfigConsensus;
 use common::{
-    OutputInfo, WalletCommonInit, WalletConsensusItem, WalletInput, WalletModuleTypes,
-    WalletOutput, WalletOutputOutcome,
+    OutputInfo, StandardScript, WalletCommonInit, WalletConsensusItem, WalletInput,
+    WalletModuleTypes, WalletOutput, WalletOutputOutcome,
 };
 use db::{
     DbKeyPrefix, FederationWalletKey, FederationWalletPrefix, Output, OutputKey, OutputPrefix,
@@ -85,8 +85,11 @@ use strum::IntoEnumIterator;
 use tracing::{debug, info};
 
 use crate::db::{
-    BlockCountVoteKey, BlockCountVotePrefix, FeeRateVoteKey, FeeRateVotePrefix, TxInfoKey,
-    TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
+    BlockCountVoteKey, BlockCountVotePrefix, FeeRateVoteKey, FeeRateVotePrefix, PendingBatchKey,
+    PendingBatchPrefix, PendingReceiveKey, PendingReceivePrefix, PendingSendIndexKey,
+    PendingSendIndexPrefix, PendingSendKey, PendingSendPrefix, QueuedBalanceKey,
+    QueuedBalancePrefix, TxInfoKey, TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix,
+    UnsignedTxKey, UnsignedTxPrefix,
 };
 
 /// Number of confirmations required for a transaction to be considered as
@@ -118,6 +121,111 @@ pub struct FederationTx {
 pub struct SpentTxOut {
     pub value: Amount,
     pub tweak: sha256::Hash,
+}
+
+/// Maximum vbytes of a batch transaction.
+///
+/// TRUC (BIP 431) caps a version 3 parent at 10,000 vB. Batches are not version
+/// 3 yet, but adopting the limit now means switching them over is a pure
+/// transaction-shape change rather than one that also cuts throughput.
+const MAX_BATCH_VBYTES: u64 = 10_000;
+
+/// A peg-out accepted by consensus and waiting to be included in a batch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Encodable, Decodable)]
+pub struct PendingSend {
+    pub destination: StandardScript,
+    pub value: Amount,
+    pub fee: Amount,
+    /// Outpoint of the funding transaction output. Used to answer the
+    /// transaction id endpoint once the batch carrying this peg-out is built.
+    pub outpoint: OutPoint,
+    /// Set to the batch txid when this peg-out is included in one. The record
+    /// is only deleted once that batch confirms, so a batch that never
+    /// confirms can be rebuilt from the queue rather than reconstructed.
+    pub batch: Option<Txid>,
+}
+
+/// A deposit claimed by its owner and waiting to be consolidated into a batch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Encodable, Decodable)]
+pub struct PendingReceive {
+    pub output_index: u64,
+    pub outpoint: bitcoin::OutPoint,
+    pub value: Amount,
+    pub tweak: PublicKey,
+    pub fee: Amount,
+    pub batch: Option<Txid>,
+}
+
+/// The batch currently in flight. Carries what the federation wallet advances
+/// to once the batch is observed in a block.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Encodable, Decodable)]
+pub struct PendingBatch {
+    pub txid: Txid,
+    pub change_value: Amount,
+    pub change_tweak: sha256::Hash,
+}
+
+/// Value that consensus has committed to but the chain has not yet settled.
+///
+/// The federation wallet tracks only mined funds, so peg-outs are validated
+/// against the wallet adjusted by these totals. Without it, several peg-outs
+/// could each individually pass the balance check and collectively exceed the
+/// federation's funds, leaving users debited against a batch that cannot be
+/// constructed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Encodable, Decodable)]
+pub struct QueuedBalance {
+    /// Sum of queued deposit values, net of their fees.
+    pub inflow: Amount,
+    /// Sum of queued peg-out values, including their fees.
+    pub outflow: Amount,
+}
+
+impl Default for QueuedBalance {
+    fn default() -> Self {
+        Self {
+            inflow: Amount::ZERO,
+            outflow: Amount::ZERO,
+        }
+    }
+}
+
+/// Subtraction that floors at zero instead of overflowing.
+fn saturating_sub(minuend: Amount, subtrahend: Amount) -> Amount {
+    Amount::from_sat(minuend.to_sat().saturating_sub(subtrahend.to_sat()))
+}
+
+async fn queued_balance(dbtx: &mut DatabaseTransaction<'_>) -> QueuedBalance {
+    dbtx.get_value(&QueuedBalanceKey).await.unwrap_or_default()
+}
+
+/// Funds the federation may commit to: what has been mined, plus everything
+/// already queued against it.
+async fn available_balance(
+    dbtx: &mut DatabaseTransaction<'_>,
+    wallet: &FederationWallet,
+) -> Option<Amount> {
+    let queued = queued_balance(dbtx).await;
+
+    wallet
+        .value
+        .checked_add(queued.inflow)?
+        .checked_sub(queued.outflow)
+}
+
+async fn next_pending_send_index(dbtx: &mut DatabaseTransaction<'_>) -> u64 {
+    dbtx.find_by_prefix_sorted_descending(&PendingSendPrefix)
+        .await
+        .next()
+        .await
+        .map_or(0, |entry| entry.0.0 + 1)
+}
+
+async fn next_pending_receive_index(dbtx: &mut DatabaseTransaction<'_>) -> u64 {
+    dbtx.find_by_prefix_sorted_descending(&PendingReceivePrefix)
+        .await
+        .next()
+        .await
+        .map_or(0, |entry| entry.0.0 + 1)
 }
 
 async fn pending_txs_unordered(dbtx: &mut DatabaseTransaction<'_>) -> Vec<FederationTx> {
@@ -175,6 +283,56 @@ impl ModuleInit for WalletInit {
                         (),
                         wallet,
                         "Wallet Spent Outputs"
+                    );
+                }
+                DbKeyPrefix::PendingSend => {
+                    push_db_pair_items!(
+                        dbtx,
+                        PendingSendPrefix,
+                        PendingSendKey,
+                        PendingSend,
+                        wallet,
+                        "Wallet Pending Sends"
+                    );
+                }
+                DbKeyPrefix::PendingSendIndex => {
+                    push_db_pair_items!(
+                        dbtx,
+                        PendingSendIndexPrefix,
+                        PendingSendIndexKey,
+                        u64,
+                        wallet,
+                        "Wallet Pending Send Index"
+                    );
+                }
+                DbKeyPrefix::PendingReceive => {
+                    push_db_pair_items!(
+                        dbtx,
+                        PendingReceivePrefix,
+                        PendingReceiveKey,
+                        PendingReceive,
+                        wallet,
+                        "Wallet Pending Receives"
+                    );
+                }
+                DbKeyPrefix::PendingBatch => {
+                    push_db_pair_items!(
+                        dbtx,
+                        PendingBatchPrefix,
+                        PendingBatchKey,
+                        PendingBatch,
+                        wallet,
+                        "Wallet Pending Batch"
+                    );
+                }
+                DbKeyPrefix::QueuedBalance => {
+                    push_db_pair_items!(
+                        dbtx,
+                        QueuedBalancePrefix,
+                        QueuedBalanceKey,
+                        QueuedBalance,
+                        wallet,
+                        "Wallet Queued Balance"
                     );
                 }
                 DbKeyPrefix::BlockCountVote => {
@@ -530,98 +688,48 @@ impl ServerModule for Wallet {
             .checked_sub(input.fee)
             .ok_or(WalletInputError::ArithmeticOverflow)?;
 
-        if let Some(wallet) = dbtx.remove_entry(&FederationWalletKey).await {
-            // Assuming the first receive into the federation is made through a
-            // standard transaction, its output value is over the P2WSH dust
-            // limit. By induction so is this change value.
-            let change_value = wallet
-                .value
-                .checked_add(output_value)
-                .ok_or(WalletInputError::ArithmeticOverflow)?;
-
-            let tx = Transaction {
-                version: Version(2),
-                lock_time: LockTime::ZERO,
-                input: vec![
-                    TxIn {
-                        previous_output: wallet.outpoint,
-                        script_sig: Default::default(),
-                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                        witness: bitcoin::Witness::new(),
+        match dbtx.get_value(&FederationWalletKey).await {
+            None => {
+                // The federation holds no UTXO yet, so this deposit becomes it
+                // directly and no bitcoin transaction is needed. Assuming the
+                // first receive is made through a standard transaction its
+                // value is over the P2WSH dust limit, and by induction so is
+                // every change value derived from it.
+                dbtx.insert_new_entry(
+                    &FederationWalletKey,
+                    &FederationWallet {
+                        value: tracked_output.value,
+                        outpoint: tracked_outpoint,
+                        tweak: input.tweak.consensus_hash(),
                     },
-                    TxIn {
-                        previous_output: tracked_outpoint,
-                        script_sig: Default::default(),
-                        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                        witness: bitcoin::Witness::new(),
+                )
+                .await;
+            }
+            Some(_) => {
+                let mut queued = queued_balance(dbtx).await;
+
+                queued.inflow = queued
+                    .inflow
+                    .checked_add(output_value)
+                    .ok_or(WalletInputError::ArithmeticOverflow)?;
+
+                dbtx.insert_entry(&QueuedBalanceKey, &queued).await;
+
+                let index = next_pending_receive_index(dbtx).await;
+
+                dbtx.insert_new_entry(
+                    &PendingReceiveKey(index),
+                    &PendingReceive {
+                        output_index: input.output_index,
+                        outpoint: tracked_outpoint,
+                        value: tracked_output.value,
+                        tweak: input.tweak,
+                        fee: input.fee,
+                        batch: None,
                     },
-                ],
-                output: vec![TxOut {
-                    value: change_value,
-                    script_pubkey: self.descriptor(&wallet.consensus_hash()).script_pubkey(),
-                }],
-            };
-
-            dbtx.insert_new_entry(
-                &FederationWalletKey,
-                &FederationWallet {
-                    value: change_value,
-                    outpoint: bitcoin::OutPoint {
-                        txid: tx.compute_txid(),
-                        vout: 0,
-                    },
-                    tweak: wallet.consensus_hash(),
-                },
-            )
-            .await;
-
-            let tx_index = self.total_txs(dbtx).await;
-
-            let created = self.consensus_block_count(dbtx).await;
-
-            dbtx.insert_new_entry(
-                &TxInfoKey(tx_index),
-                &TxInfo {
-                    index: tx_index,
-                    txid: tx.compute_txid(),
-                    input: wallet.value,
-                    output: change_value,
-                    vbytes: self.cfg.consensus.receive_tx_vbytes,
-                    fee: input.fee,
-                    created,
-                },
-            )
-            .await;
-
-            dbtx.insert_new_entry(
-                &UnsignedTxKey(tx.compute_txid()),
-                &FederationTx {
-                    tx,
-                    spent_tx_outs: vec![
-                        SpentTxOut {
-                            value: wallet.value,
-                            tweak: wallet.tweak,
-                        },
-                        SpentTxOut {
-                            value: tracked_output.value,
-                            tweak: input.tweak.consensus_hash(),
-                        },
-                    ],
-                    vbytes: self.cfg.consensus.receive_tx_vbytes,
-                    fee: input.fee,
-                },
-            )
-            .await;
-        } else {
-            dbtx.insert_new_entry(
-                &FederationWalletKey,
-                &FederationWallet {
-                    value: tracked_output.value,
-                    outpoint: tracked_outpoint,
-                    tweak: input.tweak.consensus_hash(),
-                },
-            )
-            .await;
+                )
+                .await;
+            }
         }
 
         let amount = output_value
@@ -651,8 +759,14 @@ impl ServerModule for Wallet {
             return Err(WalletOutputError::UnderDustLimit);
         }
 
+        // Rejected here rather than at batch construction, where there would be
+        // no user left to return an error to.
+        if output.destination.script_pubkey().is_none() {
+            return Err(WalletOutputError::UnknownScriptVariant);
+        }
+
         let wallet = dbtx
-            .remove_entry(&FederationWalletKey)
+            .get_value(&FederationWalletKey)
             .await
             .ok_or(WalletOutputError::NoFederationUTXO)?;
 
@@ -674,8 +788,14 @@ impl ServerModule for Wallet {
             .checked_add(output.fee)
             .ok_or(WalletOutputError::ArithmeticOverflow)?;
 
-        let change_value = wallet
-            .value
+        // The federation wallet only tracks mined funds, so the balance this
+        // peg-out has to fit into is the wallet adjusted by everything already
+        // queued against it. Validating against the wallet alone would let
+        // several peg-outs each pass individually while collectively exceeding
+        // the federation's funds.
+        let change_value = available_balance(dbtx, &wallet)
+            .await
+            .ok_or(WalletOutputError::ArithmeticOverflow)?
             .checked_sub(output_value)
             .ok_or(WalletOutputError::ArithmeticOverflow)?;
 
@@ -683,79 +803,31 @@ impl ServerModule for Wallet {
             return Err(WalletOutputError::ChangeUnderDustLimit);
         }
 
-        let script_pubkey = output
-            .destination
-            .script_pubkey()
-            .ok_or(WalletOutputError::UnknownScriptVariant)?;
+        let mut queued = queued_balance(dbtx).await;
 
-        let tx = Transaction {
-            version: Version(2),
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: wallet.outpoint,
-                script_sig: Default::default(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                witness: bitcoin::Witness::new(),
-            }],
-            output: vec![
-                TxOut {
-                    value: change_value,
-                    script_pubkey: self.descriptor(&wallet.consensus_hash()).script_pubkey(),
-                },
-                TxOut {
-                    value: output.value,
-                    script_pubkey,
-                },
-            ],
-        };
+        queued.outflow = queued
+            .outflow
+            .checked_add(output_value)
+            .ok_or(WalletOutputError::ArithmeticOverflow)?;
+
+        dbtx.insert_entry(&QueuedBalanceKey, &queued).await;
+
+        let index = next_pending_send_index(dbtx).await;
 
         dbtx.insert_new_entry(
-            &FederationWalletKey,
-            &FederationWallet {
-                value: change_value,
-                outpoint: bitcoin::OutPoint {
-                    txid: tx.compute_txid(),
-                    vout: 0,
-                },
-                tweak: wallet.consensus_hash(),
-            },
-        )
-        .await;
-
-        let tx_index = self.total_txs(dbtx).await;
-
-        let created = self.consensus_block_count(dbtx).await;
-
-        dbtx.insert_new_entry(
-            &TxInfoKey(tx_index),
-            &TxInfo {
-                index: tx_index,
-                txid: tx.compute_txid(),
-                input: wallet.value,
-                output: change_value,
-                vbytes: self.cfg.consensus.send_tx_vbytes,
+            &PendingSendKey(index),
+            &PendingSend {
+                destination: output.destination.clone(),
+                value: output.value,
                 fee: output.fee,
-                created,
+                outpoint,
+                batch: None,
             },
         )
         .await;
 
-        dbtx.insert_new_entry(&TxInfoIndexKey(outpoint), &tx_index)
+        dbtx.insert_new_entry(&PendingSendIndexKey(outpoint), &index)
             .await;
-
-        dbtx.insert_new_entry(
-            &UnsignedTxKey(tx.compute_txid()),
-            &FederationTx {
-                tx,
-                spent_tx_outs: vec![SpentTxOut {
-                    value: wallet.value,
-                    tweak: wallet.tweak,
-                }],
-                vbytes: self.cfg.consensus.send_tx_vbytes,
-                fee: output.fee,
-            },
-        )
-        .await;
 
         let amount = output_value
             .to_sat()
@@ -843,10 +915,8 @@ impl ServerModule for Wallet {
             public_api_endpoint! {
                 TRANSACTION_ID_ENDPOINT,
                 ApiVersion::new(0, 0),
-                async |module: &Wallet, context, params: OutPoint| -> Option<Txid> {
-                    let db = context.db();
-                    let mut dbtx = db.begin_transaction_nc().await;
-                    Ok(module.tx_id(&mut dbtx, params).await)
+                async |module: &Wallet, _context, params: OutPoint| -> Option<Txid> {
+                    Ok(module.await_tx_id(params).await)
                 }
             },
             public_api_endpoint! {
@@ -939,6 +1009,311 @@ impl Wallet {
         });
     }
 
+    /// Constructs the next batch from the queue.
+    ///
+    /// Runs from `process_block_count`, so the only clock it depends on is the
+    /// consensus block count. Calls are idempotent: once a batch is in flight
+    /// every further call is a no-op until that batch is observed in a block,
+    /// which is what keeps exactly one batch outstanding at a time.
+    async fn construct_batch(&self, dbtx: &mut DatabaseTransaction<'_>) {
+        if dbtx.get_value(&PendingBatchKey).await.is_some() {
+            return;
+        }
+
+        let Some(wallet) = dbtx.get_value(&FederationWalletKey).await else {
+            return;
+        };
+
+        let receives = dbtx
+            .find_by_prefix(&PendingReceivePrefix)
+            .await
+            .map(|entry| (entry.0.0, entry.1))
+            .collect::<Vec<(u64, PendingReceive)>>()
+            .await;
+
+        let sends = dbtx
+            .find_by_prefix(&PendingSendPrefix)
+            .await
+            .map(|entry| (entry.0.0, entry.1))
+            .collect::<Vec<(u64, PendingSend)>>()
+            .await;
+
+        let mut change = wallet.value;
+        let mut fee = Amount::ZERO;
+        let mut batched_receives: Vec<(u64, PendingReceive)> = Vec::new();
+        let mut batched_sends: Vec<(u64, PendingSend)> = Vec::new();
+
+        // Deposits are consolidated before peg-outs are paid. They only add
+        // value, so taking them first means a peg-out is never included while
+        // the inflow funding it is left behind for a later batch.
+        for (index, receive) in receives {
+            let inputs = batched_receives.len() as u64 + 2;
+
+            if self.cfg.consensus.batch_vbytes(inputs, 1) > MAX_BATCH_VBYTES {
+                break;
+            }
+
+            let (Some(next_change), Some(next_fee)) = (
+                change
+                    .checked_add(receive.value)
+                    .and_then(|value| value.checked_sub(receive.fee)),
+                fee.checked_add(receive.fee),
+            ) else {
+                break;
+            };
+
+            change = next_change;
+            fee = next_fee;
+
+            batched_receives.push((index, receive));
+        }
+
+        // Peg-outs are taken in queue order, and we stop at the first one that
+        // does not fit rather than skipping over it, so that a large peg-out
+        // cannot be starved by smaller ones queued behind it.
+        for (index, send) in sends {
+            let inputs = batched_receives.len() as u64 + 1;
+            let outputs = batched_sends.len() as u64 + 2;
+
+            if self.cfg.consensus.batch_vbytes(inputs, outputs) > MAX_BATCH_VBYTES {
+                break;
+            }
+
+            let (Some(next_change), Some(next_fee)) = (
+                send.value
+                    .checked_add(send.fee)
+                    .and_then(|spend| change.checked_sub(spend)),
+                fee.checked_add(send.fee),
+            ) else {
+                break;
+            };
+
+            if next_change < self.cfg.consensus.dust_limit {
+                break;
+            }
+
+            change = next_change;
+            fee = next_fee;
+
+            batched_sends.push((index, send));
+        }
+
+        if batched_receives.is_empty() && batched_sends.is_empty() {
+            return;
+        }
+
+        let change_tweak = wallet.consensus_hash();
+
+        let mut tx_inputs = vec![TxIn {
+            previous_output: wallet.outpoint,
+            script_sig: Default::default(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: bitcoin::Witness::new(),
+        }];
+
+        let mut spent_tx_outs = vec![SpentTxOut {
+            value: wallet.value,
+            tweak: wallet.tweak,
+        }];
+
+        for (_, receive) in &batched_receives {
+            tx_inputs.push(TxIn {
+                previous_output: receive.outpoint,
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: bitcoin::Witness::new(),
+            });
+
+            spent_tx_outs.push(SpentTxOut {
+                value: receive.value,
+                tweak: receive.tweak.consensus_hash(),
+            });
+        }
+
+        // The change is always the first output, so the next federation wallet
+        // outpoint is this transaction's vout zero, exactly as before batching.
+        let mut tx_outputs = vec![TxOut {
+            value: change,
+            script_pubkey: self.descriptor(&change_tweak).script_pubkey(),
+        }];
+
+        for (_, send) in &batched_sends {
+            tx_outputs.push(TxOut {
+                value: send.value,
+                script_pubkey: send
+                    .destination
+                    .script_pubkey()
+                    .expect("Destination was validated when the peg-out was accepted"),
+            });
+        }
+
+        let tx = Transaction {
+            version: Version(2),
+            lock_time: LockTime::ZERO,
+            input: tx_inputs,
+            output: tx_outputs,
+        };
+
+        let txid = tx.compute_txid();
+
+        let vbytes = self.cfg.consensus.batch_vbytes(
+            batched_receives.len() as u64 + 1,
+            batched_sends.len() as u64 + 1,
+        );
+
+        let tx_index = self.total_txs(dbtx).await;
+
+        let created = self.consensus_block_count(dbtx).await;
+
+        dbtx.insert_new_entry(
+            &TxInfoKey(tx_index),
+            &TxInfo {
+                index: tx_index,
+                txid,
+                input: wallet.value,
+                output: change,
+                vbytes,
+                fee,
+                created,
+            },
+        )
+        .await;
+
+        // Queue entries are marked rather than deleted. They are only removed
+        // once the batch confirms, so a batch that never confirms leaves the
+        // queue intact to rebuild from.
+        for (index, send) in &batched_sends {
+            dbtx.insert_new_entry(&TxInfoIndexKey(send.outpoint), &tx_index)
+                .await;
+
+            dbtx.insert_entry(
+                &PendingSendKey(*index),
+                &PendingSend {
+                    batch: Some(txid),
+                    ..send.clone()
+                },
+            )
+            .await;
+        }
+
+        for (index, receive) in &batched_receives {
+            dbtx.insert_entry(
+                &PendingReceiveKey(*index),
+                &PendingReceive {
+                    batch: Some(txid),
+                    ..receive.clone()
+                },
+            )
+            .await;
+        }
+
+        dbtx.insert_new_entry(
+            &UnsignedTxKey(txid),
+            &FederationTx {
+                tx,
+                spent_tx_outs,
+                vbytes,
+                fee,
+            },
+        )
+        .await;
+
+        dbtx.insert_new_entry(
+            &PendingBatchKey,
+            &PendingBatch {
+                txid,
+                change_value: change,
+                change_tweak,
+            },
+        )
+        .await;
+
+        debug!(
+            target: LOG_MODULE_WALLETV2,
+            %txid,
+            receives = batched_receives.len(),
+            sends = batched_sends.len(),
+            vbytes,
+            fee_sat = fee.to_sat(),
+            change_sat = change.to_sat(),
+            "Constructed walletv2 batch"
+        );
+    }
+
+    /// Advances the federation wallet onto a batch observed in a block and
+    /// clears the queue entries it settled.
+    ///
+    /// This is the only place the wallet outpoint moves. It is driven by the
+    /// finality delayed block scan, so every guardian resolves it from the same
+    /// final block data.
+    async fn confirm_batch(&self, dbtx: &mut DatabaseTransaction<'_>, txid: Txid) {
+        let Some(batch) = dbtx.get_value(&PendingBatchKey).await else {
+            return;
+        };
+
+        if batch.txid != txid {
+            return;
+        }
+
+        dbtx.remove_entry(&PendingBatchKey).await;
+
+        dbtx.insert_entry(
+            &FederationWalletKey,
+            &FederationWallet {
+                value: batch.change_value,
+                outpoint: bitcoin::OutPoint { txid, vout: 0 },
+                tweak: batch.change_tweak,
+            },
+        )
+        .await;
+
+        let mut queued = queued_balance(dbtx).await;
+
+        let settled_receives = dbtx
+            .find_by_prefix(&PendingReceivePrefix)
+            .await
+            .filter(|entry| std::future::ready(entry.1.batch == Some(txid)))
+            .map(|entry| (entry.0.0, entry.1))
+            .collect::<Vec<(u64, PendingReceive)>>()
+            .await;
+
+        for (index, receive) in settled_receives {
+            dbtx.remove_entry(&PendingReceiveKey(index)).await;
+
+            queued.inflow =
+                saturating_sub(queued.inflow, saturating_sub(receive.value, receive.fee));
+        }
+
+        let settled_sends = dbtx
+            .find_by_prefix(&PendingSendPrefix)
+            .await
+            .filter(|entry| std::future::ready(entry.1.batch == Some(txid)))
+            .map(|entry| (entry.0.0, entry.1))
+            .collect::<Vec<(u64, PendingSend)>>()
+            .await;
+
+        for (index, send) in settled_sends {
+            dbtx.remove_entry(&PendingSendKey(index)).await;
+            dbtx.remove_entry(&PendingSendIndexKey(send.outpoint)).await;
+
+            queued.outflow = saturating_sub(
+                queued.outflow,
+                send.value
+                    .checked_add(send.fee)
+                    .unwrap_or(Amount::MAX_MONEY),
+            );
+        }
+
+        dbtx.insert_entry(&QueuedBalanceKey, &queued).await;
+
+        debug!(
+            target: LOG_MODULE_WALLETV2,
+            %txid,
+            change_sat = batch.change_value.to_sat(),
+            "Confirmed walletv2 batch"
+        );
+    }
+
     async fn process_block_count(
         &self,
         dbtx: &mut DatabaseTransaction<'_>,
@@ -1017,8 +1392,11 @@ impl Wallet {
             let mut potential_receives_num: usize = 0;
 
             for tx in block.txdata {
-                dbtx.remove_entry(&UnconfirmedTxKey(tx.compute_txid()))
-                    .await;
+                let txid = tx.compute_txid();
+
+                if dbtx.remove_entry(&UnconfirmedTxKey(txid)).await.is_some() {
+                    self.confirm_batch(dbtx, txid).await;
+                }
 
                 // We maintain an append-only log of transaction outputs that pass
                 // the probabilistic receive filter created since the federation was
@@ -1028,7 +1406,7 @@ impl Wallet {
                 for (vout, tx_out) in tx.output.iter().enumerate() {
                     if is_potential_receive(&tx_out.script_pubkey, &pks_hash) {
                         let outpoint = bitcoin::OutPoint {
-                            txid: tx.compute_txid(),
+                            txid,
                             vout: u32::try_from(vout)
                                 .expect("Bitcoin transaction has more than u32::MAX outputs"),
                         };
@@ -1065,6 +1443,10 @@ impl Wallet {
                 "Scanned block"
             );
         }
+
+        // Now that the scan has settled which of our transactions confirmed,
+        // build the next batch if the queue has anything in it.
+        self.construct_batch(dbtx).await;
 
         Ok(())
     }
@@ -1192,35 +1574,18 @@ impl Wallet {
         dbtx: &mut DatabaseTransaction<'_>,
         tx_vbytes: u64,
     ) -> Option<Amount> {
-        // The minimum feerate is a protection against a catastrophic error in the
-        // feerate estimation and limits the length of the pending transaction stack.
-
-        let pending_txs = pending_txs_unordered(dbtx).await;
-
-        assert!(pending_txs.len() <= 32);
-
+        // Batching leaves at most one federation transaction outstanding, so
+        // there is no pending stack to lift and the fee is simply what this
+        // request's own shape costs. The base feerate remains as a floor
+        // against a catastrophic error in the feerate estimation.
         let feerate = self
             .consensus_feerate(dbtx)
             .await?
-            .max(self.cfg.consensus.feerate_base << pending_txs.len());
+            .max(self.cfg.consensus.feerate_base);
 
-        let tx_fee = tx_vbytes.saturating_mul(feerate).saturating_div(1000);
-
-        let stack_vbytes = pending_txs
-            .iter()
-            .map(|t| t.vbytes)
-            .try_fold(tx_vbytes, u64::checked_add)
-            .expect("Stack vbytes overflow with at most 32 pending txs");
-
-        let stack_fee = stack_vbytes.saturating_mul(feerate).saturating_div(1000);
-
-        // Deduct the fees already paid by currently pending transactions
-        let stack_fee = pending_txs
-            .iter()
-            .map(|t| t.fee.to_sat())
-            .fold(stack_fee, u64::saturating_sub);
-
-        Some(Amount::from_sat(tx_fee.max(stack_fee)))
+        Some(Amount::from_sat(
+            tx_vbytes.saturating_mul(feerate).saturating_div(1000),
+        ))
     }
 
     pub async fn send_fee(&self, dbtx: &mut DatabaseTransaction<'_>) -> Option<Amount> {
@@ -1331,6 +1696,31 @@ impl Wallet {
             miniscript::Descriptor::Wsh(self.descriptor(&utxo.tweak))
                 .satisfy(&mut federation_tx.tx.input[index], satisfier)
                 .expect("Failed to satisfy descriptor");
+        }
+    }
+
+    /// Resolves the bitcoin transaction id a peg-out ended up in, waiting for
+    /// the batch carrying it to be built.
+    ///
+    /// Peg-outs are queued, so no transaction id exists at the moment consensus
+    /// accepts one. Returning `None` in that window would make clients report a
+    /// successful peg-out as a failure, so we wait instead. Only outpoints that
+    /// correspond to a queued peg-out are waited on; anything else returns
+    /// immediately, so a caller cannot hold a request open on a made-up
+    /// outpoint.
+    async fn await_tx_id(&self, outpoint: OutPoint) -> Option<Txid> {
+        loop {
+            let mut dbtx = self.db.begin_transaction_nc().await;
+
+            if let Some(txid) = self.tx_id(&mut dbtx, outpoint).await {
+                return Some(txid);
+            }
+
+            dbtx.get_value(&PendingSendIndexKey(outpoint)).await?;
+
+            drop(dbtx);
+
+            sleep(common::sleep_duration()).await;
         }
     }
 

@@ -934,19 +934,11 @@ impl WalletClientModule {
             "Discovered unspent walletv2 receive output"
         );
 
-        // In order to not overpay on fees we choose to wait,
-        // the congestion will clear up within a few blocks.
-        let pending_tx_chain_len = self.module_api.pending_tx_chain().await?.len();
-        if 3 <= pending_tx_chain_len {
-            debug!(
-                target: LOG_CLIENT_MODULE_WALLETV2,
-                output_index = output.index,
-                pending_tx_chain_len,
-                "Delaying walletv2 receive claim because pending transaction chain is full"
-            );
-            return Ok(false);
-        }
-
+        // Claims used to be delayed while the pending transaction chain was
+        // long, because each additional transaction paid an escalating fee to
+        // lift the whole stack. Batching leaves at most one federation
+        // transaction outstanding and charges no escalation, so there is
+        // nothing to wait for and delaying would only hold deposits back.
         let receive_fee = self
             .module_api
             .receive_fee()

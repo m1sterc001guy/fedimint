@@ -6,7 +6,9 @@ use secp256k1::ecdsa::Signature;
 use serde::Serialize;
 use strum_macros::EnumIter;
 
-use crate::{FederationTx, FederationWallet};
+use crate::{
+    FederationTx, FederationWallet, PendingBatch, PendingReceive, PendingSend, QueuedBalance,
+};
 
 #[repr(u8)]
 #[derive(Clone, EnumIter, Debug)]
@@ -21,6 +23,11 @@ pub enum DbKeyPrefix {
     Signatures = 0x37,
     UnconfirmedTx = 0x38,
     FederationWallet = 0x39,
+    PendingSend = 0x3a,
+    PendingSendIndex = 0x3b,
+    PendingReceive = 0x3c,
+    PendingBatch = 0x3d,
+    QueuedBalance = 0x3e,
 }
 
 impl std::fmt::Display for DbKeyPrefix {
@@ -151,6 +158,95 @@ impl_db_record!(
 );
 
 impl_db_lookup!(key = UnconfirmedTxKey, query_prefix = UnconfirmedTxPrefix);
+
+/// A peg-out that has been accepted by consensus and is waiting to be included
+/// in a batch. Records are *marked* with their batch txid at construction and
+/// only deleted once that batch confirms, so a batch that never confirms can be
+/// rebuilt without reconstructing state that was already thrown away.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct PendingSendKey(pub u64);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct PendingSendPrefix;
+
+impl_db_record!(
+    key = PendingSendKey,
+    value = PendingSend,
+    db_prefix = DbKeyPrefix::PendingSend,
+);
+
+impl_db_lookup!(key = PendingSendKey, query_prefix = PendingSendPrefix);
+
+/// Reverse index from a funding outpoint to its [`PendingSendKey`]. Lets the
+/// transaction id endpoint tell "this peg-out is queued, wait for it" apart
+/// from "this outpoint means nothing to us" without scanning the queue.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct PendingSendIndexKey(pub fedimint_core::OutPoint);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct PendingSendIndexPrefix;
+
+impl_db_record!(
+    key = PendingSendIndexKey,
+    value = u64,
+    db_prefix = DbKeyPrefix::PendingSendIndex,
+);
+
+impl_db_lookup!(
+    key = PendingSendIndexKey,
+    query_prefix = PendingSendIndexPrefix
+);
+
+/// A deposit that has been claimed by its owner and is waiting to be
+/// consolidated into a batch. Marked and deleted on the same schedule as
+/// [`PendingSendKey`].
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct PendingReceiveKey(pub u64);
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct PendingReceivePrefix;
+
+impl_db_record!(
+    key = PendingReceiveKey,
+    value = PendingReceive,
+    db_prefix = DbKeyPrefix::PendingReceive,
+);
+
+impl_db_lookup!(key = PendingReceiveKey, query_prefix = PendingReceivePrefix);
+
+/// The batch currently in flight, if any. Its presence is what prevents a
+/// second batch being constructed, and it carries the change value and tweak
+/// that the federation wallet advances to once the batch confirms.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct PendingBatchKey;
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct PendingBatchPrefix;
+
+impl_db_record!(
+    key = PendingBatchKey,
+    value = PendingBatch,
+    db_prefix = DbKeyPrefix::PendingBatch,
+);
+
+impl_db_lookup!(key = PendingBatchKey, query_prefix = PendingBatchPrefix);
+
+/// Running totals of value queued but not yet mined. The federation wallet
+/// tracks only confirmed funds, so this is what enqueue-time validation checks
+/// against to stop peg-outs over-committing the federation's balance.
+#[derive(Clone, Debug, Encodable, Decodable, Serialize)]
+pub struct QueuedBalanceKey;
+
+#[derive(Clone, Debug, Encodable, Decodable)]
+pub struct QueuedBalancePrefix;
+
+impl_db_record!(
+    key = QueuedBalanceKey,
+    value = QueuedBalance,
+    db_prefix = DbKeyPrefix::QueuedBalance,
+);
+
+impl_db_lookup!(key = QueuedBalanceKey, query_prefix = QueuedBalancePrefix);
 
 #[derive(Clone, Debug, Encodable, Decodable, Serialize)]
 pub struct BlockCountVoteKey(pub PeerId);

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -154,8 +155,16 @@ async fn await_federation_total_value(
     }
 }
 
+/// Peg-outs submitted before a block is found are settled together in a single
+/// bitcoin transaction, and the fee quote does not move while they queue.
+///
+/// This replaces an earlier test that drove the fee past one bitcoin by
+/// stacking peg-outs: each one used to create its own chained transaction and
+/// pay a fee sized to lift the whole pending stack, doubling the minimum
+/// feerate per pending transaction. Batching leaves at most one federation
+/// transaction outstanding, so that escalation no longer exists to test.
 #[tokio::test(flavor = "multi_thread")]
-async fn fee_exceeds_one_bitcoin_with_many_pending_txs() -> anyhow::Result<()> {
+async fn peg_outs_are_batched_into_a_single_transaction() -> anyhow::Result<()> {
     let fixtures = fixtures();
 
     let fed = fixtures.new_fed_not_degraded().await;
@@ -183,7 +192,9 @@ async fn fee_exceeds_one_bitcoin_with_many_pending_txs() -> anyhow::Result<()> {
 
     await_federation_total_value(&client, Amount::from_sat(99_000_000)).await?;
 
-    let address = bitcoin.get_new_address().await.as_unchecked().clone();
+    let wallet = client.get_first_module::<WalletClientModule>()?;
+
+    let initial_fee = wallet.send_fee().await?;
 
     let mut events = pin!(wallet_event_stream(&client));
 
@@ -196,46 +207,103 @@ async fn fee_exceeds_one_bitcoin_with_many_pending_txs() -> anyhow::Result<()> {
     };
     assert_eq!(status.operation_id, receive.operation_id);
 
-    for _ in 0..19 {
-        let send_fee = client
-            .get_first_module::<WalletClientModule>()?
-            .send_fee()
-            .await?;
+    // No block is mined until every peg-out has been submitted, so they all
+    // queue for the same batch.
+    let mut send_ops = Vec::new();
 
-        if send_fee >= Amount::from_int_btc(1) {
-            return Ok(());
-        }
+    for _ in 0..3 {
+        let address = bitcoin.get_new_address().await.as_unchecked().clone();
 
-        let send_op = client
-            .get_first_module::<WalletClientModule>()?
-            .send(
-                address.clone(),
-                Amount::from_sat(10_000),
-                None,
-                serde_json::Value::Null,
-            )
-            .await?;
+        send_ops.push(
+            wallet
+                .send(
+                    address,
+                    Amount::from_sat(10_000),
+                    None,
+                    serde_json::Value::Null,
+                )
+                .await?,
+        );
 
-        let state = client
-            .get_first_module::<WalletClientModule>()?
-            .await_final_send_operation_state(send_op)
-            .await?;
-
-        assert!(matches!(state, FinalSendOperationState::Success(_)));
-
-        let Some(WalletEvent::Send(e)) = events.next().await else {
-            panic!("Expected Send event");
-        };
-        assert_eq!(e.operation_id, send_op);
-
-        let Some(WalletEvent::SendStatus(e)) = events.next().await else {
-            panic!("Expected SendStatus event");
-        };
-        assert_eq!(e.operation_id, send_op);
-        assert!(matches!(e.status, SendPaymentStatus::Success(_)));
+        assert_eq!(
+            wallet.send_fee().await?,
+            initial_fee,
+            "Fee quote escalated while peg-outs were queued"
+        );
     }
 
-    panic!("Transaction fee did not exceed one bitcoin")
+    sleep_in_test(
+        "Giving consensus time to accept the queued peg-outs",
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // Nothing has been settled yet: the peg-outs are queued, and the
+    // federation's wallet still tracks only what has been mined.
+    assert!(
+        wallet.pending_tx_chain().await?.is_empty(),
+        "A batch was constructed before a block was found"
+    );
+
+    // The batch is only constructed when the consensus block count advances.
+    bitcoin.mine_blocks(1).await;
+
+    let submitted = send_ops.clone();
+
+    let mut txids = BTreeSet::new();
+
+    for send_op in send_ops {
+        let FinalSendOperationState::Success(txid) =
+            wallet.await_final_send_operation_state(send_op).await?
+        else {
+            panic!("Peg-out was not accepted by the federation");
+        };
+
+        txids.insert(txid);
+    }
+
+    assert_eq!(
+        txids.len(),
+        1,
+        "Peg-outs were settled in {} transactions instead of one batch",
+        txids.len()
+    );
+
+    // The pending chain holds the single batch, not one transaction per
+    // peg-out.
+    assert_eq!(
+        wallet.pending_tx_chain().await?.len(),
+        1,
+        "Expected exactly one pending batch"
+    );
+
+    let mut sends = 0;
+    let mut successes = 0;
+
+    for _ in 0..6 {
+        match events.next().await {
+            Some(WalletEvent::Send(event)) => {
+                assert!(
+                    submitted.contains(&event.operation_id),
+                    "Send event for an operation we never submitted"
+                );
+                sends += 1;
+            }
+            Some(WalletEvent::SendStatus(event)) => {
+                assert!(matches!(event.status, SendPaymentStatus::Success(_)));
+                successes += 1;
+            }
+            other => panic!("Unexpected wallet event {other:?}"),
+        }
+    }
+
+    assert_eq!(sends, 3, "Expected one Send event per peg-out");
+    assert_eq!(
+        successes, 3,
+        "Expected one successful SendStatus per peg-out"
+    );
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -309,9 +377,11 @@ mod db {
     use fedimint_walletv2_common::{FederationWallet, TxInfo, WalletCommonInit};
     use fedimint_walletv2_server::db::{
         BlockCountVoteKey, BlockCountVotePrefix, DbKeyPrefix, FederationWalletKey, FeeRateVoteKey,
-        FeeRateVotePrefix, Output, OutputKey, OutputPrefix, SignaturesKey, SignaturesPrefix,
-        SpentOutputKey, SpentOutputPrefix, TxInfoIndexKey, TxInfoIndexPrefix, TxInfoKey,
-        TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix, UnsignedTxKey, UnsignedTxPrefix,
+        FeeRateVotePrefix, Output, OutputKey, OutputPrefix, PendingBatchPrefix,
+        PendingReceivePrefix, PendingSendIndexPrefix, PendingSendPrefix, QueuedBalancePrefix,
+        SignaturesKey, SignaturesPrefix, SpentOutputKey, SpentOutputPrefix, TxInfoIndexKey,
+        TxInfoIndexPrefix, TxInfoKey, TxInfoPrefix, UnconfirmedTxKey, UnconfirmedTxPrefix,
+        UnsignedTxKey, UnsignedTxPrefix,
     };
     use fedimint_walletv2_server::{FederationTx, SpentTxOut};
     use futures::StreamExt;
@@ -528,6 +598,70 @@ mod db {
                             spent == vec![(SpentOutputKey(0), ())],
                             "the seeded spent output marker must round-trip unchanged, got \
                              {spent:?}"
+                        );
+                    }
+                    // The batching tables did not exist at v0, so a migrated
+                    // database must simply come up with them empty. They are
+                    // populated only by peg-ins and peg-outs processed after
+                    // the upgrade.
+                    DbKeyPrefix::PendingSend => {
+                        let queued = dbtx
+                            .find_by_prefix(&PendingSendPrefix)
+                            .await
+                            .collect::<Vec<_>>()
+                            .await;
+
+                        ensure!(
+                            queued.is_empty(),
+                            "a migrated database must have no queued sends, got {queued:?}"
+                        );
+                    }
+                    DbKeyPrefix::PendingSendIndex => {
+                        let index = dbtx
+                            .find_by_prefix(&PendingSendIndexPrefix)
+                            .await
+                            .collect::<Vec<_>>()
+                            .await;
+
+                        ensure!(
+                            index.is_empty(),
+                            "a migrated database must have no queued send index, got {index:?}"
+                        );
+                    }
+                    DbKeyPrefix::PendingReceive => {
+                        let queued = dbtx
+                            .find_by_prefix(&PendingReceivePrefix)
+                            .await
+                            .collect::<Vec<_>>()
+                            .await;
+
+                        ensure!(
+                            queued.is_empty(),
+                            "a migrated database must have no queued receives, got {queued:?}"
+                        );
+                    }
+                    DbKeyPrefix::PendingBatch => {
+                        let batch = dbtx
+                            .find_by_prefix(&PendingBatchPrefix)
+                            .await
+                            .collect::<Vec<_>>()
+                            .await;
+
+                        ensure!(
+                            batch.is_empty(),
+                            "a migrated database must have no batch in flight, got {batch:?}"
+                        );
+                    }
+                    DbKeyPrefix::QueuedBalance => {
+                        let balance = dbtx
+                            .find_by_prefix(&QueuedBalancePrefix)
+                            .await
+                            .collect::<Vec<_>>()
+                            .await;
+
+                        ensure!(
+                            balance.is_empty(),
+                            "a migrated database must have no queued balance, got {balance:?}"
                         );
                     }
                     DbKeyPrefix::BlockCountVote => {
