@@ -117,6 +117,12 @@ pub struct FederationTx {
     pub fee: Amount,
 }
 
+/// A transaction input that the federation has to sign.
+///
+/// These correspond to `tx.input` positionally, and the inputs requiring a
+/// signature are always a *prefix* of the transaction's inputs. A batch child
+/// spends its parent's ephemeral anchor, which is anyone-can-spend and takes an
+/// empty witness, so it has one more input than it has entries here.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Encodable, Decodable)]
 pub struct SpentTxOut {
     pub value: Amount,
@@ -130,6 +136,23 @@ pub struct SpentTxOut {
 /// transaction-shape change rather than one that also cuts throughput.
 const MAX_BATCH_VBYTES: u64 = 10_000;
 
+/// Output index of the federation's change in a batch parent.
+const PARENT_CHANGE_VOUT: u32 = 0;
+
+/// Output index of the ephemeral anchor in a batch parent.
+///
+/// Fixed rather than trailing the destinations so the settlement path can
+/// construct the outpoint without recounting what was in the batch.
+const PARENT_ANCHOR_VOUT: u32 = 1;
+
+/// Blocks to let requests accumulate before a batch is built.
+///
+/// Only one batch is outstanding at a time and the next cannot be built until
+/// the previous has been observed confirmed, which costs roughly seven blocks.
+/// The penalty for just missing a batch is therefore far larger than the cost
+/// of waiting a block for stragglers to join one.
+const BATCH_ACCUMULATION_BLOCKS: u64 = 1;
+
 /// A peg-out accepted by consensus and waiting to be included in a batch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Encodable, Decodable)]
 pub struct PendingSend {
@@ -139,8 +162,11 @@ pub struct PendingSend {
     /// Outpoint of the funding transaction output. Used to answer the
     /// transaction id endpoint once the batch carrying this peg-out is built.
     pub outpoint: OutPoint,
-    /// Set to the batch txid when this peg-out is included in one. The record
-    /// is only deleted once that batch confirms, so a batch that never
+    /// Consensus block count when this peg-out was accepted, used to let a
+    /// batch accumulate for a block before it is built.
+    pub created: u64,
+    /// Set to the batch parent's txid when this peg-out is included in one. The
+    /// record is only deleted once that batch settles, so a batch that never
     /// confirms can be rebuilt from the queue rather than reconstructed.
     pub batch: Option<Txid>,
 }
@@ -153,16 +179,28 @@ pub struct PendingReceive {
     pub value: Amount,
     pub tweak: PublicKey,
     pub fee: Amount,
+    /// Consensus block count when this deposit was claimed.
+    pub created: u64,
     pub batch: Option<Txid>,
 }
 
-/// The batch currently in flight. Carries what the federation wallet advances
-/// to once the batch is observed in a block.
+/// The batch currently in flight, as a parent and a child.
+///
+/// Which wallet the federation advances to is decided by whatever spends the
+/// parent's anchor. Ephemeral dust policy forces every child of the parent to
+/// spend it, so that single outpoint is a complete discriminator.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Encodable, Decodable)]
 pub struct PendingBatch {
-    pub txid: Txid,
-    pub change_value: Amount,
-    pub change_tweak: sha256::Hash,
+    pub parent_txid: Txid,
+    pub child_txid: Txid,
+    /// The parent's ephemeral anchor.
+    pub anchor: bitcoin::OutPoint,
+    /// Wallet to advance to when our own child confirms.
+    pub child_wallet: FederationWallet,
+    /// Wallet to advance to when anything else spends the anchor, which makes
+    /// our child permanently invalid. The parent's change becomes the wallet
+    /// and the child's fee is never paid, so the federation keeps it.
+    pub parent_wallet: FederationWallet,
 }
 
 /// Value that consensus has committed to but the chain has not yet settled.
@@ -192,6 +230,40 @@ impl Default for QueuedBalance {
 /// Subtraction that floors at zero instead of overflowing.
 fn saturating_sub(minuend: Amount, subtrahend: Amount) -> Amount {
     Amount::from_sat(minuend.to_sat().saturating_sub(subtrahend.to_sat()))
+}
+
+/// Broadcasts the batch currently in flight.
+///
+/// The parent pays no fee, so it can only ever reach the network as a package
+/// with its child, and must never be submitted on its own. Once the parent has
+/// confirmed the child is an ordinary transaction spending confirmed outputs
+/// and goes out by itself.
+async fn broadcast_pending_batch(
+    btc_rpc: &ServerBitcoinRpcMonitor,
+    dbtx: &mut DatabaseTransaction<'_>,
+) {
+    let Some(batch) = dbtx.get_value(&PendingBatchKey).await else {
+        return;
+    };
+
+    let parent = dbtx.get_value(&UnconfirmedTxKey(batch.parent_txid)).await;
+    let child = dbtx.get_value(&UnconfirmedTxKey(batch.child_txid)).await;
+
+    let result = match (parent, child) {
+        (Some(parent), Some(child)) => btc_rpc.submit_package(vec![parent.tx, child.tx]).await,
+        (None, Some(child)) => btc_rpc.submit_transaction(child.tx).await,
+        // Either nothing is signed yet, or the child is gone and the parent
+        // alone can never be relayed.
+        _ => return,
+    };
+
+    if let Err(err) = result {
+        debug!(
+            target: LOG_MODULE_WALLETV2,
+            err = %err.fmt_compact_anyhow(),
+            "Error broadcasting walletv2 batch"
+        );
+    }
 }
 
 async fn queued_balance(dbtx: &mut DatabaseTransaction<'_>) -> QueuedBalance {
@@ -226,24 +298,6 @@ async fn next_pending_receive_index(dbtx: &mut DatabaseTransaction<'_>) -> u64 {
         .next()
         .await
         .map_or(0, |entry| entry.0.0 + 1)
-}
-
-async fn pending_txs_unordered(dbtx: &mut DatabaseTransaction<'_>) -> Vec<FederationTx> {
-    let unsigned: Vec<FederationTx> = dbtx
-        .find_by_prefix(&UnsignedTxPrefix)
-        .await
-        .map(|entry| entry.1)
-        .collect()
-        .await;
-
-    let unconfirmed: Vec<FederationTx> = dbtx
-        .find_by_prefix(&UnconfirmedTxPrefix)
-        .await
-        .map(|entry| entry.1)
-        .collect()
-        .await;
-
-    unsigned.into_iter().chain(unconfirmed).collect()
 }
 
 #[derive(Debug, Clone)]
@@ -706,6 +760,8 @@ impl ServerModule for Wallet {
                 .await;
             }
             Some(_) => {
+                let created = self.consensus_block_count(dbtx).await;
+
                 let mut queued = queued_balance(dbtx).await;
 
                 queued.inflow = queued
@@ -725,6 +781,7 @@ impl ServerModule for Wallet {
                         value: tracked_output.value,
                         tweak: input.tweak,
                         fee: input.fee,
+                        created,
                         batch: None,
                     },
                 )
@@ -812,6 +869,8 @@ impl ServerModule for Wallet {
 
         dbtx.insert_entry(&QueuedBalanceKey, &queued).await;
 
+        let created = self.consensus_block_count(dbtx).await;
+
         let index = next_pending_send_index(dbtx).await;
 
         dbtx.insert_new_entry(
@@ -821,6 +880,7 @@ impl ServerModule for Wallet {
                 value: output.value,
                 fee: output.fee,
                 outpoint,
+                created,
                 batch: None,
             },
         )
@@ -985,36 +1045,24 @@ impl Wallet {
     ) {
         task_group.spawn_cancellable("broadcast_unconfirmed_transactions", async move {
             loop {
-                let unconfirmed_txs = db
-                    .begin_transaction_nc()
-                    .await
-                    .find_by_prefix(&UnconfirmedTxPrefix)
-                    .await
-                    .map(|entry| entry.1)
-                    .collect::<Vec<FederationTx>>()
-                    .await;
+                let mut dbtx = db.begin_transaction_nc().await;
 
-                for unconfirmed_tx in unconfirmed_txs {
-                    if let Err(err) = btc_rpc.submit_transaction(unconfirmed_tx.tx).await {
-                        debug!(
-                            target: LOG_MODULE_WALLETV2,
-                            err = %err.fmt_compact_anyhow(),
-                            "Error broadcasting unconfirmed transaction"
-                        );
-                    }
-                }
+                broadcast_pending_batch(&btc_rpc, &mut dbtx).await;
+
+                drop(dbtx);
 
                 sleep(common::sleep_duration()).await;
             }
         });
     }
 
-    /// Constructs the next batch from the queue.
+    /// Constructs the next batch from the queue, as a TRUC parent and child.
     ///
     /// Runs from `process_block_count`, so the only clock it depends on is the
     /// consensus block count. Calls are idempotent: once a batch is in flight
-    /// every further call is a no-op until that batch is observed in a block,
-    /// which is what keeps exactly one batch outstanding at a time.
+    /// every further call is a no-op until that batch settles, which is what
+    /// keeps exactly one batch outstanding — and what TRUC requires, since the
+    /// parent and its child already fill a two transaction cluster.
     async fn construct_batch(&self, dbtx: &mut DatabaseTransaction<'_>) {
         if dbtx.get_value(&PendingBatchKey).await.is_some() {
             return;
@@ -1038,7 +1086,28 @@ impl Wallet {
             .collect::<Vec<(u64, PendingSend)>>()
             .await;
 
-        let mut change = wallet.value;
+        // Let requests accumulate for a block before building. Missing a batch
+        // costs roughly seven blocks of waiting, so it is worth a block of
+        // latency to let stragglers join this one.
+        let Some(oldest) = receives
+            .iter()
+            .map(|(_, receive)| receive.created)
+            .chain(sends.iter().map(|(_, send)| send.created))
+            .min()
+        else {
+            return;
+        };
+
+        if self.consensus_block_count(dbtx).await < oldest.saturating_add(BATCH_ACCUMULATION_BLOCKS)
+        {
+            return;
+        }
+
+        // The parent pays no fee at all, which is what lets its anchor be a
+        // zero value output under ephemeral dust policy. Every fee collected
+        // is carried by the child instead, so the parent's change is tracked
+        // gross and the fee separately.
+        let mut parent_change = wallet.value;
         let mut fee = Amount::ZERO;
         let mut batched_receives: Vec<(u64, PendingReceive)> = Vec::new();
         let mut batched_sends: Vec<(u64, PendingSend)> = Vec::new();
@@ -1049,20 +1118,22 @@ impl Wallet {
         for (index, receive) in receives {
             let inputs = batched_receives.len() as u64 + 2;
 
-            if self.cfg.consensus.batch_vbytes(inputs, 1) > MAX_BATCH_VBYTES {
+            if self.cfg.consensus.parent_vbytes(inputs, 0) > MAX_BATCH_VBYTES {
                 break;
             }
 
             let (Some(next_change), Some(next_fee)) = (
-                change
-                    .checked_add(receive.value)
-                    .and_then(|value| value.checked_sub(receive.fee)),
+                parent_change.checked_add(receive.value),
                 fee.checked_add(receive.fee),
             ) else {
                 break;
             };
 
-            change = next_change;
+            if saturating_sub(next_change, next_fee) < self.cfg.consensus.dust_limit {
+                break;
+            }
+
+            parent_change = next_change;
             fee = next_fee;
 
             batched_receives.push((index, receive));
@@ -1073,26 +1144,26 @@ impl Wallet {
         // cannot be starved by smaller ones queued behind it.
         for (index, send) in sends {
             let inputs = batched_receives.len() as u64 + 1;
-            let outputs = batched_sends.len() as u64 + 2;
+            let destinations = batched_sends.len() as u64 + 1;
 
-            if self.cfg.consensus.batch_vbytes(inputs, outputs) > MAX_BATCH_VBYTES {
+            if self.cfg.consensus.parent_vbytes(inputs, destinations) > MAX_BATCH_VBYTES {
                 break;
             }
 
             let (Some(next_change), Some(next_fee)) = (
-                send.value
-                    .checked_add(send.fee)
-                    .and_then(|spend| change.checked_sub(spend)),
+                parent_change.checked_sub(send.value),
                 fee.checked_add(send.fee),
             ) else {
                 break;
             };
 
-            if next_change < self.cfg.consensus.dust_limit {
+            // The dust limit applies to the child's output, since that is what
+            // becomes the next federation wallet.
+            if saturating_sub(next_change, next_fee) < self.cfg.consensus.dust_limit {
                 break;
             }
 
-            change = next_change;
+            parent_change = next_change;
             fee = next_fee;
 
             batched_sends.push((index, send));
@@ -1102,43 +1173,53 @@ impl Wallet {
             return;
         }
 
-        let change_tweak = wallet.consensus_hash();
+        let Some(child_value) = parent_change.checked_sub(fee) else {
+            return;
+        };
 
-        let mut tx_inputs = vec![TxIn {
+        // Each hop derives the next tweak from the wallet state it replaces, so
+        // the parent's change and the child's output land on distinct scripts.
+        let parent_tweak = wallet.consensus_hash();
+
+        let mut parent_inputs = vec![TxIn {
             previous_output: wallet.outpoint,
             script_sig: Default::default(),
             sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
             witness: bitcoin::Witness::new(),
         }];
 
-        let mut spent_tx_outs = vec![SpentTxOut {
+        let mut parent_spent_tx_outs = vec![SpentTxOut {
             value: wallet.value,
             tweak: wallet.tweak,
         }];
 
         for (_, receive) in &batched_receives {
-            tx_inputs.push(TxIn {
+            parent_inputs.push(TxIn {
                 previous_output: receive.outpoint,
                 script_sig: Default::default(),
                 sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 witness: bitcoin::Witness::new(),
             });
 
-            spent_tx_outs.push(SpentTxOut {
+            parent_spent_tx_outs.push(SpentTxOut {
                 value: receive.value,
                 tweak: receive.tweak.consensus_hash(),
             });
         }
 
-        // The change is always the first output, so the next federation wallet
-        // outpoint is this transaction's vout zero, exactly as before batching.
-        let mut tx_outputs = vec![TxOut {
-            value: change,
-            script_pubkey: self.descriptor(&change_tweak).script_pubkey(),
-        }];
+        let mut parent_outputs = vec![
+            TxOut {
+                value: parent_change,
+                script_pubkey: self.descriptor(&parent_tweak).script_pubkey(),
+            },
+            TxOut {
+                value: Amount::ZERO,
+                script_pubkey: bitcoin::ScriptBuf::new_p2a(),
+            },
+        ];
 
         for (_, send) in &batched_sends {
-            tx_outputs.push(TxOut {
+            parent_outputs.push(TxOut {
                 value: send.value,
                 script_pubkey: send
                     .destination
@@ -1147,32 +1228,80 @@ impl Wallet {
             });
         }
 
-        let tx = Transaction {
-            version: Version(2),
+        let parent = Transaction {
+            version: Version(3),
             lock_time: LockTime::ZERO,
-            input: tx_inputs,
-            output: tx_outputs,
+            input: parent_inputs,
+            output: parent_outputs,
         };
 
-        let txid = tx.compute_txid();
+        let parent_txid = parent.compute_txid();
 
-        let vbytes = self.cfg.consensus.batch_vbytes(
+        let parent_wallet = FederationWallet {
+            value: parent_change,
+            outpoint: bitcoin::OutPoint {
+                txid: parent_txid,
+                vout: PARENT_CHANGE_VOUT,
+            },
+            tweak: parent_tweak,
+        };
+
+        let anchor = bitcoin::OutPoint {
+            txid: parent_txid,
+            vout: PARENT_ANCHOR_VOUT,
+        };
+
+        let child_tweak = parent_wallet.consensus_hash();
+
+        // The signed input comes first and the anchor second, keeping the
+        // signed inputs a prefix as `SpentTxOut` documents.
+        let child = Transaction {
+            version: Version(3),
+            lock_time: LockTime::ZERO,
+            input: vec![
+                TxIn {
+                    previous_output: parent_wallet.outpoint,
+                    script_sig: Default::default(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: bitcoin::Witness::new(),
+                },
+                TxIn {
+                    previous_output: anchor,
+                    script_sig: Default::default(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: bitcoin::Witness::new(),
+                },
+            ],
+            output: vec![TxOut {
+                value: child_value,
+                script_pubkey: self.descriptor(&child_tweak).script_pubkey(),
+            }],
+        };
+
+        let child_txid = child.compute_txid();
+
+        let parent_vbytes = self.cfg.consensus.parent_vbytes(
             batched_receives.len() as u64 + 1,
-            batched_sends.len() as u64 + 1,
+            batched_sends.len() as u64,
         );
+
+        let child_vbytes = self.cfg.consensus.child_vbytes();
 
         let tx_index = self.total_txs(dbtx).await;
 
         let created = self.consensus_block_count(dbtx).await;
 
+        // The parent is the transaction users care about, since it carries the
+        // peg-out destinations. The fee and vbytes cover both, so `feerate()`
+        // reports the package feerate that actually gets the batch mined.
         dbtx.insert_new_entry(
             &TxInfoKey(tx_index),
             &TxInfo {
                 index: tx_index,
-                txid,
+                txid: parent_txid,
                 input: wallet.value,
-                output: change,
-                vbytes,
+                output: child_value,
+                vbytes: parent_vbytes + child_vbytes,
                 fee,
                 created,
             },
@@ -1180,7 +1309,7 @@ impl Wallet {
         .await;
 
         // Queue entries are marked rather than deleted. They are only removed
-        // once the batch confirms, so a batch that never confirms leaves the
+        // once the batch settles, so a batch that never confirms leaves the
         // queue intact to rebuild from.
         for (index, send) in &batched_sends {
             dbtx.insert_new_entry(&TxInfoIndexKey(send.outpoint), &tx_index)
@@ -1189,7 +1318,7 @@ impl Wallet {
             dbtx.insert_entry(
                 &PendingSendKey(*index),
                 &PendingSend {
-                    batch: Some(txid),
+                    batch: Some(parent_txid),
                     ..send.clone()
                 },
             )
@@ -1200,7 +1329,7 @@ impl Wallet {
             dbtx.insert_entry(
                 &PendingReceiveKey(*index),
                 &PendingReceive {
-                    batch: Some(txid),
+                    batch: Some(parent_txid),
                     ..receive.clone()
                 },
             )
@@ -1208,11 +1337,25 @@ impl Wallet {
         }
 
         dbtx.insert_new_entry(
-            &UnsignedTxKey(txid),
+            &UnsignedTxKey(parent_txid),
             &FederationTx {
-                tx,
-                spent_tx_outs,
-                vbytes,
+                tx: parent,
+                spent_tx_outs: parent_spent_tx_outs,
+                vbytes: parent_vbytes,
+                fee: Amount::ZERO,
+            },
+        )
+        .await;
+
+        dbtx.insert_new_entry(
+            &UnsignedTxKey(child_txid),
+            &FederationTx {
+                tx: child,
+                spent_tx_outs: vec![SpentTxOut {
+                    value: parent_change,
+                    tweak: parent_tweak,
+                }],
+                vbytes: child_vbytes,
                 fee,
             },
         )
@@ -1221,58 +1364,85 @@ impl Wallet {
         dbtx.insert_new_entry(
             &PendingBatchKey,
             &PendingBatch {
-                txid,
-                change_value: change,
-                change_tweak,
+                parent_txid,
+                child_txid,
+                anchor,
+                child_wallet: FederationWallet {
+                    value: child_value,
+                    outpoint: bitcoin::OutPoint {
+                        txid: child_txid,
+                        vout: 0,
+                    },
+                    tweak: child_tweak,
+                },
+                parent_wallet,
             },
         )
         .await;
 
         debug!(
             target: LOG_MODULE_WALLETV2,
-            %txid,
+            %parent_txid,
+            %child_txid,
             receives = batched_receives.len(),
             sends = batched_sends.len(),
-            vbytes,
+            vbytes = parent_vbytes + child_vbytes,
             fee_sat = fee.to_sat(),
-            change_sat = change.to_sat(),
             "Constructed walletv2 batch"
         );
     }
 
-    /// Advances the federation wallet onto a batch observed in a block and
-    /// clears the queue entries it settled.
+    /// Settles the batch in flight once its outcome is visible on chain, and
+    /// clears the queue entries it carried.
     ///
-    /// This is the only place the wallet outpoint moves. It is driven by the
-    /// finality delayed block scan, so every guardian resolves it from the same
-    /// final block data.
-    async fn confirm_batch(&self, dbtx: &mut DatabaseTransaction<'_>, txid: Txid) {
+    /// The discriminator is the parent's anchor. Ephemeral dust policy rejects
+    /// any child of the parent that fails to spend it, so whatever spends that
+    /// outpoint is *the* child, and there is never any other way for the batch
+    /// to resolve. If it is our own child the federation advances onto it; if
+    /// it is anyone else's, our child is permanently invalid and the parent's
+    /// change becomes the wallet instead — with the child's fee never paid,
+    /// because the third party paid for the confirmation themselves.
+    ///
+    /// A parent mined without any child spending the anchor settles nothing.
+    /// Our child is still valid and still broadcastable, and advancing onto the
+    /// parent's change would be wrong the moment it confirmed.
+    async fn settle_batch(&self, dbtx: &mut DatabaseTransaction<'_>, tx: &Transaction, txid: Txid) {
         let Some(batch) = dbtx.get_value(&PendingBatchKey).await else {
             return;
         };
 
-        if batch.txid != txid {
+        if !tx
+            .input
+            .iter()
+            .any(|input| input.previous_output == batch.anchor)
+        {
             return;
         }
 
+        let (wallet, settled_by_us) = if txid == batch.child_txid {
+            (batch.child_wallet, true)
+        } else {
+            (batch.parent_wallet, false)
+        };
+
         dbtx.remove_entry(&PendingBatchKey).await;
 
-        dbtx.insert_entry(
-            &FederationWalletKey,
-            &FederationWallet {
-                value: batch.change_value,
-                outpoint: bitcoin::OutPoint { txid, vout: 0 },
-                tweak: batch.change_tweak,
-            },
-        )
-        .await;
+        // Whichever child lost is now permanently invalid, so stop
+        // rebroadcasting it.
+        dbtx.remove_entry(&UnsignedTxKey(batch.parent_txid)).await;
+        dbtx.remove_entry(&UnsignedTxKey(batch.child_txid)).await;
+        dbtx.remove_entry(&UnconfirmedTxKey(batch.parent_txid))
+            .await;
+        dbtx.remove_entry(&UnconfirmedTxKey(batch.child_txid)).await;
+
+        dbtx.insert_entry(&FederationWalletKey, &wallet).await;
 
         let mut queued = queued_balance(dbtx).await;
 
         let settled_receives = dbtx
             .find_by_prefix(&PendingReceivePrefix)
             .await
-            .filter(|entry| std::future::ready(entry.1.batch == Some(txid)))
+            .filter(|entry| std::future::ready(entry.1.batch == Some(batch.parent_txid)))
             .map(|entry| (entry.0.0, entry.1))
             .collect::<Vec<(u64, PendingReceive)>>()
             .await;
@@ -1287,7 +1457,7 @@ impl Wallet {
         let settled_sends = dbtx
             .find_by_prefix(&PendingSendPrefix)
             .await
-            .filter(|entry| std::future::ready(entry.1.batch == Some(txid)))
+            .filter(|entry| std::future::ready(entry.1.batch == Some(batch.parent_txid)))
             .map(|entry| (entry.0.0, entry.1))
             .collect::<Vec<(u64, PendingSend)>>()
             .await;
@@ -1308,9 +1478,10 @@ impl Wallet {
 
         debug!(
             target: LOG_MODULE_WALLETV2,
-            %txid,
-            change_sat = batch.change_value.to_sat(),
-            "Confirmed walletv2 batch"
+            parent_txid = %batch.parent_txid,
+            settled_by_us,
+            wallet_sat = wallet.value.to_sat(),
+            "Settled walletv2 batch"
         );
     }
 
@@ -1394,9 +1565,9 @@ impl Wallet {
             for tx in block.txdata {
                 let txid = tx.compute_txid();
 
-                if dbtx.remove_entry(&UnconfirmedTxKey(txid)).await.is_some() {
-                    self.confirm_batch(dbtx, txid).await;
-                }
+                dbtx.remove_entry(&UnconfirmedTxKey(txid)).await;
+
+                self.settle_batch(dbtx, &tx, txid).await;
 
                 // We maintain an append-only log of transaction outputs that pass
                 // the probabilistic receive filter created since the federation was
@@ -1497,13 +1668,9 @@ impl Wallet {
             dbtx.insert_new_entry(&UnconfirmedTxKey(txid), &unsigned)
                 .await;
 
-            if let Err(err) = self.btc_rpc.submit_transaction(unsigned.tx).await {
-                debug!(
-                    target: LOG_MODULE_WALLETV2,
-                    err = %err.fmt_compact_anyhow(),
-                    "Error broadcasting finalized transaction"
-                );
-            }
+            // Nothing goes out until both halves of the batch are signed, since
+            // the zero fee parent cannot be relayed without its child.
+            broadcast_pending_batch(&self.btc_rpc, dbtx).await;
         }
 
         Ok(())
@@ -1589,12 +1756,12 @@ impl Wallet {
     }
 
     pub async fn send_fee(&self, dbtx: &mut DatabaseTransaction<'_>) -> Option<Amount> {
-        self.consensus_fee(dbtx, self.cfg.consensus.send_tx_vbytes)
+        self.consensus_fee(dbtx, self.cfg.consensus.send_quote_vbytes())
             .await
     }
 
     pub async fn receive_fee(&self, dbtx: &mut DatabaseTransaction<'_>) -> Option<Amount> {
-        self.consensus_fee(dbtx, self.cfg.consensus.receive_tx_vbytes)
+        self.consensus_fee(dbtx, self.cfg.consensus.receive_quote_vbytes())
             .await
     }
 
@@ -1669,16 +1836,16 @@ impl Wallet {
         federation_tx: &mut FederationTx,
         signatures: &BTreeMap<PeerId, Vec<Signature>>,
     ) {
-        assert_eq!(
-            federation_tx.spent_tx_outs.len(),
-            federation_tx.tx.input.len()
-        );
+        // Inputs needing a signature are a prefix of the transaction's inputs;
+        // a batch child's trailing anchor input is anyone-can-spend and keeps
+        // the empty witness it was built with.
+        assert!(federation_tx.spent_tx_outs.len() <= federation_tx.tx.input.len());
 
         for (index, utxo) in federation_tx.spent_tx_outs.iter().enumerate() {
             let satisfier: BTreeMap<PublicKey, bitcoin::ecdsa::Signature> = signatures
                 .iter()
                 .map(|(peer, sigs)| {
-                    assert_eq!(sigs.len(), federation_tx.tx.input.len());
+                    assert_eq!(sigs.len(), federation_tx.spent_tx_outs.len());
 
                     let pk = *self
                         .cfg
@@ -1761,7 +1928,9 @@ impl Wallet {
     }
 
     async fn pending_tx_chain(&self, dbtx: &mut DatabaseTransaction<'_>) -> Vec<TxInfo> {
-        let n_pending = pending_txs_unordered(dbtx).await.len();
+        // A batch is a parent and a child on chain but one logical transaction
+        // to users, and at most one is ever in flight.
+        let n_pending = usize::from(dbtx.get_value(&PendingBatchKey).await.is_some());
 
         dbtx.find_by_prefix_sorted_descending(&TxInfoPrefix)
             .await

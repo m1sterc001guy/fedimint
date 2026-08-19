@@ -4,9 +4,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_stream::stream;
-use bitcoin::Amount;
+use bitcoin::absolute::LockTime;
+use bitcoin::transaction::Version;
+use bitcoin::{Amount, OutPoint as BitcoinOutPoint, Sequence, Transaction, TxIn, TxOut, Witness};
+use bitcoincore_rpc::json::SignRawTransactionInput;
+use bitcoincore_rpc::{Auth, Client as BitcoinRpcClient, RpcApi};
 use fedimint_client::ClientHandleArc;
-use fedimint_core::task::sleep_in_test;
+use fedimint_core::task::{block_in_place, sleep_in_test};
+use fedimint_core::util::SafeUrl;
 use fedimint_dummy_client::DummyClientInit;
 use fedimint_dummy_server::DummyInit;
 use fedimint_eventlog::{Event, EventLogEntry, EventLogId};
@@ -153,6 +158,473 @@ async fn await_federation_total_value(
         )
         .await;
     }
+}
+
+// ============================================================================
+// Steps 3 and 4: TRUC batches, package broadcast, and anchor settlement
+// ============================================================================
+
+/// Mirrors `fedimint_testing_core::envs::FM_TEST_USE_REAL_DAEMONS_ENV`.
+const FM_TEST_USE_REAL_DAEMONS: &str = "FM_TEST_USE_REAL_DAEMONS";
+
+/// Mirrors `fedimint_testing_core::envs::FM_TEST_BITCOIND_RPC_ENV`.
+const FM_TEST_BITCOIND_RPC: &str = "FM_TEST_BITCOIND_RPC";
+
+/// Output index of the ephemeral anchor in a batch parent.
+const PARENT_ANCHOR_VOUT: u32 = 1;
+
+/// Direct bitcoind access, used to inspect mempool policy that the client API
+/// cannot see. `None` when not running against real daemons, in which case the
+/// caller skips: the mock backend has no TRUC, no ephemeral dust and no package
+/// relay, so every assertion here would be vacuous.
+fn bitcoind_rpc() -> Option<BitcoinRpcClient> {
+    if std::env::var(FM_TEST_USE_REAL_DAEMONS).is_err() {
+        eprintln!(
+            "SKIPPING TRUC batch test: {FM_TEST_USE_REAL_DAEMONS} is not set. \
+             Run it with ./scripts/tests/walletv2-truc-test.sh"
+        );
+
+        return None;
+    }
+
+    let url: SafeUrl = std::env::var(FM_TEST_BITCOIND_RPC)
+        .expect("Must have bitcoind RPC defined for real tests")
+        .parse()
+        .expect("Failed to parse bitcoind RPC url");
+
+    let auth = Auth::UserPass(
+        url.username().to_owned(),
+        url.password()
+            .expect("Bitcoind url has a password")
+            .to_owned(),
+    );
+
+    let host = url
+        .without_auth()
+        .expect("Failed to strip auth from bitcoind url")
+        .to_string();
+
+    Some(BitcoinRpcClient::new(&host, auth).expect("Failed to connect to bitcoind"))
+}
+
+async fn await_mempool_tx(rpc: &BitcoinRpcClient, txid: bitcoin::Txid) -> Transaction {
+    for _ in 0..60 {
+        if let Ok(tx) = block_in_place(|| rpc.get_raw_transaction(&txid, None)) {
+            return tx;
+        }
+
+        sleep_in_test(
+            format!("Waiting for {txid} to enter the mempool"),
+            Duration::from_secs(1),
+        )
+        .await;
+    }
+
+    panic!("Transaction {txid} never entered the mempool");
+}
+
+fn unsigned_txin(previous_output: BitcoinOutPoint) -> TxIn {
+    TxIn {
+        previous_output,
+        script_sig: bitcoin::ScriptBuf::default(),
+        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        witness: Witness::new(),
+    }
+}
+
+/// A batch sitting in the mempool, with the pieces a test needs to poke at it.
+struct BatchInFlight {
+    parent_txid: bitcoin::Txid,
+    parent: Transaction,
+    child_txid: bitcoin::Txid,
+    child: Transaction,
+    recipient: bitcoin::Address,
+}
+
+/// Funds a federation, submits one peg-out, and returns the resulting batch
+/// once both halves are in the mempool.
+async fn batch_in_flight(
+    client: &ClientHandleArc,
+    bitcoin: &Arc<dyn BitcoinTest>,
+    rpc: &BitcoinRpcClient,
+) -> anyhow::Result<BatchInFlight> {
+    initialize_consensus(client, bitcoin).await?;
+
+    let federation_address = client
+        .get_first_module::<WalletClientModule>()?
+        .receive()
+        .await;
+
+    bitcoin
+        .send_and_mine_block(&federation_address, Amount::from_int_btc(1))
+        .await;
+
+    await_finality_delay(client, bitcoin).await?;
+    await_federation_total_value(client, Amount::from_sat(99_000_000)).await?;
+
+    let wallet = client.get_first_module::<WalletClientModule>()?;
+
+    // Peg out to an address the test wallet controls, so the recipient output
+    // can be used to attempt a pin.
+    let recipient = block_in_place(|| rpc.get_new_address(None, None))
+        .expect("Failed to get a recipient address")
+        .assume_checked();
+
+    let send_op = wallet
+        .send(
+            recipient.clone().as_unchecked().clone(),
+            Amount::from_sat(50_000),
+            None,
+            serde_json::Value::Null,
+        )
+        .await?;
+
+    // A block has to be found for the accumulation window to close and the
+    // batch to be built.
+    bitcoin.mine_blocks(1).await;
+
+    let FinalSendOperationState::Success(parent_txid) =
+        wallet.await_final_send_operation_state(send_op).await?
+    else {
+        panic!("Peg-out was not accepted by the federation");
+    };
+
+    let parent = await_mempool_tx(rpc, parent_txid).await;
+
+    let parent_entry = block_in_place(|| rpc.get_mempool_entry(&parent_txid))
+        .expect("Batch parent is not in the mempool");
+
+    let child_txid = *parent_entry
+        .spent_by
+        .first()
+        .expect("Batch parent has no child in the mempool");
+
+    let child = await_mempool_tx(rpc, child_txid).await;
+
+    Ok(BatchInFlight {
+        parent_txid,
+        parent,
+        child_txid,
+        child,
+        recipient,
+    })
+}
+
+/// The batch is broadcast as a TRUC package, and the pinning attacks that
+/// motivated the whole design are rejected by policy.
+///
+/// This is the assertion the rest of the work exists to support: a peg-out
+/// recipient cannot attach *any* child to the batch parent, so neither the
+/// oversized low-feerate child nor cluster exhaustion is available to them.
+#[tokio::test(flavor = "multi_thread")]
+async fn truc_batch_is_packaged_and_cannot_be_pinned() -> anyhow::Result<()> {
+    let Some(rpc) = bitcoind_rpc() else {
+        return Ok(());
+    };
+
+    let fixtures = fixtures();
+    let fed = fixtures.new_fed_not_degraded().await;
+    let client = fed.new_client().await;
+    let bitcoin = fixtures.bitcoin();
+
+    let batch = batch_in_flight(&client, &bitcoin, &rpc).await?;
+
+    let wallet = client.get_first_module::<WalletClientModule>()?;
+
+    // --- the parent is a zero fee TRUC transaction carrying an anchor --------
+
+    assert_eq!(
+        batch.parent.version,
+        Version(3),
+        "Batch parent is not a TRUC transaction"
+    );
+
+    let anchor_output = &batch.parent.output[PARENT_ANCHOR_VOUT as usize];
+
+    assert_eq!(
+        anchor_output.value,
+        Amount::ZERO,
+        "Anchor is not a zero value output"
+    );
+
+    assert_eq!(
+        anchor_output.script_pubkey,
+        bitcoin::ScriptBuf::new_p2a(),
+        "Anchor is not a pay-to-anchor output"
+    );
+
+    let parent_entry = block_in_place(|| rpc.get_mempool_entry(&batch.parent_txid))
+        .expect("Batch parent is not in the mempool");
+
+    assert_eq!(
+        parent_entry.fees.base,
+        Amount::ZERO,
+        "Batch parent must pay no fee for its anchor to be ephemeral dust"
+    );
+
+    assert_eq!(
+        parent_entry.descendant_count, 2,
+        "Batch parent should have exactly one child, its fee paying sibling"
+    );
+
+    // --- the child spends the change and the anchor, and pays for both -------
+
+    assert_eq!(
+        batch.child.version,
+        Version(3),
+        "Batch child is not a TRUC transaction"
+    );
+
+    let child_inputs: BTreeSet<BitcoinOutPoint> = batch
+        .child
+        .input
+        .iter()
+        .map(|input| input.previous_output)
+        .collect();
+
+    assert!(
+        child_inputs.contains(&BitcoinOutPoint {
+            txid: batch.parent_txid,
+            vout: 0,
+        }),
+        "Child does not spend the parent's change"
+    );
+
+    assert!(
+        child_inputs.contains(&BitcoinOutPoint {
+            txid: batch.parent_txid,
+            vout: PARENT_ANCHOR_VOUT,
+        }),
+        "Child does not spend the parent's anchor, so the parent's dust is not ephemeral"
+    );
+
+    let child_entry = block_in_place(|| rpc.get_mempool_entry(&batch.child_txid))
+        .expect("Batch child is not in the mempool");
+
+    assert!(
+        child_entry.fees.base > Amount::ZERO,
+        "Batch child pays no fee, so the package can never be mined"
+    );
+
+    // --- the pin is dead ----------------------------------------------------
+
+    let recipient_vout = batch
+        .parent
+        .output
+        .iter()
+        .position(|tx_out| tx_out.script_pubkey == batch.recipient.script_pubkey())
+        .expect("Parent does not pay the peg-out recipient") as u32;
+
+    let recipient_value = batch.parent.output[recipient_vout as usize].value;
+
+    let burn = block_in_place(|| rpc.get_new_address(None, None))
+        .expect("Failed to get an address")
+        .assume_checked();
+
+    let prevout = SignRawTransactionInput {
+        txid: batch.parent_txid,
+        vout: recipient_vout,
+        script_pub_key: batch.recipient.script_pubkey(),
+        redeem_script: None,
+        amount: Some(recipient_value),
+    };
+
+    // Version two is what any ordinary wallet would build, and version three is
+    // what a determined attacker would reach for. Neither can attach.
+    for version in [Version::TWO, Version(3)] {
+        let unsigned = Transaction {
+            version,
+            lock_time: LockTime::ZERO,
+            input: vec![unsigned_txin(BitcoinOutPoint {
+                txid: batch.parent_txid,
+                vout: recipient_vout,
+            })],
+            output: vec![TxOut {
+                value: recipient_value - Amount::from_sat(5_000),
+                script_pubkey: burn.script_pubkey(),
+            }],
+        };
+
+        let signed = block_in_place(|| {
+            rpc.sign_raw_transaction_with_wallet(
+                &unsigned,
+                Some(std::slice::from_ref(&prevout)),
+                None,
+            )
+        })
+        .expect("Failed to sign the pinning child")
+        .transaction()
+        .expect("Failed to decode the signed pinning child");
+
+        assert!(
+            block_in_place(|| rpc.send_raw_transaction(&signed)).is_err(),
+            "A peg-out recipient attached a version {version:?} child to the batch parent, so \
+             the parent can still be pinned"
+        );
+    }
+
+    // --- and the batch confirms --------------------------------------------
+
+    let block_hash = bitcoin.mine_blocks(1).await[0];
+
+    let block = block_in_place(|| rpc.get_block_info(&block_hash)).expect("Failed to read block");
+
+    assert!(
+        block.tx.contains(&batch.parent_txid) && block.tx.contains(&batch.child_txid),
+        "Parent and child were not mined together"
+    );
+
+    // Once the federation has scanned that block it advances onto the child's
+    // output, which is what the child was built to leave behind.
+    await_finality_delay(&client, &bitcoin).await?;
+
+    await_federation_total_value(&client, batch.child.output[0].value).await?;
+
+    assert_eq!(
+        wallet.total_value().await?,
+        batch.child.output[0].value,
+        "Federation did not settle onto the child's output"
+    );
+
+    assert!(
+        wallet.pending_tx_chain().await?.is_empty(),
+        "Batch is still pending after it settled"
+    );
+
+    Ok(())
+}
+
+/// A third party spending the anchor settles the batch on the parent's change.
+///
+/// This is the Step 4 fallback, and the one adversarial path in the design. The
+/// child is permanently invalidated by an outsider, and the federation has to
+/// notice and advance onto the parent instead. It costs the federation nothing:
+/// the outsider paid for the confirmation, so the child's fee is never spent
+/// and stays in the federation's balance.
+#[tokio::test(flavor = "multi_thread")]
+async fn third_party_anchor_spend_settles_the_batch_on_the_parent() -> anyhow::Result<()> {
+    let Some(rpc) = bitcoind_rpc() else {
+        return Ok(());
+    };
+
+    let fixtures = fixtures();
+    let fed = fixtures.new_fed_not_degraded().await;
+    let client = fed.new_client().await;
+    let bitcoin = fixtures.bitcoin();
+
+    let batch = batch_in_flight(&client, &bitcoin, &rpc).await?;
+
+    let wallet = client.get_first_module::<WalletClientModule>()?;
+
+    let child_fee = block_in_place(|| rpc.get_mempool_entry(&batch.child_txid))
+        .expect("Batch child is not in the mempool")
+        .fees
+        .base;
+
+    // Fund the replacement from a confirmed coin, so the parent remains its
+    // only unconfirmed ancestor and TRUC still permits it.
+    let funding = block_in_place(|| rpc.list_unspent(Some(1), None, None, None, None))
+        .expect("Failed to list unspent outputs")
+        .into_iter()
+        .find(|utxo| utxo.spendable && utxo.amount >= Amount::from_sat(1_000_000))
+        .expect("No confirmed coin to fund the replacement");
+
+    let destination = block_in_place(|| rpc.get_new_address(None, None))
+        .expect("Failed to get an address")
+        .assume_checked();
+
+    // Replacing the child means outbidding it in both absolute fee and
+    // feerate, which is exactly why an eviction can only ever speed the batch
+    // up rather than stall it.
+    let replacement_fee = child_fee + Amount::from_sat(20_000);
+
+    let unsigned = Transaction {
+        version: Version(3),
+        lock_time: LockTime::ZERO,
+        input: vec![
+            unsigned_txin(BitcoinOutPoint {
+                txid: batch.parent_txid,
+                vout: PARENT_ANCHOR_VOUT,
+            }),
+            unsigned_txin(BitcoinOutPoint {
+                txid: funding.txid,
+                vout: funding.vout,
+            }),
+        ],
+        output: vec![TxOut {
+            value: funding.amount - replacement_fee,
+            script_pubkey: destination.script_pubkey(),
+        }],
+    };
+
+    // The anchor input is anyone-can-spend and needs no signature, so the
+    // wallet reports the transaction as incompletely signed. Only the funding
+    // input actually has to be satisfied.
+    let signed = block_in_place(|| {
+        rpc.sign_raw_transaction_with_wallet(
+            &unsigned,
+            Some(&[SignRawTransactionInput {
+                txid: funding.txid,
+                vout: funding.vout,
+                script_pub_key: funding.script_pub_key.clone(),
+                redeem_script: None,
+                amount: Some(funding.amount),
+            }]),
+            None,
+        )
+    })
+    .expect("Failed to sign the anchor spend")
+    .transaction()
+    .expect("Failed to decode the anchor spend");
+
+    let replacement_txid = block_in_place(|| rpc.send_raw_transaction(&signed))
+        .expect("A third party could not spend the anchor");
+
+    assert!(
+        block_in_place(|| rpc.get_mempool_entry(&batch.child_txid)).is_err(),
+        "Our child survived a higher paying anchor spend"
+    );
+
+    let block_hash = bitcoin.mine_blocks(1).await[0];
+
+    let block = block_in_place(|| rpc.get_block_info(&block_hash)).expect("Failed to read block");
+
+    assert!(
+        block.tx.contains(&batch.parent_txid) && block.tx.contains(&replacement_txid),
+        "The parent did not confirm alongside the third party's anchor spend"
+    );
+
+    assert!(
+        !block.tx.contains(&batch.child_txid),
+        "Our child confirmed despite being replaced"
+    );
+
+    // The federation must fall back onto the parent's change, which is larger
+    // than the child's output by exactly the fee the child never got to pay.
+    let expected = batch.parent.output[0].value;
+
+    assert_eq!(
+        expected,
+        batch.child.output[0].value + child_fee,
+        "The parent's change should exceed the child's output by the child's fee"
+    );
+
+    await_finality_delay(&client, &bitcoin).await?;
+
+    await_federation_total_value(&client, expected).await?;
+
+    assert_eq!(
+        wallet.total_value().await?,
+        expected,
+        "Federation did not fall back onto the parent's change"
+    );
+
+    assert!(
+        wallet.pending_tx_chain().await?.is_empty(),
+        "Batch is still pending after the third party settled it"
+    );
+
+    Ok(())
 }
 
 /// Peg-outs submitted before a block is found are settled together in a single

@@ -167,6 +167,83 @@ impl WalletConfigConsensus {
             + 34 * 4 // scriptPubKey
     }
 
+    /// Weight of the zero value ephemeral anchor output carried by every batch
+    /// parent. Its script pubkey is the four byte pay-to-anchor program.
+    pub const fn anchor_output_weight() -> u64 {
+        8 * 4 // nValue
+            + 4 // scriptPubKey length
+            + 4 * 4 // scriptPubKey
+    }
+
+    /// Weight of the input spending an ephemeral anchor. Anchors are
+    /// anyone-can-spend, so the witness is empty and only its count is encoded.
+    pub const fn anchor_input_weight() -> u64 {
+        32 * 4 // txid
+            + 4 * 4 // vout
+            + 4 // Script length
+            + 4 * 4 // nSequence
+            + 1 // empty witness stack
+    }
+
+    /// Total vbytes of a batch parent: `inputs` multisig inputs, `destinations`
+    /// peg-out outputs, plus the change output and the ephemeral anchor.
+    ///
+    /// The parent pays no fee at all, which is what allows the anchor to be a
+    /// zero value output under Bitcoin Core's ephemeral dust policy.
+    pub fn parent_vbytes(&self, inputs: u64, destinations: u64) -> u64 {
+        let tx_overhead_weight = 4 * 4 // nVersion
+            + 1 // SegWit marker
+            + 1 // SegWit flag
+            + varint_weight(inputs)
+            + varint_weight(destinations + 2)
+            + 4 * 4; // nLockTime
+
+        weight_to_vbytes(
+            tx_overhead_weight
+                + inputs * self.multisig_input_weight()
+                + Self::output_weight() // change
+                + Self::anchor_output_weight()
+                + destinations * Self::output_weight(),
+        )
+    }
+
+    /// Total vbytes of a batch child: one multisig input spending the parent's
+    /// change, one anchor input, and the output that becomes the next
+    /// federation wallet. The child carries the entire fee for both.
+    pub fn child_vbytes(&self) -> u64 {
+        let tx_overhead_weight = 4 * 4 // nVersion
+            + 1 // SegWit marker
+            + 1 // SegWit flag
+            + varint_weight(2)
+            + varint_weight(1)
+            + 4 * 4; // nLockTime
+
+        weight_to_vbytes(
+            tx_overhead_weight
+                + self.multisig_input_weight()
+                + Self::anchor_input_weight()
+                + Self::output_weight(),
+        )
+    }
+
+    /// Fee quote for a single peg-out: what a batch carrying only that peg-out
+    /// costs to broadcast, parent and child together.
+    ///
+    /// Quoting every request as though it were alone in its batch is what makes
+    /// under-collection structurally impossible. Batches of more than one item
+    /// over-collect, and the surplus stays in the federation's change. See
+    /// `PINNING_PLAN.md` for the marginal-cost model this is the degenerate
+    /// case of.
+    pub fn send_quote_vbytes(&self) -> u64 {
+        self.parent_vbytes(1, 1) + self.child_vbytes()
+    }
+
+    /// Fee quote for consolidating a single deposit, on the same basis as
+    /// [`Self::send_quote_vbytes`].
+    pub fn receive_quote_vbytes(&self) -> u64 {
+        self.parent_vbytes(2, 0) + self.child_vbytes()
+    }
+
     /// Total vbytes of a batch transaction with `inputs` multisig inputs and
     /// `outputs` outputs.
     ///
@@ -364,6 +441,48 @@ mod tests {
                     "Batch of {receives} receives and {sends} sends costs {cost} vB but only \
                      collects {collected} vB worth of fees"
                 );
+            }
+        }
+    }
+
+    /// The same property for the parent/child split: a batch of one item costs
+    /// exactly what that item was quoted, and every larger batch over-collects.
+    /// This is what makes the flat quote safe to ship ahead of the marginal
+    /// cost model.
+    #[test]
+    fn parent_and_child_never_cost_more_than_the_quotes_collected() {
+        for num_peers in [1, 4, 7, 10, 20] {
+            let cfg = config_consensus(num_peers);
+
+            assert_eq!(
+                cfg.parent_vbytes(1, 1) + cfg.child_vbytes(),
+                cfg.send_quote_vbytes(),
+                "A solo peg-out batch must cost exactly its quote at {num_peers} peers"
+            );
+
+            assert_eq!(
+                cfg.parent_vbytes(2, 0) + cfg.child_vbytes(),
+                cfg.receive_quote_vbytes(),
+                "A solo deposit batch must cost exactly its quote at {num_peers} peers"
+            );
+
+            for receives in 0..8u64 {
+                for sends in 0..8u64 {
+                    if receives + sends == 0 {
+                        continue;
+                    }
+
+                    let collected =
+                        receives * cfg.receive_quote_vbytes() + sends * cfg.send_quote_vbytes();
+
+                    let cost = cfg.parent_vbytes(1 + receives, sends) + cfg.child_vbytes();
+
+                    assert!(
+                        cost <= collected,
+                        "Batch of {receives} receives and {sends} sends costs {cost} vB but \
+                         collects only {collected} vB worth at {num_peers} peers"
+                    );
+                }
             }
         }
     }
