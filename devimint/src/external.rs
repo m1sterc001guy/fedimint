@@ -53,7 +53,7 @@ impl Bitcoind {
             zmq_pub_raw_block = processmgr.globals.FM_PORT_BTC_ZMQ_PUB_RAW_BLOCK,
             zmq_pub_raw_tx = processmgr.globals.FM_PORT_BTC_ZMQ_PUB_RAW_TX,
             esplora_pid_file = esplora_pid_file,
-            tx_index = "0",
+            tx_index = "1",
         );
         write_overwrite_async(processmgr.globals.FM_BTC_DIR.join("bitcoin.conf"), conf).await?;
         let process = processmgr
