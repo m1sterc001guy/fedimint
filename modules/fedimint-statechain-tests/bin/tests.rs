@@ -101,16 +101,20 @@ fn is_mined(bitcoind: &Bitcoind, txid: &bitcoin::Txid) -> anyhow::Result<bool> {
 
 /// Creates, funds and confirms a coin owned by `client`.
 async fn deposit(client: &Client, bitcoind: &Bitcoind) -> anyhow::Result<String> {
-    let exit_address = new_address(bitcoind).await?;
-    let deposit = statechain(client, &["deposit", "--exit-address", &exit_address]).await?;
+    let deposit = statechain(client, &["deposit"]).await?;
     let coin = string(&deposit, "coin")?;
     let address = string(&deposit, "address")?;
 
     info!(%coin, %address, "Created coin; funding it");
 
     let funding_tx = funding_tx(bitcoind, &address)?;
+    let exit_address = new_address(bitcoind).await?;
 
-    let funded = statechain(client, &["fund", &coin, &funding_tx]).await?;
+    let funded = statechain(
+        client,
+        &["fund", &coin, &funding_tx, "--exit-address", &exit_address],
+    )
+    .await?;
 
     ensure!(funded["amount_sats"] == json!(DEPOSIT_SATS));
 

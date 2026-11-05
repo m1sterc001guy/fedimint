@@ -12,19 +12,17 @@ use crate::StatechainClientModule;
 
 #[derive(Parser, Serialize)]
 enum Opts {
-    /// Create a statecoin and print the address to fund. Its exit transactions
-    /// will pay to `exit_address`.
-    Deposit {
-        #[arg(long)]
-        exit_address: Address<NetworkUnchecked>,
-    },
+    /// Create a statecoin and print the address to fund.
+    Deposit,
     /// Co-sign a coin's backup transactions with the guardians for a funding
     /// transaction that is signed but NOT yet broadcast. Broadcast it after
-    /// this command succeeds.
+    /// this command succeeds. The exit transaction pays to `exit_address`.
     Fund {
         coin: CoinId,
         /// The funding transaction as consensus-encoded hex
         funding_tx: String,
+        #[arg(long)]
+        exit_address: Address<NetworkUnchecked>,
     },
     /// Wait until the federation sees the funding transaction confirmed.
     AwaitDeposit { coin: CoinId },
@@ -69,21 +67,25 @@ pub(crate) async fn handle_cli_command(
     let opts = Opts::parse_from(iter::once(&ffi::OsString::from("statechain")).chain(args.iter()));
 
     match opts {
-        Opts::Deposit { exit_address } => {
-            let deposit = module.deposit(exit_address).await?;
+        Opts::Deposit => {
+            let deposit = module.deposit().await?;
 
             Ok(json!({
                 "coin": deposit.coin,
                 "address": deposit.address.assume_checked(),
             }))
         }
-        Opts::Fund { coin, funding_tx } => {
+        Opts::Fund {
+            coin,
+            funding_tx,
+            exit_address,
+        } => {
             let funding_tx = Transaction::consensus_decode_hex(
                 &funding_tx,
                 &fedimint_core::module::registry::ModuleRegistry::default(),
             )?;
 
-            let funding = module.fund(coin, &funding_tx).await?;
+            let funding = module.fund(coin, &funding_tx, exit_address).await?;
 
             Ok(json!({
                 "coin": coin,

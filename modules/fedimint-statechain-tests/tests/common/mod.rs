@@ -88,7 +88,7 @@ pub async fn deposit(
     let module = statechain(client)?;
     let exit_address = bitcoin.get_new_address().await;
 
-    let deposit = module.deposit(exit_address.as_unchecked().clone()).await?;
+    let deposit = module.deposit().await?;
 
     info!(coin = %deposit.coin, "Created coin, funding it");
 
@@ -98,7 +98,13 @@ pub async fn deposit(
         .send_without_mining(&deposit.address.clone().assume_checked(), DEPOSIT)
         .await;
 
-    let funding = module.fund(deposit.coin, &funding_tx).await?;
+    let funding = module
+        .fund(
+            deposit.coin,
+            &funding_tx,
+            exit_address.as_unchecked().clone(),
+        )
+        .await?;
 
     ensure!(funding.amount == DEPOSIT);
 

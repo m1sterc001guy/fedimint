@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::{Context as _, anyhow, bail, ensure};
 use api::StatechainFederationApi;
 use bitcoin::address::NetworkUnchecked;
-use bitcoin::{Address, Transaction};
+use bitcoin::{Address, ScriptBuf, Transaction};
 use db::{
     DbKeyPrefix, LastCoinRecordKey, LastCoinRecordPrefix, LocalCoin, LocalCoinKey, LocalCoinPrefix,
     LocalCoinState, ReceiveKey, ReceiveKeyKey, ReceiveKeyPrefix,
@@ -199,15 +199,8 @@ impl StatechainClientModule {
     }
 
     /// Creates a coin: the guardians generate its operator key and we learn
-    /// the address to fund. Our exit transactions will pay to `exit_address`.
-    pub async fn deposit(
-        &self,
-        exit_address: Address<NetworkUnchecked>,
-    ) -> anyhow::Result<DepositInfo> {
-        let exit_script = exit_address
-            .require_network(self.params().network)?
-            .script_pubkey();
-
+    /// the address to fund. The exit address is chosen when funding it.
+    pub async fn deposit(&self) -> anyhow::Result<DepositInfo> {
         let user_sk = SecretKey::new(&mut OsRng);
 
         let range = self
@@ -232,7 +225,7 @@ impl StatechainClientModule {
             coin,
             &LocalCoin {
                 user_sk,
-                exit_script,
+                exit_script: ScriptBuf::new(),
                 aggregate_pk: None,
                 funding: None,
                 level: 0,
@@ -262,11 +255,21 @@ impl StatechainClientModule {
     }
 
     /// Registers the not yet broadcast `funding_tx` for a coin and co-signs
-    /// the coin's node and exit transactions with the guardians. Only broadcast
-    /// `funding_tx` once this returns: from then on the exit transactions can
-    /// recover the funds without the guardians.
-    pub async fn fund(&self, coin: CoinId, funding_tx: &Transaction) -> anyhow::Result<Funding> {
+    /// the coin's node and exit transactions with the guardians, the exit
+    /// transaction paying to `exit_address`. Only broadcast `funding_tx` once
+    /// this returns: from then on the exit transactions can recover the funds
+    /// without the guardians.
+    pub async fn fund(
+        &self,
+        coin: CoinId,
+        funding_tx: &Transaction,
+        exit_address: Address<NetworkUnchecked>,
+    ) -> anyhow::Result<Funding> {
         let local = self.owned_coin(coin).await?;
+
+        let exit_script = exit_address
+            .require_network(self.params().network)?
+            .script_pubkey();
 
         // A non-segwit input lets anyone change the funding txid before it
         // confirms, which would invalidate the pre-signed backups.
@@ -305,7 +308,7 @@ impl StatechainClientModule {
                         StatechainInputV0::RegisterFunding {
                             coin,
                             funding,
-                            exit_script: local.exit_script.clone(),
+                            exit_script: exit_script.clone(),
                         },
                         local.user_sk,
                     )],
@@ -319,6 +322,12 @@ impl StatechainClientModule {
         }
 
         let record = self.coin_record(coin).await?;
+
+        // The guardians sign the exit transaction for the registered script.
+        ensure!(
+            record.exit_script.as_ref() == Some(&exit_script),
+            "The coin was funded with a different exit address"
+        );
 
         let node_signature = self
             .sign(coin, &record, &local.user_sk, SigningPurpose::Node)
@@ -334,6 +343,7 @@ impl StatechainClientModule {
             .await?;
 
         self.update_coin(coin, |local| {
+            local.exit_script = exit_script;
             local.funding = Some(funding);
             local.node_signature = Some(node_signature);
             local.exit_signature = Some(exit_signature);

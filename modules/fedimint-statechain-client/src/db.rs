@@ -28,7 +28,7 @@ pub struct LocalCoin {
     /// Our half of the coin key
     #[serde(skip_serializing)]
     pub user_sk: SecretKey,
-    /// Where our exit transaction pays to
+    /// Where our exit transaction pays to; empty until the coin is funded
     pub exit_script: ScriptBuf,
     /// The coin's aggregate key, once its operator key exists
     pub aggregate_pk: Option<PublicKey>,
