@@ -41,7 +41,7 @@ use bitcoin::taproot::TapTweakHash;
 use fedimint_core::PeerId;
 use fedimint_core::encoding::Encodable;
 use rand::{CryptoRng, RngCore};
-use schnorr_fun::binonce::{self, NonceKeyPair, SecretNonce};
+use schnorr_fun::binonce::{self, NonceKeyPair};
 use schnorr_fun::frost::chilldkg::{Party, ShareReceiver, simplepedpop};
 use schnorr_fun::frost::{
     self, Frost, PairedSecretShare, PartySignSession, SecretShare, ShareIndex,
@@ -54,6 +54,11 @@ use schnorr_fun::{Message, Schnorr};
 use secp256k1::schnorr::Signature;
 use secp256k1::{PublicKey, SecretKey, XOnlyPublicKey};
 use sha2::Sha256;
+
+/// A guardian's share of a coin's operator key
+pub type OperatorShare = Scalar<Secret, Zero>;
+
+pub use schnorr_fun::binonce::SecretNonce;
 
 use crate::{
     CoinId, DkgContribution, EncryptedSecret, EncryptedShares, PublicNonce, ScalarBytes, TweakDeal,

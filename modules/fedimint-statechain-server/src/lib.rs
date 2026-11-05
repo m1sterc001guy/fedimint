@@ -18,8 +18,8 @@ use db::{
     EphemeralKeyKey, EphemeralKeyPrefix, EphemeralSecretKey, EphemeralSecretPrefix,
     FundingOutpointKey, FundingOutpointPrefix, IncomingKey, IncomingPrefix, IncomingReceiverPrefix,
     KeyGenCoinKey, KeyGenCoinPrefix, OperatorShareKey, OperatorSharePrefix, PendingBroadcastKey,
-    PendingBroadcastPrefix, SigningNonceKey, SigningNoncePrefix, StoredNonce,
-    UnannouncedEphemeralKey, UnannouncedEphemeralKeyPrefix,
+    PendingBroadcastPrefix, SigningNonceCoinPrefix, SigningNonceKey, SigningNoncePrefix,
+    StoredNonce, UnannouncedEphemeralKey, UnannouncedEphemeralKeyPrefix,
 };
 use fedimint_core::config::{
     ServerModuleConfig, ServerModuleConsensusConfig, TypedServerModuleConfig,
@@ -86,6 +86,17 @@ const MAX_BLOCK_COUNT_INCREMENT: u64 = 5;
 /// Devimint tests can mine many regtest blocks at once, so use a larger cap in
 /// test environments to avoid waiting on several consensus sessions.
 const TEST_MAX_BLOCK_COUNT_INCREMENT: u64 = 100;
+
+/// How many unused signing nonces we keep per coin. A ROAST signing leaves at
+/// most a couple per guardian behind and the owner can open at most
+/// `n - t + 1` sessions per signature, so this leaves ample room for
+/// signatures in flight while bounding what the owner can make us store.
+const MAX_STORED_NONCES_PER_COIN: usize = 32;
+
+/// Test-only: the peer id of a guardian that hands out nonces but never answers
+/// signature share requests, the stall ROAST has to route around. Ignored
+/// outside test environments.
+pub const FM_STATECHAIN_TEST_STALL_SIGNER_ENV: &str = "FM_STATECHAIN_TEST_STALL_SIGNER";
 
 #[derive(Debug, Clone)]
 pub struct StatechainInit;
@@ -806,6 +817,10 @@ impl ServerModule for Statechain {
                 SIGN_ENDPOINT,
                 ApiVersion::new(0, 0),
                 async |module: &Statechain, context, request: SignRequest| -> ScalarBytes {
+                    if module.stalls_signing() {
+                        std::future::pending::<()>().await;
+                    }
+
                     let db = context.db();
                     let mut dbtx = db.begin_transaction().await;
                     let share = module
@@ -874,6 +889,15 @@ impl Statechain {
             our_peer_id,
             peers,
         }
+    }
+
+    /// Test hook, see [`FM_STATECHAIN_TEST_STALL_SIGNER_ENV`].
+    fn stalls_signing(&self) -> bool {
+        is_running_in_test_env()
+            && std::env::var(FM_STATECHAIN_TEST_STALL_SIGNER_ENV)
+                .ok()
+                .and_then(|peer| peer.parse::<u16>().ok())
+                .is_some_and(|peer| PeerId::from(peer) == self.our_peer_id)
     }
 
     fn params(&self) -> &StatechainParams {
@@ -1066,6 +1090,9 @@ impl Statechain {
             );
         }
 
+        // Unused nonces belong to sessions over the old key split.
+        dbtx.remove_by_prefix(&SigningNonceCoinPrefix(coin)).await;
+
         dbtx.remove_by_prefix(&EphemeralKeyEpochPrefix(coin, record.epoch))
             .await;
 
@@ -1102,21 +1129,46 @@ impl Statechain {
 
         record.signing_tx(self.params(), request.purpose)?;
 
+        // ROAST leaves a few unused nonces behind per signature, so the oldest
+        // nonce is evicted instead of refusing the owner once the cap is hit.
+        // An evicted nonce only fails the session it was meant for.
+        let mut stored_nonces = dbtx
+            .find_by_prefix(&SigningNonceCoinPrefix(request.coin))
+            .await
+            .map(|(key, stored)| (stored.created, key))
+            .collect::<Vec<(u64, SigningNonceKey)>>()
+            .await;
+
+        stored_nonces.sort_unstable_by_key(|(created, _)| *created);
+
+        for (_, key) in stored_nonces
+            .iter()
+            .take((stored_nonces.len() + 1).saturating_sub(MAX_STORED_NONCES_PER_COIN))
+        {
+            dbtx.remove_entry(key).await;
+        }
+
         let (secret, public) = fedimint_statechain_common::crypto::generate_nonce(&mut OsRng);
         let [hiding, binding] = secret.0;
 
+        let created = fedimint_core::time::duration_since_epoch()
+            .as_micros()
+            .try_into()
+            .unwrap_or(u64::MAX);
+
         ensure!(
             dbtx.insert_entry(
-                &SigningNonceKey(request.coin, request.session),
+                &SigningNonceKey(request.coin, request.nonce_id),
                 &StoredNonce {
                     purpose: request.purpose,
                     hiding: hiding.to_bytes(),
                     binding: binding.to_bytes(),
+                    created,
                 },
             )
             .await
             .is_none(),
-            "The session id was already used"
+            "The nonce id was already used"
         );
 
         Ok(public)
@@ -1129,7 +1181,7 @@ impl Statechain {
         request: SignRequest,
     ) -> anyhow::Result<ScalarBytes> {
         let stored = dbtx
-            .remove_entry(&SigningNonceKey(request.coin, request.session))
+            .remove_entry(&SigningNonceKey(request.coin, request.nonce_id))
             .await
             .context("Unknown signing session")?;
 
@@ -1336,6 +1388,7 @@ impl Statechain {
         };
 
         dbtx.remove_entry(&PendingBroadcastKey(txid)).await;
+        dbtx.remove_by_prefix(&SigningNonceCoinPrefix(coin)).await;
         dbtx.remove_by_prefix(&EphemeralKeyEpochPrefix(coin, record.epoch))
             .await;
         take_ephemeral_secret(dbtx, coin, record.epoch).await;

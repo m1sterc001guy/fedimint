@@ -17,6 +17,10 @@ path = "bin/tests.rs"
 name = "fedimint_statechain_tests"
 path = "tests/tests.rs"
 
+[[test]]
+name = "fedimint_statechain_stall_tests"
+path = "tests/stall.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 bitcoin = { workspace = true }

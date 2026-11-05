@@ -390,22 +390,28 @@ impl CoinRecord {
     }
 }
 
-/// Requests a guardian's nonce for one signing session. Only the coin's
-/// current user can complete a signature, so only it may open sessions; the
-/// signature keeps others from filling the guardians' nonce storage.
+/// Requests a fresh nonce from a guardian. The nonce is stored under `nonce_id`
+/// until a signing session uses it; with ROAST a guardian's nonce is collected
+/// before the session it ends up in is known. Only the coin's current user can
+/// complete a signature, so only it may request nonces; the signature keeps
+/// others from filling the guardians' nonce storage.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NonceRequest {
     pub coin: CoinId,
-    pub session: [u8; 32],
+    pub nonce_id: [u8; 32],
     pub purpose: SigningPurpose,
     /// Signature of [`NonceRequest::message`] by the coin's user key
     pub signature: Signature,
 }
 
 impl NonceRequest {
-    pub fn message(coin: CoinId, session: [u8; 32], purpose: SigningPurpose) -> secp256k1::Message {
+    pub fn message(
+        coin: CoinId,
+        nonce_id: [u8; 32],
+        purpose: SigningPurpose,
+    ) -> secp256k1::Message {
         secp256k1::Message::from_digest(
-            ("fedimint-statechain/nonce-request", coin, session, purpose)
+            ("fedimint-statechain/nonce-request", coin, nonce_id, purpose)
                 .consensus_hash::<bitcoin::hashes::sha256::Hash>()
                 .to_byte_array(),
         )
@@ -413,7 +419,7 @@ impl NonceRequest {
 
     pub fn new(
         coin: CoinId,
-        session: [u8; 32],
+        nonce_id: [u8; 32],
         purpose: SigningPurpose,
         user_sk: &secp256k1::SecretKey,
     ) -> Self {
@@ -421,10 +427,10 @@ impl NonceRequest {
 
         Self {
             coin,
-            session,
+            nonce_id,
             purpose,
             signature: secp256k1::SECP256K1
-                .sign_schnorr(&Self::message(coin, session, purpose), &keypair),
+                .sign_schnorr(&Self::message(coin, nonce_id, purpose), &keypair),
         }
     }
 
@@ -432,7 +438,7 @@ impl NonceRequest {
         secp256k1::SECP256K1
             .verify_schnorr(
                 &self.signature,
-                &Self::message(self.coin, self.session, self.purpose),
+                &Self::message(self.coin, self.nonce_id, self.purpose),
                 &user_pk.x_only_public_key().0,
             )
             .is_ok()
@@ -440,11 +446,12 @@ impl NonceRequest {
 }
 
 /// Requests a guardian's signature share in a signing session. The nonces of
-/// the participating guardians determine the signing set.
+/// the participating guardians determine the signing set; `nonce_id` names the
+/// receiving guardian's own nonce, which the share consumes.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SignRequest {
     pub coin: CoinId,
-    pub session: [u8; 32],
+    pub nonce_id: [u8; 32],
     pub purpose: SigningPurpose,
     pub guardian_nonces: BTreeMap<PeerId, PublicNonce>,
     pub user_nonce: PublicNonce,

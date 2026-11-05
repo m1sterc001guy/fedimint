@@ -181,11 +181,16 @@ pub struct SigningNonceKey(pub CoinId, pub [u8; 32]);
 #[derive(Debug, Encodable, Decodable)]
 pub struct SigningNoncePrefix;
 
+#[derive(Debug, Encodable, Decodable)]
+pub struct SigningNonceCoinPrefix(pub CoinId);
+
 #[derive(Debug, Clone, Encodable, Decodable, Serialize)]
 pub struct StoredNonce {
     pub purpose: SigningPurpose,
     pub hiding: [u8; 32],
     pub binding: [u8; 32],
+    /// Microseconds since the epoch, to evict the oldest nonce first
+    pub created: u64,
 }
 
 impl_db_record!(
@@ -193,7 +198,11 @@ impl_db_record!(
     value = StoredNonce,
     db_prefix = DbKeyPrefix::SigningNonce,
 );
-impl_db_lookup!(key = SigningNonceKey, query_prefix = SigningNoncePrefix);
+impl_db_lookup!(
+    key = SigningNonceKey,
+    query_prefix = SigningNoncePrefix,
+    query_prefix = SigningNonceCoinPrefix
+);
 
 #[derive(Debug, Clone, Copy, Encodable, Decodable, Serialize)]
 pub struct BlockCountVoteKey(pub PeerId);

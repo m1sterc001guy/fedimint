@@ -9,8 +9,9 @@ pub mod api;
 #[cfg(feature = "cli")]
 mod cli;
 pub mod db;
+mod roast;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail, ensure};
@@ -21,7 +22,7 @@ use db::{
     DbKeyPrefix, LocalCoin, LocalCoinKey, LocalCoinPrefix, LocalCoinState, ReceiveKey,
     ReceiveKeyKey, ReceiveKeyPrefix,
 };
-use fedimint_api_client::api::DynModuleApi;
+use fedimint_api_client::api::{DynModuleApi, ServerResult};
 use fedimint_client_module::DynGlobalClientContext;
 use fedimint_client_module::db::ClientModuleMigrationFn;
 use fedimint_client_module::module::init::{ClientModuleInit, ClientModuleInitArgs};
@@ -46,25 +47,27 @@ use fedimint_logging::LOG_CLIENT_MODULE_STATECHAIN;
 pub use fedimint_statechain_common as common;
 use fedimint_statechain_common::config::{StatechainClientConfig, StatechainParams};
 use fedimint_statechain_common::crypto::{
-    ROTATION_CONTEXT, SECRET_CONTEXT, SignSession, SigningKey, deal_tweak, decrypt_secret,
-    encrypt_secret, encryption_context, generate_nonce, rotation_tweak, verify_signature,
+    ROTATION_CONTEXT, SECRET_CONTEXT, deal_tweak, decrypt_secret, encrypt_secret,
+    encryption_context, rotation_tweak, verify_signature,
 };
 use fedimint_statechain_common::{
-    CoinId, CoinRecord, CoinStatus, Funding, NonceRequest, SignRequest, SigningPurpose,
-    StatechainAddress, StatechainCommonInit, StatechainInput, StatechainInputV0,
+    CoinId, CoinRecord, CoinStatus, Funding, NonceRequest, PublicNonce, ScalarBytes, SignRequest,
+    SigningPurpose, StatechainAddress, StatechainCommonInit, StatechainInput, StatechainInputV0,
     StatechainModuleTypes, StatechainOutput, StatechainOutputV0, txs,
 };
 use futures::StreamExt;
-use futures::future::join_all;
+use futures::stream::FuturesUnordered;
 use rand::rngs::OsRng;
+use roast::{Roast, ShareOutcome, ShareRequest};
 use secp256k1::schnorr::Signature;
 use secp256k1::{Keypair, PublicKey, SECP256K1, SecretKey};
 use serde::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-/// How often signing is retried with other guardians after one misbehaved
-const MAX_SIGNING_ATTEMPTS: usize = 3;
+/// How often a key rotation is resubmitted after a guardian announced its
+/// ephemeral key while we were dealing the tweak
+const MAX_ROTATION_ATTEMPTS: usize = 3;
 
 /// How long we wait for the guardians to finish a consensus step, such as a
 /// coin's key generation, before giving up
@@ -723,9 +726,9 @@ impl StatechainClientModule {
         Ok(infos)
     }
 
-    /// Runs a FROST signing session over `purpose` as its coordinator: collects
-    /// nonces from a threshold of guardians, verifies each guardian's signature
-    /// share and adds ours. Guardians that misbehave are left out of retries.
+    /// Signs the transaction for `purpose` with the coin's guardians, running
+    /// ROAST as the coordinator so that guardians that stall or send invalid
+    /// shares cannot prevent the signature; see [`roast`].
     async fn sign(
         &self,
         coin: CoinId,
@@ -740,107 +743,146 @@ impl StatechainClientModule {
 
         let aggregate_pk = record.aggregate_pk().context("The coin has no key yet")?;
         let message = record.signing_tx(self.params(), purpose)?.sighash();
-        let key = SigningKey::new(&aggregate_pk);
 
-        let mut excluded = BTreeSet::new();
+        let mut roast = Roast::new(
+            aggregate_pk,
+            message,
+            record.operator_poly.clone(),
+            self.threshold(),
+            *user_sk,
+        );
 
-        for attempt in 0..MAX_SIGNING_ATTEMPTS {
-            let session = rand::random::<[u8; 32]>();
+        let mut requests = FuturesUnordered::new();
 
-            let nonce_responses = join_all(
-                record
-                    .signers
-                    .iter()
-                    .filter(|peer| !excluded.contains(*peer))
-                    .map(|peer| async move {
-                        let response = self
-                            .module_api
-                            .nonce(*peer, NonceRequest::new(coin, session, purpose, user_sk))
-                            .await;
+        for peer in &record.signers {
+            requests.push(self.roast_request(coin, purpose, user_sk, RoastRequest::Nonce(*peer)));
+        }
 
-                        (*peer, response)
-                    }),
-            )
-            .await;
-
-            let guardian_nonces = nonce_responses
-                .into_iter()
-                .filter_map(|(peer, response)| response.ok().map(|nonce| (peer, nonce)))
-                .take(self.threshold())
-                .collect::<BTreeMap<PeerId, _>>();
-
-            ensure!(
-                guardian_nonces.len() == self.threshold(),
-                "Not enough guardians are available to sign"
-            );
-
-            let (user_secret_nonce, user_nonce) = generate_nonce(&mut OsRng);
-
-            let sign_session = SignSession::new(key, message, &guardian_nonces, user_nonce);
-
-            let request = SignRequest {
-                coin,
-                session,
-                purpose,
-                guardian_nonces: guardian_nonces.clone(),
-                user_nonce,
-            };
-
-            let share_responses = join_all(guardian_nonces.keys().map(|peer| {
-                let request = request.clone();
-
-                async move { (*peer, self.module_api.sign(*peer, request).await) }
-            }))
-            .await;
-
-            let mut shares = Vec::new();
-
-            for (peer, response) in share_responses {
-                match response {
-                    Ok(share)
-                        if sign_session.verify_guardian_share(
-                            peer,
-                            &record.operator_poly,
-                            share,
-                        ) =>
-                    {
-                        shares.push(share);
-                    }
-                    response => {
-                        debug!(
-                            target: LOG_CLIENT_MODULE_STATECHAIN,
-                            %peer,
-                            attempt,
-                            error = ?response.err(),
-                            "Guardian did not provide a valid signature share"
-                        );
-
-                        excluded.insert(peer);
+        while let Some(event) = requests.next().await {
+            match event {
+                RoastEvent::Nonce {
+                    peer,
+                    nonce_id,
+                    result: Ok(nonce),
+                } => {
+                    for request in roast.nonce_received(peer, nonce_id, nonce, &mut OsRng) {
+                        requests.push(self.roast_request(
+                            coin,
+                            purpose,
+                            user_sk,
+                            RoastRequest::Share(request),
+                        ));
                     }
                 }
+                RoastEvent::Share {
+                    session,
+                    peer,
+                    result: Ok(share),
+                } => match roast.share_received(session, peer, share)? {
+                    ShareOutcome::Complete(signature) => {
+                        debug!(
+                            target: LOG_CLIENT_MODULE_STATECHAIN,
+                            %coin,
+                            sessions = roast.sessions_started(),
+                            excluded = ?roast.excluded(),
+                            "Signed with the guardians"
+                        );
+
+                        return Ok(signature);
+                    }
+                    ShareOutcome::Valid => {
+                        requests.push(self.roast_request(
+                            coin,
+                            purpose,
+                            user_sk,
+                            RoastRequest::Nonce(peer),
+                        ));
+                    }
+                    ShareOutcome::Invalid => {
+                        warn!(
+                            target: LOG_CLIENT_MODULE_STATECHAIN,
+                            %coin,
+                            %peer,
+                            "Guardian sent an invalid signature share"
+                        );
+                    }
+                },
+                RoastEvent::Nonce {
+                    peer,
+                    result: Err(err),
+                    ..
+                }
+                | RoastEvent::Share {
+                    peer,
+                    result: Err(err),
+                    ..
+                } => {
+                    debug!(
+                        target: LOG_CLIENT_MODULE_STATECHAIN,
+                        %coin,
+                        %peer,
+                        err = %err.fmt_compact(),
+                        "Guardian failed a signing request"
+                    );
+
+                    roast.exclude(peer);
+                }
             }
-
-            if shares.len() != self.threshold() {
-                continue;
-            }
-
-            shares.push(sign_session.user_sign(user_sk, &user_secret_nonce));
-
-            let signature = sign_session
-                .combine(shares)
-                .context("Invalid signature encoding")?;
-
-            ensure!(
-                verify_signature(&aggregate_pk, &message, &signature),
-                "The combined signature is invalid"
-            );
-
-            return Ok(signature);
         }
 
         Err(anyhow!(
-            "Signing failed after {MAX_SIGNING_ATTEMPTS} attempts"
+            "Fewer than {} guardians provided valid signature shares, excluded guardians: {:?}",
+            self.threshold(),
+            roast.excluded()
         ))
+    }
+
+    /// Sends one ROAST request to a guardian. A single function serves both
+    /// kinds so that all requests in flight share one future type.
+    async fn roast_request(
+        &self,
+        coin: CoinId,
+        purpose: SigningPurpose,
+        user_sk: &SecretKey,
+        request: RoastRequest,
+    ) -> RoastEvent {
+        match request {
+            RoastRequest::Nonce(peer) => {
+                let nonce_id = rand::random::<[u8; 32]>();
+
+                let result = self
+                    .module_api
+                    .nonce(peer, NonceRequest::new(coin, nonce_id, purpose, user_sk))
+                    .await;
+
+                RoastEvent::Nonce {
+                    peer,
+                    nonce_id,
+                    result,
+                }
+            }
+            RoastRequest::Share(request) => {
+                let result = self
+                    .module_api
+                    .sign(
+                        request.peer,
+                        SignRequest {
+                            coin,
+                            nonce_id: request.nonce_id,
+                            purpose,
+                            guardian_nonces: request.guardian_nonces,
+                            user_nonce: request.user_nonce,
+                        },
+                    )
+                    .await;
+
+                RoastEvent::Share {
+                    session: request.session,
+                    peer: request.peer,
+                    result,
+                }
+            }
+        }
     }
 
     /// Hands a coin's user key from `old_sk` to `new_sk` by dealing the tweak
@@ -858,7 +900,7 @@ impl StatechainClientModule {
 
         let mut last_error = None;
 
-        for _ in 0..MAX_SIGNING_ATTEMPTS {
+        for _ in 0..MAX_ROTATION_ATTEMPTS {
             let record = self.coin_record(coin).await?;
             let ephemeral_keys = self.await_ephemeral_keys(coin, &record).await?;
 
@@ -1175,4 +1217,24 @@ impl IntoDynInstance for StatechainStateMachine {
     fn into_dyn(self, instance_id: ModuleInstanceId) -> Self::DynType {
         DynState::from_typed(instance_id, self)
     }
+}
+
+/// A request of the ROAST coordinator to a guardian
+enum RoastRequest {
+    Nonce(PeerId),
+    Share(ShareRequest),
+}
+
+/// A guardian's answer to a [`RoastRequest`]
+enum RoastEvent {
+    Nonce {
+        peer: PeerId,
+        nonce_id: [u8; 32],
+        result: ServerResult<PublicNonce>,
+    },
+    Share {
+        session: usize,
+        peer: PeerId,
+        result: ServerResult<ScalarBytes>,
+    },
 }
