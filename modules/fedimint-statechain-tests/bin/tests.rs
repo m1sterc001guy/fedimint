@@ -271,6 +271,22 @@ async fn main() -> anyhow::Result<()> {
                 "Unexpected coin info {info}"
             );
 
+            info!("A wallet lists its coins while the guardians are offline");
+
+            fed.clone().terminate_all_servers().await?;
+
+            let list = statechain(&bob, &["list"]).await?;
+            let info = list
+                .as_array()
+                .context("list returns an array")?
+                .iter()
+                .find(|info| info["coin"] == json!(coin))
+                .with_context(|| format!("Bob lists the exited coin: {list}"))?;
+            ensure!(
+                info["stale"] == json!(true) && info["federation"]["status"] == json!("Exiting"),
+                "Unexpected coin info {info}"
+            );
+
             info!("Statechain CLI test succeeded");
 
             Ok(())

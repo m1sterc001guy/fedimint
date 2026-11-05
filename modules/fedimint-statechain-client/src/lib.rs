@@ -19,8 +19,8 @@ use api::StatechainFederationApi;
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::{Address, Transaction};
 use db::{
-    DbKeyPrefix, LocalCoin, LocalCoinKey, LocalCoinPrefix, LocalCoinState, ReceiveKey,
-    ReceiveKeyKey, ReceiveKeyPrefix,
+    DbKeyPrefix, LastCoinRecordKey, LastCoinRecordPrefix, LocalCoin, LocalCoinKey, LocalCoinPrefix,
+    LocalCoinState, ReceiveKey, ReceiveKeyKey, ReceiveKeyPrefix,
 };
 use fedimint_api_client::api::{DynModuleApi, ServerResult};
 use fedimint_client_module::DynGlobalClientContext;
@@ -42,7 +42,9 @@ use fedimint_core::module::{
 };
 use fedimint_core::task::sleep;
 use fedimint_core::util::FmtCompact as _;
-use fedimint_core::{Amount, NumPeersExt, OutPointRange, PeerId, apply, async_trait_maybe_send};
+use fedimint_core::{
+    Amount, NumPeersExt, OutPointRange, PeerId, apply, async_trait_maybe_send, runtime,
+};
 use fedimint_logging::LOG_CLIENT_MODULE_STATECHAIN;
 pub use fedimint_statechain_common as common;
 use fedimint_statechain_common::config::{StatechainClientConfig, StatechainParams};
@@ -77,6 +79,10 @@ const CONSENSUS_STEP_TIMEOUT: Duration = Duration::from_mins(5);
 /// key before dealing to the threshold that did
 const EPHEMERAL_KEYS_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
+/// How long a coin lookup waits for the guardians before showing the last
+/// record we saw, so that listing our coins never depends on them
+const COIN_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositInfo {
     pub coin: CoinId,
@@ -106,6 +112,9 @@ pub struct CoinInfo {
     pub coin: CoinId,
     pub local: Option<LocalCoin>,
     pub federation: Option<CoinRecord>,
+    /// The guardians could not be reached, so `federation` is the last record
+    /// we saw
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -696,17 +705,70 @@ impl StatechainClientModule {
         })
     }
 
-    /// Our view and the federation's view of a coin
-    pub async fn coin_info(&self, coin: CoinId) -> anyhow::Result<CoinInfo> {
-        Ok(CoinInfo {
-            coin,
-            local: self.local_coin(coin).await,
-            federation: self.module_api.coin(coin).await?,
-        })
+    /// Our view and the federation's view of a coin. Statecoins are
+    /// self-custodial, so this works while the guardians are unreachable: it
+    /// then shows the last record we saw and marks it stale.
+    pub async fn coin_info(&self, coin: CoinId) -> CoinInfo {
+        let local = self.local_coin(coin).await;
+
+        match runtime::timeout(COIN_LOOKUP_TIMEOUT, self.module_api.coin(coin)).await {
+            Ok(Ok(federation)) => {
+                if let Some(record) = &federation {
+                    self.remember_record(coin, record).await;
+                }
+
+                CoinInfo {
+                    coin,
+                    local,
+                    federation,
+                    stale: false,
+                }
+            }
+            result => {
+                if let Ok(Err(err)) = result {
+                    debug!(
+                        target: LOG_CLIENT_MODULE_STATECHAIN,
+                        %coin,
+                        err = %err.fmt_compact(),
+                        "Could not fetch the coin's record, showing the last one we saw"
+                    );
+                } else {
+                    debug!(
+                        target: LOG_CLIENT_MODULE_STATECHAIN,
+                        %coin,
+                        timeout = ?COIN_LOOKUP_TIMEOUT,
+                        "The guardians did not return the coin's record, showing the last one we saw"
+                    );
+                }
+
+                CoinInfo {
+                    coin,
+                    local,
+                    federation: self
+                        .db
+                        .begin_transaction_nc()
+                        .await
+                        .get_value(&LastCoinRecordKey(coin))
+                        .await,
+                    stale: true,
+                }
+            }
+        }
     }
 
-    /// The coins we hold or held, with the federation's view of each
-    pub async fn list_coins(&self) -> anyhow::Result<Vec<CoinInfo>> {
+    async fn remember_record(&self, coin: CoinId, record: &CoinRecord) {
+        let mut dbtx = self.db.begin_transaction().await;
+
+        if dbtx.get_value(&LastCoinRecordKey(coin)).await.as_ref() != Some(record) {
+            dbtx.insert_entry(&LastCoinRecordKey(coin), record).await;
+            dbtx.commit_tx().await;
+        }
+    }
+
+    /// The coins we hold or held, with the federation's view of each. Looks
+    /// the coins up concurrently, so unreachable guardians delay the list by
+    /// one lookup timeout at most.
+    pub async fn list_coins(&self) -> Vec<CoinInfo> {
         let coins = self
             .db
             .begin_transaction_nc()
@@ -717,13 +779,7 @@ impl StatechainClientModule {
             .collect::<Vec<CoinId>>()
             .await;
 
-        let mut infos = Vec::new();
-
-        for coin in coins {
-            infos.push(self.coin_info(coin).await?);
-        }
-
-        Ok(infos)
+        futures::future::join_all(coins.into_iter().map(|coin| self.coin_info(coin))).await
     }
 
     /// Signs the transaction for `purpose` with the coin's guardians, running
@@ -1155,6 +1211,16 @@ impl ModuleInit for StatechainClientInit {
                         ReceiveKey,
                         items,
                         "Receive Keys"
+                    );
+                }
+                DbKeyPrefix::LastCoinRecord => {
+                    fedimint_core::push_db_pair_items!(
+                        dbtx,
+                        LastCoinRecordPrefix,
+                        LastCoinRecordKey,
+                        CoinRecord,
+                        items,
+                        "Last Coin Records"
                     );
                 }
             }

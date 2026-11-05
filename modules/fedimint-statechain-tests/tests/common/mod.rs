@@ -56,10 +56,12 @@ pub async fn await_status(
     condition: impl Fn(&CoinStatus) -> bool,
 ) -> anyhow::Result<CoinStatus> {
     loop {
-        let status = statechain(client)?
-            .coin_info(coin)
-            .await?
+        let info = statechain(client)?.coin_info(coin).await;
+
+        // A stale record may predate the change we are waiting for.
+        let status = info
             .federation
+            .filter(|_| !info.stale)
             .map(|record| record.status);
 
         if let Some(status) = status

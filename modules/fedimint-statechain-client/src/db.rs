@@ -1,7 +1,7 @@
 use bitcoin::ScriptBuf;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::{impl_db_lookup, impl_db_record};
-use fedimint_statechain_common::{CoinId, Funding, StatechainAddress};
+use fedimint_statechain_common::{CoinId, CoinRecord, Funding, StatechainAddress};
 use secp256k1::schnorr::Signature;
 use secp256k1::{PublicKey, SecretKey};
 use serde::Serialize;
@@ -12,6 +12,7 @@ use strum_macros::EnumIter;
 pub enum DbKeyPrefix {
     Coin = 0x01,
     ReceiveKey = 0x02,
+    LastCoinRecord = 0x03,
 }
 
 impl std::fmt::Display for DbKeyPrefix {
@@ -82,3 +83,18 @@ impl_db_record!(
     db_prefix = DbKeyPrefix::ReceiveKey,
 );
 impl_db_lookup!(key = ReceiveKeyKey, query_prefix = ReceiveKeyPrefix);
+
+/// The last record of a coin we fetched from the guardians, shown while they
+/// are unreachable.
+#[derive(Debug, Clone, Copy, Encodable, Decodable, Serialize)]
+pub struct LastCoinRecordKey(pub CoinId);
+
+#[derive(Debug, Encodable, Decodable)]
+pub struct LastCoinRecordPrefix;
+
+impl_db_record!(
+    key = LastCoinRecordKey,
+    value = CoinRecord,
+    db_prefix = DbKeyPrefix::LastCoinRecord,
+);
+impl_db_lookup!(key = LastCoinRecordKey, query_prefix = LastCoinRecordPrefix);

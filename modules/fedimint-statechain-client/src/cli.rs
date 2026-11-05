@@ -130,8 +130,8 @@ pub(crate) async fn handle_cli_command(
                 "timelock": exit.timelock,
             }))
         }
-        Opts::Info { coin } => Ok(serde_json::to_value(module.coin_info(coin).await?)?),
-        Opts::List => Ok(serde_json::to_value(module.list_coins().await?)?),
+        Opts::Info { coin } => Ok(serde_json::to_value(module.coin_info(coin).await)?),
+        Opts::List => Ok(serde_json::to_value(module.list_coins().await)?),
         Opts::BlockCount => Ok(json!(module.block_count().await?)),
     }
 }
