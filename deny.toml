@@ -116,6 +116,16 @@ exceptions = [
     { allow = [
         "Zlib",
     ], name = "slotmap" },
+    # schnorr_fun (FROST for the statechain module) and its family of crates
+    { allow = [
+        "0BSD",
+    ], name = "schnorr_fun" },
+    { allow = [
+        "0BSD",
+    ], name = "secp256kfun" },
+    { allow = [
+        "0BSD",
+    ], name = "secp256kfun_arithmetic_macros" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,

@@ -1,0 +1,38 @@
+[package]
+authors = { workspace = true }
+description = "fedimint statechain tests contains all tests for the statechain module"
+edition = { workspace = true }
+license = { workspace = true }
+name = "fedimint-statechain-tests"
+publish = false
+readme = { workspace = true }
+repository = { workspace = true }
+version = { workspace = true }
+
+[[bin]]
+name = "fedimint-statechain-devimint-tests"
+path = "bin/tests.rs"
+
+[[test]]
+name = "fedimint_statechain_tests"
+path = "tests/tests.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bitcoin = { workspace = true }
+bitcoincore-rpc = { workspace = true }
+devimint = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-logging = { workspace = true }
+fedimint-statechain-common = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+fedimint-client = { workspace = true }
+fedimint-dummy-client = { workspace = true }
+fedimint-dummy-server = { workspace = true }
+fedimint-statechain-client = { workspace = true }
+fedimint-statechain-server = { workspace = true }
+fedimint-testing = { workspace = true }

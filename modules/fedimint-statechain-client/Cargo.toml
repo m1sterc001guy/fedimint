@@ -1,0 +1,43 @@
+[package]
+authors = { workspace = true }
+description = "fedimint statechain is a statechain module modeled on Spark: statecoins are on-chain UTXOs whose ownership moves by rotating FROST key shares. (client)"
+edition = { workspace = true }
+license = { workspace = true }
+name = "fedimint-statechain-client"
+readme = { workspace = true }
+repository = { workspace = true }
+version = { workspace = true }
+
+[package.metadata.docs.rs]
+rustc-args = ["--cfg", "tokio_unstable"]
+
+[features]
+cli = ["dep:clap"]
+default = []
+
+[lib]
+name = "fedimint_statechain_client"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bitcoin = { workspace = true }
+clap = { workspace = true, optional = true }
+erased-serde = { workspace = true }
+fedimint-api-client = { workspace = true }
+fedimint-client-module = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-logging = { workspace = true }
+fedimint-statechain-common = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+secp256k1 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
